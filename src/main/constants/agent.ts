@@ -75,9 +75,6 @@ export const DELIVERY_TYPE_PLAN = '方案';
 /** 详细规划交付类型 */
 export const DELIVERY_TYPE_PLAN_BOOK = '详细规划';
 
-/** 报告交付类型 */
-export const DELIVERY_TYPE_REPORT = '报告';
-
 /** 关键材料交付类型 */
 export const DELIVERY_TYPE_KEY_MATERIAL = '关键材料';
 
@@ -132,7 +129,6 @@ export const EXECUTOR_DELIVERY_TYPES = [
   '权威结论',
   '方案',
   '详细规划',
-  '报告',
   '文件链接',
   '图片',
   '测试用例',

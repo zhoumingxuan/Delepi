@@ -15,7 +15,6 @@ import {
   KEY_MATERIAL_TRUNCATE_THRESHOLD,
   DELIVERY_TYPE_PLAN,
   DELIVERY_TYPE_PLAN_BOOK,
-  DELIVERY_TYPE_REPORT,
   DELIVERY_TYPE_KEY_MATERIAL,
   type ExecutorDeliveryType,
 } from '../../constants';
@@ -232,7 +231,6 @@ async function readDeliverable(
   if (
     deliveryType === DELIVERY_TYPE_PLAN
     || deliveryType === DELIVERY_TYPE_PLAN_BOOK
-    || deliveryType === DELIVERY_TYPE_REPORT
     || deliveryType === DELIVERY_TYPE_KEY_MATERIAL
   ) {
     return content ? { [nameWithoutExt]: content } : {};
@@ -261,17 +259,12 @@ function getDocumentPathFieldName(deliveryType: ExecutorDeliveryType): string | 
     return '方案文档路径';
   }
 
-  if (deliveryType === DELIVERY_TYPE_REPORT) {
-    return '报告文档路径';
-  }
-
   return null;
 }
 
 function shouldCopyDeliverableToOutput(deliveryType: ExecutorDeliveryType): boolean {
   return (
     deliveryType === DELIVERY_TYPE_PLAN
-    || deliveryType === DELIVERY_TYPE_REPORT
     || deliveryType === DELIVERY_TYPE_KEY_MATERIAL
   );
 }

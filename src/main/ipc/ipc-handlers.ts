@@ -307,7 +307,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           apiKey: configManager.getSettings().visionLlmApiKey,
           model: configManager.getSettings().visionLlmModel,
         },
-        mainAgentMultimodalEnabled: configManager.getSettings().mainModelMultimodal,
+        // 视觉识别总开关联动：visionEnabled=false 时主智能体多模态强制关闭（multimodalEnabled = visionEnabled && mainModelMultimodal）
+        mainAgentMultimodalEnabled: configManager.getSettings().visionEnabled
+          && configManager.getSettings().mainModelMultimodal,
         assistantMessageId: params.assistantMessageId,
         uploadedFiles,
         signal: abortController.signal,
