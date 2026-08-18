@@ -45,6 +45,9 @@ export interface ToolCallInfo {
   status: 'loading' | 'success' | 'error';
   startedAt?: string;
   finishedAt?: string;
+  // 消息/快照创建时刻：startedAt 缺失时的计时兜底来源（对齐 ai_fr chat-message-content.tsx:352-358
+  // payload.startedAt ?? createdAt——回退消息创建时刻而非渲染时刻，避免计时起点错位）
+  createdAt?: string;
   isError?: boolean;
   isDelegatedExecutor?: boolean;
 }
@@ -90,7 +93,7 @@ export const ToolCallCard = memo(function ToolCallCard({
 }: {
   toolCall: ToolCallInfo;
 }) {
-  const { name, status, result, startedAt, finishedAt, isError } = toolCall;
+  const { name, status, result, startedAt, finishedAt, createdAt, isError } = toolCall;
   const loading = status === 'loading';
 
   const shouldShowElapsed = loading || Boolean(startedAt);
@@ -99,7 +102,7 @@ export const ToolCallCard = memo(function ToolCallCard({
       <span>{name}</span>
       <ExecutionElapsedTime
         active={loading}
-        startedAt={startedAt ?? new Date().toISOString()}
+        startedAt={startedAt ?? createdAt ?? new Date().toISOString()}
         finishedAt={loading ? undefined : finishedAt}
       />
     </Flex>

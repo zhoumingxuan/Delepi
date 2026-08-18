@@ -709,8 +709,12 @@ export async function runMainAgent(
     });
 
     // 处理每个工具调用
-    for (const toolCall of streamResult.toolCalls) {
-      if (!toolCall.id) continue;
+    // ★ 并行执行改造（对齐 ai_fr route.ts:673-676/968）：for...of 串行 → map 启动异步闭包立即执行，
+    //   批次末 await Promise.allSettled(toolCallTasks) 聚合（见本批循环体收尾处）——同批多个
+    //   delegate_executor 各自立即启动并独立记录 toolStartedAt / 发送 init 快照，
+    //   后续任务不再排队等待前序任务收尾（修复前端并行任务不显示/取消后才出现/计时零秒）。
+    const toolCallTasks = streamResult.toolCalls.map((toolCall) => (async () => {
+      if (!toolCall.id) return { toolCall, status: 'skipped' as const };
       const toolStartedAt = new Date().toISOString();
       const isDelegatedExecutor = toolCall.function.name === 'delegate_executor';
       const taskId = isDelegatedExecutor ? uuidv4() : '';
@@ -744,31 +748,6 @@ export async function runMainAgent(
         } catch {
           // JSON 解析失败时保持 taskName 为空字符串
         }
-
-        eventBus.emit('executor:snapshot', {
-          conversationId,
-          taskId,
-          callId: toolCall.id,
-          status: 'running',
-          toolCalls: [
-            {
-              callId: toolCall.id,
-              name: toolCall.function.name,
-              arguments: toolCall.function.arguments,
-              result: '',
-              status: 'loading',
-              startedAt: toolStartedAt,
-              isDelegatedExecutor: true,
-            },
-          ],
-          result: '',
-          isError: false,
-          createdAt: toolStartedAt,
-          updatedAt: toolStartedAt,
-          source: 'executor',
-          taskName,
-          messageId: assistantMessageId,
-        });
 
         // 协议文件写入临时任务目录；真实交付文件写入固定 output/YYYY/MM 目录。
         const conversationDir = resolveConversationDir(conversationId);
@@ -945,9 +924,36 @@ export async function runMainAgent(
           });
           sendToolSnapshot(failureResultText, 'error', true, toolFinishedAt);
           batchResults.push({ callId: toolCall.id, status: 'aborted' });
-          continue;
+          return { toolCall, status: 'aborted' as const };
         }
 
+        // ★ 并行改造配套·abort 顺序对齐（ai_fr route.ts:784-818）：init 快照发送移至 abort 检查之后——
+        //   未启动即中止时不再发出 init 快照（原位置在 abort 检查之前，会多发一次瞬时 init 事件）；
+        //   任务真正启动（闭包首个 await 前）即同步发出，前端任务卡片立即出现。
+        eventBus.emit('executor:snapshot', {
+          conversationId,
+          taskId,
+          callId: toolCall.id,
+          status: 'running',
+          toolCalls: [
+            {
+              callId: toolCall.id,
+              name: toolCall.function.name,
+              arguments: toolCall.function.arguments,
+              result: '',
+              status: 'loading',
+              startedAt: toolStartedAt,
+              isDelegatedExecutor: true,
+            },
+          ],
+          result: '',
+          isError: false,
+          createdAt: toolStartedAt,
+          updatedAt: toolStartedAt,
+          source: 'executor',
+          taskName,
+          messageId: assistantMessageId,
+        });
 
         try {
           await mkdir(conversationDir, { recursive: true });
@@ -1115,8 +1121,11 @@ export async function runMainAgent(
           //   seq 采样（contextCompressionMaxMessageSeq）收敛批次末
 
 
-          // P1：更新 completedTasks 数组，供下次委派使用
+          // P1：构造 completedEntry 随闭包返回，批次末统一汇总进 completedTasks
+          //   （对齐 ai_fr route.ts:912 return { completedEntry } + :970-987 批末 settled 汇总——
+          //   并行执行下闭包内逐个 push 会造成同批次互见脏读，改为批末按完成序统一 push）
           // success=false 也记录，因为失败原因同样可能是后续任务输入。
+          let completedEntry: CompletedTask | null = null;
           try {
             const parsedArguments = JSON.parse(toolCall.function.arguments) as {
               taskname?: unknown;
@@ -1124,24 +1133,25 @@ export async function runMainAgent(
             const parsedTaskName = typeof parsedArguments.taskname === 'string'
               ? parsedArguments.taskname.trim()
               : '';
-            completedTasks.push({
-              seq: taskSeqCounter++,
+            completedEntry = {
+              seq: 0,
               taskName: parsedTaskName,
               finishedAt: toolFinishedAt,
               summary: toolResultContent,
               logPath: finalOutputDir,
               status: execResult.success ? 'success' : 'failed',
-            });
+            };
           } catch {
-            completedTasks.push({
-              seq: taskSeqCounter++,
+            completedEntry = {
+              seq: 0,
               taskName: '',
               finishedAt: toolFinishedAt,
               summary: toolResultContent,
               logPath: finalOutputDir,
               status: execResult.success ? 'success' : 'failed',
-            });
+            };
           }
+          return { toolCall, status: 'success' as const, completedEntry };
         } catch (error) {
           // ★ S2（文档 #8）：catch 内中止不再上抛中止错误——中止与非中止失败统一走下方失败消息化路径
           //   （对齐 ai_fr 出口② :897-948「不 throw——单个任务失败不阻塞其他任务」）
@@ -1193,6 +1203,7 @@ export async function runMainAgent(
             error: failureResult.message,
             errorType: ERROR_TYPE_EXECUTOR_ERROR,
           });
+          return { toolCall, status: 'failed' as const };
         }
       } else {
         // 未知工具调用 → 返回错误
@@ -1217,7 +1228,26 @@ export async function runMainAgent(
           },
         });
         batchResults.push({ callId: toolCall.id, status: 'failed' });
+        return { toolCall, status: 'failed' as const };
 
+      }
+    })());
+
+    // ★ 并行等待全部任务收尾（对齐 ai_fr route.ts:968 await Promise.allSettled(toolCallTasks)）：
+    //   下方批次收口（tool.batch.completed → 全中止判定 → insertMessages → TOOL_MESSAGE_CREATED）
+    //   自此全部位于 allSettled 之后执行，批次消息时序语义与 ai_fr :968-1038 一致。
+    const settled = await Promise.allSettled(toolCallTasks);
+
+    // ★ 批次完成后：按 settled 结果汇总 completedTasks（对齐 ai_fr route.ts:970-987）——
+    //   任务闭包不再直接 push（原串行循环内逐个 push 语义在并行下不成立）；seq 按批次末汇总序赋值。
+    //   配套效果：runDelegatedTask 入参 previousTask 在闭包启动时刻读到的 completedTasks
+    //   即"批次开始前最后完成的任务"（同批次 entry 全部延迟至此 push），语义对齐 ai_fr
+    //   route.ts:823（completedTasks 引用传入，批末才汇总）。
+    for (const result of settled) {
+      if (result.status === 'fulfilled' && result.value.status === 'success' && result.value.completedEntry) {
+        const { completedEntry } = result.value;
+        completedEntry.seq = taskSeqCounter++;
+        completedTasks.push(completedEntry);
       }
     }
 
