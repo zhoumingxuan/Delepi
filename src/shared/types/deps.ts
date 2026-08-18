@@ -10,7 +10,7 @@
  * - E: 内网导入 bundle → 一键安装（importBundle）
  */
 
-/** 依赖包安装级别：核心6包 / 推荐14包 / 全部20包 */
+/** 依赖包安装级别：核心6包 / 推荐14包 / 全部24包 */
 export type DepsLevel = 'core' | 'recommended' | 'full';
 
 /** 单个依赖包安装状态 */

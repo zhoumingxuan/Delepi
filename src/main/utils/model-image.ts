@@ -1,4 +1,4 @@
-import sharp from 'sharp';
+import sharp, { type Sharp, type Metadata } from 'sharp';
 import { MODEL_IMAGE_JPEG_QUALITY } from '../modules/llm/constants';
 import {
   ERR_IMAGE_RESIZE_FAILED,
@@ -34,7 +34,7 @@ function shouldResizeImage(width: number, height: number): boolean {
 }
 
 async function encodeModelImage(
-  pipeline: sharp.Sharp,
+  pipeline: Sharp,
 ): Promise<{
   buffer: Buffer;
   mimeType: string;
@@ -54,7 +54,7 @@ async function encodeModelImage(
 export async function prepareModelImagePayload(
   buffer: Buffer,
 ): Promise<ModelImagePayload> {
-  let metadata: sharp.Metadata;
+  let metadata: Metadata;
 
   try {
     metadata = await sharp(buffer, {

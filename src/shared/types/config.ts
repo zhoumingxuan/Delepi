@@ -32,7 +32,7 @@ export interface AppSettings {
 
   // pip 依赖管理
   /** 依赖包安装级别（默认 'core'）。
-   *  'core': 核心6包 / 'recommended': 推荐14包 / 'full': 全部20包 */
+   *  'core': 核心6包 / 'recommended': 推荐14包 / 'full': 全部24包 */
   pipPackageLevel?: DepsLevel;
   /** pip 镜像源 URL（默认空字符串，使用官方 PyPI 源） */
   pipMirrorUrl: string;

@@ -8,7 +8,8 @@ release/
 /conversations/
 /bin/
 /resources/*
-/scripts/*
+scripts/cache/
+scripts/.build/
 
 # Database
 data/*.db

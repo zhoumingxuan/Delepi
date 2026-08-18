@@ -1,0 +1,18 @@
+# Delepi 预置 Python 环境依赖精确锁定清单（Python 3.14.6，共 14 包）
+# 生成方式：resources/python/python-3.14.6 预置环境 pip freeze + importlib.metadata 交叉验证
+# 与 .beez-preset 标记文件一致；requirements-preset.txt 为对应的版本下限清单
+# 说明：TCP/UDP 通信由 Python 标准库 socket 支持，无需第三方包；传递依赖由 pip 自动解析，不在本清单内
+pdfplumber==0.11.10
+PyPDF2==3.0.1
+python-docx==1.2.0
+openpyxl==3.1.5
+matplotlib==3.11.1
+requests==2.34.2
+httpx==0.28.1
+pillow==12.3.0
+numpy==2.5.2
+python-pptx==1.0.2
+paramiko==5.0.0
+networkx==3.6.1
+pandas==3.0.5
+xlsxwriter==3.2.9
