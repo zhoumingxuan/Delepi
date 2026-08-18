@@ -1,0 +1,112 @@
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  background: #f0f2f5;
+  color: #111827;
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+/* --- Rich Markdown scrollbar styles --- */
+.chat-rich-markdown .chat-code-highlighter pre::-webkit-scrollbar {
+  height: 10px;
+}
+
+.chat-rich-markdown .chat-code-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+
+.chat-rich-markdown .chat-code-highlighter pre::-webkit-scrollbar-track {
+  background: hsl(220, 13%, 18%);
+}
+
+.chat-rich-markdown .chat-code-scroll::-webkit-scrollbar-track {
+  background: hsl(220, 13%, 18%);
+}
+
+.chat-rich-markdown .chat-code-highlighter pre::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.65);
+  border: 2px solid hsl(220, 13%, 18%);
+  border-radius: 999px;
+}
+
+.chat-rich-markdown .chat-code-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.65);
+  border: 2px solid hsl(220, 13%, 18%);
+  border-radius: 999px;
+}
+
+.chat-rich-markdown .chat-code-highlighter pre::-webkit-scrollbar-thumb:hover {
+  background: rgba(203, 213, 225, 0.8);
+}
+
+.chat-rich-markdown .chat-code-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(203, 213, 225, 0.8);
+}
+
+/* --- XMarkdown table styles --- */
+.x-markdown th,
+.x-markdown td {
+  white-space: nowrap;
+}
+
+/* --- Tool result chain styles --- */
+.chat-tool-result-chain .ant-thought-chain-node {
+  min-width: 0;
+  width: 100%;
+}
+
+.chat-tool-result-chain .ant-thought-chain-node-box {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.chat-tool-result-chain .ant-thought-chain-node-content {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* --- User bubble copy action --- */
+.chat-user-bubble .chat-user-copy-action {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity 0.16s ease,
+    visibility 0.16s ease;
+}
+
+.chat-user-bubble:is(:hover, :focus-within) .chat-user-copy-action {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+
+/* ─── Chat Shell: sidebar empty state transparent ─── */
+.chat-shell .chat-sidebar[data-sidebar-empty],
+.chat-shell .chat-sidebar[data-sidebar-empty] .ant-flex {
+  background: transparent !important;
+}
+
+/* ─── Chat Shell: chat bottom area transparent ─── */
+/* Remove gray background from SenderBox wrapper (last child of ChatArea root) */
+.chat-area-wrapper > div > div:last-child {
+  background: transparent !important;
+}

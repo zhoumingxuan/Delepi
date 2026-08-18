@@ -1,0 +1,52 @@
+{
+  "name": "delepi",
+  "version": "0.1.0",
+  "description": "Delepi - 智能协作、准确交付",
+  "author": "start at zhoumingxuan 657427356@qq.com",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "lint": "eslint src/ --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "node scripts/postinstall.cjs",
+    "pack": "electron-builder",
+    "build:preset-python": "npx tsx scripts/build-preset-python.ts",
+    "prepack": "npm run build:preset-python"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^6.2.5",
+    "@ant-design/x-markdown": "^2.8.0",
+    "@types/node": "^25.9.3",
+    "@types/sharp": "^0.31.1",
+    "better-sqlite3": "^12.11.1",
+    "echarts": "^6.1.0",
+    "katex": "^0.17.0",
+    "mermaid": "^11.15.0",
+    "openai": "^6.34.0",
+    "prismjs": "^1.30.0",
+    "react-syntax-highlighter": "^16.1.1",
+    "sharp": "^0.35.1",
+    "typed-event-emitter": "^1.0.0",
+    "uuid": "^11.1.1"
+  },
+  "devDependencies": {
+    "@ant-design/x": "^2.0.0",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/echarts": "^4.9.22",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@types/react-syntax-highlighter": "^15.5.13",
+    "@types/uuid": "^10.0.0",
+    "antd": "^6.0.0",
+    "electron": "^42.0.0",
+    "electron-builder": "^26.0.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "typescript": "^5.9.3",
+    "vite": "^7.0.0",
+    "vite-plugin-electron": "^1.0.4",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  }
+}

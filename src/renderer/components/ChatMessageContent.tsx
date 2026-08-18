@@ -1,0 +1,810 @@
+/**
+ * 消息内容渲染分发组件
+ * 处理 user / assistant / tool 三种角色消息
+ * 执行子智能体进度模式 + 任务标题提取（对齐 E:\ai_fr\components\chat-message-content.tsx）
+ *
+ * 适配 Delepi 后端实现（替换 Next.js StreamMessage → Delepi ChatMessage）：
+ * - 数据模型：StreamMessage (payload.content/reasoning/toolCalls) → ChatMessage (content/thinking/toolCalls)
+ * - 工具调用：AssistantToolCall (function.name/arguments, id) → ToolCallInfo (name/arguments, callId)
+ * - 附件渲染：实现（Delepi ChatMessage 现在携带 attachments 字段，P6 历史消息附件回显）
+ *   - Image.PreviewGroup + Image lazy loading，单图 320px，多图 152px
+ *   - Flex + FileOutlined + 文件名 + size 文件条
+ *   - 仅附件无文本：仅显示附件（不渲染「已发送 N 张图片 / N 个附件」摘要气泡，对齐 ai_fr）
+ * - 渲染组件：AssistantContentRenderer → RichMarkdown
+ *
+ * Phase 3 P0-2 适配层（保留）：
+ * - EXECUTOR_TOOL_PROGRESS_PATTERNS / isExecutorToolProgressText / splitLoadingToolContent
+ *   提取到 lib/executor-thinking.ts 共享，ToolCallCard 同步使用
+ *
+ * Phase 3 P3-2 适配层（保留）：
+ * - assistant 空泡过滤（isEmptyAssistantBubble）：当 content.trim() === '' 且无 thinking / toolCalls
+ *   且 status !== 'loading' 时直接返回 null，避免渲染空 bubble
+ * - 完整 filter 函数 filterEmptyAssistantBubbles 由 lib/message-filter.ts 提供
+ */
+
+import { Button, Flex, Image, Space, Spin, Typography } from 'antd';
+import { Think, ThoughtChain } from '@ant-design/x';
+import { FileOutlined } from '@ant-design/icons';
+import { memo, useEffect, useMemo, useState } from 'react';
+import { RichMarkdown } from './RichMarkdown';
+import type { ToolCallInfo } from './ToolCallCard';
+import { ToolCallCard } from './ToolCallCard';
+import type { ChatMessage } from '../hooks/useChat';
+import type { ChatAttachment } from '@shared/types/chat';
+import { isImageContentType } from '@shared/utils/image-type';
+import type { AssistantMessageSegment } from '../lib/message-filter';
+import { splitLoadingToolContent } from '../lib/executor-thinking';
+import { isEmptyAssistantBubble } from '../lib/message-filter';
+import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
+
+/**
+ * 工具摘要（用于把 toolCall.name 解析为 displayName）
+ * 对齐 E:\ai_fr\lib\types\config.ts ToolSummary
+ * - 由调用方传入（参考项目 chat-shell.tsx L2684-2738 传 config?.tools）
+ */
+export interface ToolSummary {
+  name: string;
+  displayName?: string;
+  description: string;
+  enabledByDefault: boolean;
+}
+
+const USER_TEXT_COLLAPSE_THRESHOLD = 600;
+
+/**
+ * ★ Phase 3 P3-5 修复：图片附件 previewUrl 缺失时的占位符
+ * 使用 1x1 透明 PNG (data URI) 兜底,antd Image.fallback 会替换显示
+ * 不再用 attachment.storageKey 兜底(storageKey 不是合法 URL,会触发 404)
+ */
+const FALLBACK_IMAGE_PLACEHOLDER =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+
+function isJsonString(value: string): boolean {
+  try {
+    JSON.parse(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function prettyJsonString(value: string): string {
+  if (!value) return value;
+  try {
+    return JSON.stringify(JSON.parse(value), null, 2);
+  } catch {
+    return value;
+  }
+}
+
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function getUrlFileName(urlText: string): string {
+  try {
+    const url = new URL(urlText);
+    const name = url.pathname.split('/').filter(Boolean).pop();
+    return name ? decodeURIComponent(name) : urlText;
+  } catch {
+    return urlText;
+  }
+}
+
+function collectStructuredFileUrls(value: unknown): {
+  imageUrls: string[];
+  fileUrls: string[];
+} {
+  const imageUrls = new Set<string>();
+  const fileUrls = new Set<string>();
+  const imageFields = new Set(['image_urls']);
+  const fileFields = new Set(['file_urls', 'can_openfile_url']);
+
+  const visit = (current: unknown, fieldName?: string) => {
+    if (Array.isArray(current)) {
+      if (fieldName && imageFields.has(fieldName)) {
+        for (const item of current) {
+          if (typeof item === 'string') imageUrls.add(item);
+        }
+      } else if (fieldName && fileFields.has(fieldName)) {
+        for (const item of current) {
+          if (typeof item === 'string') fileUrls.add(item);
+        }
+      }
+
+      for (const item of current) {
+        visit(item);
+      }
+      return;
+    }
+
+    if (!isRecordValue(current)) {
+      return;
+    }
+
+    for (const [key, item] of Object.entries(current)) {
+      if (typeof item === 'string') {
+        if (imageFields.has(key)) imageUrls.add(item);
+        if (fileFields.has(key)) fileUrls.add(item);
+        continue;
+      }
+
+      visit(item, key);
+    }
+  };
+
+  visit(value);
+
+  return {
+    imageUrls: [...imageUrls],
+    fileUrls: [...fileUrls].filter((url) => !imageUrls.has(url)),
+  };
+}
+
+function buildStructuredFilePreviewMarkdown(value: unknown): string {
+  const { imageUrls, fileUrls } = collectStructuredFileUrls(value);
+  const sections: string[] = [];
+
+  if (imageUrls.length > 0) {
+    sections.push(
+      imageUrls
+        .map((url, index) => `![图片 ${index + 1}](${url})`)
+        .join('\n\n'),
+    );
+  }
+
+  if (fileUrls.length > 0) {
+    sections.push(
+      fileUrls
+        .map((url) => `- [${getUrlFileName(url)}](${url})`)
+        .join('\n'),
+    );
+  }
+
+  return sections.join('\n\n');
+}
+
+function renderToolResultContent(
+  value: string,
+  options?: { includeStructuredFilePreview?: boolean },
+): string {
+  if (!value) {
+    return '空';
+  }
+
+  if (isJsonString(value)) {
+    const parsed = JSON.parse(value) as unknown;
+    const previewMarkdown = options?.includeStructuredFilePreview === false
+      ? ''
+      : buildStructuredFilePreviewMarkdown(parsed);
+    const jsonMarkdown = ['```json', prettyJsonString(value), '```'].join('\n');
+    return previewMarkdown
+      ? `${previewMarkdown}\n\n${jsonMarkdown}`
+      : jsonMarkdown;
+  }
+
+  return value;
+}
+
+function renderLoadingToolContent(value: string, thinkingOverride?: string) {
+  const { thinking: thinkingFromResult, progress } = splitLoadingToolContent(value);
+  // ★ 项9：对齐 ai_fr renderLoadingToolContent(value, thinkingOverride?)——优先使用显式 thinking
+  const thinking = thinkingOverride?.trim() || thinkingFromResult;
+  const progressContent = progress || (thinking ? '' : '执行中');
+
+  return (
+    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      {thinking ? (
+        <Think title="思考内容" loading={<span />} defaultExpanded>
+          <RichMarkdown content={thinking} />
+        </Think>
+      ) : null}
+      {progressContent ? (
+        <Think title="工具调用" loading={<span />} defaultExpanded>
+          <RichMarkdown content={progressContent} />
+        </Think>
+      ) : null}
+    </Space>
+  );
+}
+
+function parseToolArguments(
+  rawArguments: string,
+): Record<string, unknown> | null {
+  if (!rawArguments) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawArguments) as unknown;
+
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function pickTaskTitleFromArguments(rawArguments: string): string | null {
+  const parsedArguments = parseToolArguments(rawArguments);
+
+  if (!parsedArguments) {
+    return null;
+  }
+
+  const candidateKeys = ['taskname', 'task_name'] as const;
+
+  for (const key of candidateKeys) {
+    const value = parsedArguments[key];
+
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+  }
+
+  return null;
+}
+
+function resolveTaskDisplayTitle(options: {
+  toolName: string;
+  rawArguments: string;
+  toolSummaries?: ToolSummary[];
+}): string {
+  const toolDisplayName = resolveToolDisplayName(
+    options.toolName,
+    options.toolSummaries,
+  );
+  const taskTitle = pickTaskTitleFromArguments(options.rawArguments);
+  return taskTitle || toolDisplayName;
+}
+
+function resolveToolDisplayName(
+  toolName: string,
+  toolSummaries?: ToolSummary[],
+): string {
+  const matchedTool = toolSummaries?.find((tool) => tool.name === toolName);
+  const displayName = matchedTool?.displayName?.trim();
+  return displayName || toolName;
+}
+
+function isDelegatedExecutorToolCall(toolCall: ToolCallInfo): boolean {
+  return toolCall.isDelegatedExecutor === true || toolCall.name === 'delegate_executor';
+}
+
+function buildLegacySegments(
+  thinking: string,
+  toolCalls: ToolCallInfo[],
+): AssistantMessageSegment[] {
+  const segments: AssistantMessageSegment[] = [];
+
+  if (thinking) {
+    segments.push({
+      id: 'legacy-reasoning',
+      type: 'reasoning',
+      text: thinking,
+    });
+  }
+
+  for (const toolCall of toolCalls) {
+    segments.push({
+      id: `legacy-tool-${toolCall.callId}`,
+      type: 'tool_call',
+      toolCallId: toolCall.callId,
+    });
+  }
+
+  return segments;
+}
+
+function renderToolCallSegment(
+  toolCall: ToolCallInfo,
+  loading: boolean,
+  toolSummaries?: ToolSummary[],
+) {
+  const title = resolveTaskDisplayTitle({
+    toolName: toolCall.name,
+    rawArguments: toolCall.arguments,
+    toolSummaries,
+  });
+
+  return (
+    <ThoughtChain
+      items={[
+        {
+          key: toolCall.callId,
+          title,
+          status: loading ? 'loading' : 'success',
+        },
+      ]}
+    />
+  );
+}
+
+function renderToolResultSegment(
+  messageId: string,
+  toolCall: ToolCallInfo,
+  loading: boolean,
+  createdAt: string,
+  toolSummaries?: ToolSummary[],
+  options?: { includeStructuredFilePreview?: boolean; thinkingText?: string },
+) {
+  const title = resolveTaskDisplayTitle({
+    toolName: toolCall.name,
+    rawArguments: toolCall.arguments,
+    toolSummaries,
+  });
+  const shouldShowElapsed = loading || Boolean(toolCall.startedAt);
+  const titleContent = shouldShowElapsed ? (
+    <Flex align="center" gap={8}>
+      <span>{title}</span>
+      <ExecutionElapsedTime
+        active={loading}
+        startedAt={toolCall.startedAt ?? createdAt}
+        finishedAt={loading ? undefined : toolCall.finishedAt ?? createdAt}
+      />
+    </Flex>
+  ) : (
+    title
+  );
+  // ★ 项9：完成态不渲染思考链（对齐 ai_fr loading && thinkingText 守卫语义；执行中仍显示思考）
+  const thinkingText = options?.thinkingText?.trim() || '';
+  const content = loading
+    ? toolCall.result || ''
+    : renderToolResultContent(toolCall.result || '', {
+        includeStructuredFilePreview: options?.includeStructuredFilePreview,
+      });
+  const renderedContent = loading ? (
+    renderLoadingToolContent(content, thinkingText)
+  ) : (
+    <Space direction="vertical" size={8} style={{ width: '100%' }}>
+      <RichMarkdown content={content} />
+    </Space>
+  );
+
+  return (
+    <div style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
+      <ThoughtChain
+        className="chat-tool-result-chain"
+        styles={{
+          item: {
+            width: '100%',
+            minWidth: 0,
+          },
+          itemContent: {
+            maxWidth: '100%',
+            minWidth: 0,
+          },
+        }}
+        items={[
+          {
+            key: messageId,
+            title: titleContent,
+            content: renderedContent,
+            status: toolCall.isError ? 'error' : loading ? 'loading' : 'success',
+            collapsible: !loading,
+          },
+        ]}
+      />
+    </div>
+  );
+}
+
+/**
+ * ★ P6 辅助函数：生成附件摘要文本
+ * 对齐 E:\ai_fr components/chat-message-content.tsx renderUserAttachmentSummary
+ * - 全部为图片：「已发送 N 张图片」
+ * - 包含其他类型：「已发送 N 个附件」
+ */
+function renderUserAttachmentSummary(attachments: ChatAttachment[]): string {
+  if (!attachments.length) {
+    return '';
+  }
+  const allImages = attachments.every((attachment) =>
+    isImageContentType(attachment.contentType),
+  );
+  if (allImages) {
+    return `已发送 ${attachments.length} 张图片`;
+  }
+  return `已发送 ${attachments.length} 个附件`;
+}
+
+/**
+ * ★ P6 辅助函数：渲染附件区域（Image.PreviewGroup + FileOutlined 文件条）
+ * 对齐 E:\ai_fr components/chat-message-content.tsx renderUserAttachments
+ *
+ * 实现要点：
+ * - 图片：antd Image.PreviewGroup，单图 320px，多图 152px（square）
+ * - 文件：Flex + FileOutlined + 文件名 + size 文件条
+ * - 点击图片：Image.PreviewGroup 触发预览
+ * - 点击文件：走 IPC_FILE.OPEN，主进程 shell.openPath 用系统默认应用打开
+ *
+ * src 解析：
+ * - 优先用 attachment.previewUrl（ChatAttachment & { previewUrl?: string } 扩展字段）
+ * - fallback 到 attachment.storageKey（实际不会渲染,仅作 preview 兜底）
+ */
+function renderUserAttachments(attachments: ChatAttachment[]) {
+  if (!attachments.length) {
+    return null;
+  }
+
+  const imageCount = attachments.filter((attachment) =>
+    isImageContentType(attachment.contentType),
+  ).length;
+  const imageSize = imageCount <= 1 ? 320 : 152;
+
+  return (
+    <Image.PreviewGroup>
+      <Flex wrap gap={8} justify="flex-end">
+        {attachments.map((attachment) =>
+          isImageContentType(attachment.contentType) ? (
+            <Image
+              key={attachment.id || attachment.storageKey}
+              // ★ Phase 3 P3-5 修复：previewUrl 缺失时不渲染 Image 显示占位图
+              //   原实现：用 attachment.storageKey 兜底,但 storageKey 不是合法 src,
+              //   会触发 404。现在改为：previewUrl 缺失时显示占位气泡,
+              //   不再 fallback 到 storageKey(用户能直观看到预览失效,而非看到损坏图)
+              src={
+                (attachment as ChatAttachment & { previewUrl?: string }).previewUrl ||
+                FALLBACK_IMAGE_PLACEHOLDER
+              }
+              alt={attachment.name}
+              loading="lazy"
+              width={imageSize}
+              height={imageSize}
+              fallback={FALLBACK_IMAGE_PLACEHOLDER}
+              style={{
+                display: 'block',
+                objectFit: 'cover',
+                borderRadius: 16,
+                overflow: 'hidden',
+              }}
+              preview={false}
+            />
+          ) : (
+            <Flex
+              key={attachment.id || attachment.storageKey}
+              align="center"
+              gap={8}
+              onClick={() => {
+                // ★ P6 点击历史文件触发 IPC_FILE.OPEN 走 shell.openPath
+                if (window.electronAPI?.file?.open) {
+                  void window.electronAPI.file.open(attachment.storageKey).catch((err: unknown) => {
+                    // eslint-disable-next-line no-console
+                    console.warn('[ChatMessageContent] open file failed:', err);
+                  });
+                }
+              }}
+              style={{
+                maxWidth: 240,
+                padding: '8px 10px',
+                border: '1px solid rgba(0, 0, 0, 0.08)',
+                borderRadius: 16,
+                background: '#fff',
+                cursor: 'pointer',
+              }}
+            >
+              <FileOutlined />
+              <Typography.Text ellipsis style={{ minWidth: 0, flex: 1 }}>
+                {attachment.name}
+              </Typography.Text>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {formatFileSize(attachment.size)}
+              </Typography.Text>
+            </Flex>
+          ),
+        )}
+      </Flex>
+    </Image.PreviewGroup>
+  );
+}
+
+/**
+ * ★ P6 辅助函数：格式化文件大小(B/KB/MB)
+ */
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** 用户文本气泡（Phase 1: 使用 #171717 背景 + 白字） */
+function UserTextBubble({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldCollapse = text.length > USER_TEXT_COLLAPSE_THRESHOLD;
+  const visibleText =
+    shouldCollapse && !expanded
+      ? `${text.slice(0, USER_TEXT_COLLAPSE_THRESHOLD).trimEnd()}\n...`
+      : text;
+
+  return (
+    <div
+      style={{
+        alignSelf: 'flex-end',
+        maxWidth: '100%',
+        padding: '10px 14px',
+        borderRadius: 22,
+        background: '#171717',
+        color: '#fff',
+      }}
+    >
+      <div style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
+        {visibleText}
+      </div>
+      {shouldCollapse ? (
+        <Button
+          type="link"
+          size="small"
+          onClick={() => setExpanded((current) => !current)}
+          style={{
+            height: 'auto',
+            padding: '8px 0 0',
+            color: '#fff',
+          }}
+        >
+          {expanded ? '收起' : '更多'}
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+export const ChatMessageContent = memo(function ChatMessageContent({
+  message,
+  toolSummaries,
+  conversationId,
+}: {
+  message: ChatMessage;
+  /**
+   * 工具摘要列表（用于把 toolCall.name 解析为 displayName）
+   * 对齐 E:\ai_fr\components\chat-message-content.tsx ChatMessageContentInner
+   * 调用方传入（参考 chat-shell.tsx L2684-2738 传 config?.tools）
+   */
+  toolSummaries?: ToolSummary[];
+  /**
+   * ★ P6 当前会话 ID（用于附件图片异步 file:read 时的前缀校验）
+   * 来自 ChatArea 传入,缺失时降级：仅使用已有 previewUrl/storageKey fallback
+   */
+  conversationId?: string | null;
+}) {
+  // ★ P6 异步获取图片 attachment 的 blob URL
+  //   历史消息的图片 attachment 没有 previewUrl 字段,需要从主进程 readFile 后 URL.createObjectURL
+  //   - 已有 previewUrl 的不重复请求
+  //   - 非图片不处理
+  //   - 组件卸载时 revoke 所有由本组件创建的 blob URL
+  const imageAttachments: ChatAttachment[] = useMemo(() => {
+    if (message.role !== 'user') return [];
+    const attachments = message.attachments ?? [];
+    return attachments.filter((att) => isImageContentType(att.contentType));
+  }, [message]);
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    for (const att of imageAttachments) {
+      const existing = (att as ChatAttachment & { previewUrl?: string }).previewUrl;
+      if (existing) {
+        next[att.storageKey] = existing;
+      }
+    }
+    // ★ Phase 3 P3-2 合并语义：异步获取的 previewUrl 不能被同步覆盖清空
+    setPreviewUrls((prev) => ({ ...prev, ...next }));
+  }, [imageAttachments]);
+  useEffect(() => {
+    if (!conversationId || imageAttachments.length === 0) {
+      return;
+    }
+    if (!window.electronAPI?.file?.read) {
+      return;
+    }
+    const needed = imageAttachments.filter(
+      (att) => !previewUrls[att.storageKey],
+    );
+    if (needed.length === 0) {
+      return;
+    }
+    let cancelled = false;
+    const localCreated: string[] = [];
+    (async () => {
+      for (const att of needed) {
+        if (cancelled) return;
+        try {
+          const result = await window.electronAPI.file.read({
+            conversationId,
+            storageKey: att.storageKey,
+          });
+          if (cancelled) return;
+          const blob = new Blob([result.data], { type: att.contentType });
+          const url = URL.createObjectURL(blob);
+          localCreated.push(url);
+          setPreviewUrls((prev) => ({ ...prev, [att.storageKey]: url }));
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.warn('[ChatMessageContent] preview read failed:', err);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      for (const url of localCreated) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          // ignore
+        }
+      }
+    };
+    // previewUrls 变化会触发 effect 重跑,需要靠 cancelled 标志阻止重复
+  }, [conversationId, imageAttachments, previewUrls]);
+
+  // 用户消息
+  if (message.role === 'user') {
+    // ★ P6 历史消息附件回显：从 message.attachments 读取附件列表
+    //   来源：本地乐观插入（useChat.sendMessage）+ chat:user-message-created 替换
+    //        + conv:get-messages 从 SQLite 读出（由 listRendererMessages 填入）
+    const rawAttachments: ChatAttachment[] = message.attachments ?? [];
+    // ★ P6 用异步获取的 previewUrls 覆盖到 attachments
+    const attachments: ChatAttachment[] = rawAttachments.map((att) => {
+      const url = previewUrls[att.storageKey];
+      if (url) {
+        return { ...att, previewUrl: url } as ChatAttachment & { previewUrl?: string };
+      }
+      return att;
+    });
+    const text = message.content || '';
+
+    // 渲染附件区域(Image.PreviewGroup + FileOutlined 文件条)
+    const attachmentContent = renderUserAttachments(attachments);
+
+    // 情况 1：仅附件无文本 → 仅显示附件（对齐 ai_fr，不渲染摘要气泡）
+    if (!text && attachments.length > 0) {
+      return (
+        <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
+          {attachmentContent}
+        </Flex>
+      );
+    }
+
+    // 情况 2：文本 + 附件 → 显示附件 + 文本（对齐 ai_fr，不渲染摘要气泡）
+    if (text && attachmentContent) {
+      return (
+        <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
+          {attachmentContent}
+          <UserTextBubble text={text} />
+        </Flex>
+      );
+    }
+
+    // 情况 3：仅文本
+    if (text) {
+      return (
+        <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
+          <UserTextBubble text={text} />
+        </Flex>
+      );
+    }
+
+    // 兜底：空消息
+    return (
+      <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
+        <UserTextBubble text="[空消息]" />
+      </Flex>
+    );
+  }
+
+  // 工具消息
+  if (message.role === 'tool') {
+    const toolInfo = message.toolCall;
+    if (!toolInfo) {
+      return null;
+    }
+    const isExecutorResult =
+      message.source === 'executor' || isDelegatedExecutorToolCall(toolInfo);
+    // 优先使用 ThoughtChain 渲染（更丰富的展示：执行耗时 + 思考/进度分离）
+    // 若结构化字段缺失则退回 ToolCallCard 兜底
+    if (toolInfo.startedAt || toolInfo.finishedAt) {
+      return renderToolResultSegment(
+        message.id,
+        toolInfo,
+        message.status === 'loading',
+        message.createdAt,
+        toolSummaries,
+        { includeStructuredFilePreview: !isExecutorResult, thinkingText: message.thinking },
+      );
+    }
+    return <ToolCallCard toolCall={toolInfo} />;
+  }
+
+  // 助理消息
+  // ============================================================
+  // Phase 3 P3-2 空泡过滤：finishReason='tool_calls' + content='\n\n' + reasoning 空时不渲染
+  // 对齐 E:\ai_fr chat-shell.tsx L2355-2362
+  // 由 lib/message-filter.ts 的 isEmptyAssistantBubble 实现
+  // ============================================================
+  if (isEmptyAssistantBubble(message)) {
+    return null;
+  }
+
+  const content = message.content || '';
+  const thinking = message.thinking || '';
+  const toolCalls = message.toolCalls || [];
+
+  if (
+    !content.trim() &&
+    !thinking.trim() &&
+    toolCalls.length > 0 &&
+    toolCalls.every(isDelegatedExecutorToolCall)
+  ) {
+    return null;
+  }
+
+  const segments = message.segments?.length
+    ? message.segments
+    : buildLegacySegments(thinking, toolCalls);
+
+  // 加载中且无内容时显示 spinner
+  if (
+    !content &&
+    segments.length === 0 &&
+    message.status === 'loading'
+  ) {
+    return <Spin size="small" />;
+  }
+
+  return (
+    <Space direction="vertical" size="small" style={{ width: '100%' }}>
+      {segments.map((segment, index) => {
+        if (segment.type === 'reasoning') {
+          const text = segment.text.trim();
+
+          if (!text) {
+            return null;
+          }
+
+          const isActive =
+            message.status === 'loading' && index === segments.length - 1;
+
+          return (
+            <Think
+              key={`${segment.id}-${isActive ? 'active' : 'done'}`}
+              title={isActive ? '思考中' : '思考过程'}
+              loading={isActive}
+              defaultExpanded={isActive}
+            >
+              <RichMarkdown content={text} />
+            </Think>
+          );
+        }
+
+        const toolCall = toolCalls.find(
+          (item) => item.callId === segment.toolCallId,
+        );
+
+        if (!toolCall) {
+          return null;
+        }
+
+        if (isDelegatedExecutorToolCall(toolCall)) {
+          return null;
+        }
+
+        if (message.status !== 'loading') {
+          return null;
+        }
+
+        const isLoading = index === segments.length - 1;
+
+        return (
+          <div key={segment.id}>
+            {renderToolCallSegment(toolCall, isLoading, toolSummaries)}
+          </div>
+        );
+      })}
+
+      {content ? (
+        <RichMarkdown content={content} />
+      ) : null}
+    </Space>
+  );
+});

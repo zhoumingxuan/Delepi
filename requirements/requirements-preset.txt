@@ -1,0 +1,31 @@
+# Delepi 预置 Python 环境依赖清单（内置 Python 3.14.6 预置环境）
+# 与 scripts/build-preset-python.ts 的 PRESET_PACKAGES 常量保持一致（14 包，顺序一致）
+# 安装方式：pip install -r requirements-preset.txt
+# 说明：TCP/UDP 通信由 Python 标准库 socket 支持，无需第三方包
+#
+# ---- PDF 读写 ----
+pdfplumber>=0.11.0
+PyPDF2>=3.0.0
+# ---- Word 读写 ----
+python-docx>=1.1.0
+# ---- Excel/CSV 读写（openpyxl 同时覆盖 Excel 和 CSV 读写）----
+openpyxl>=3.1.0
+# ---- 折线图（画图/曲线图渲染）----
+matplotlib>=3.9.0
+# ---- HTTP 客户端 ----
+requests>=2.32.0
+httpx>=0.27.0
+# ---- 图像处理（matplotlib 依赖，且 PDF 处理需要）----
+Pillow>=10.4.0
+# ---- 数据处理基础库（被多个上层包依赖）----
+numpy>=2.1.0
+# ---- PPT 读写 ----
+python-pptx>=0.6.23
+# ---- SSH ----
+paramiko>=2.11
+# ---- 组织架构图（配合 matplotlib 渲染，不使用需系统二进制的 graphviz）----
+networkx>=3.0
+# ---- 报表读写 ----
+pandas>=1.5
+# ---- 报表导出（Excel 写出）----
+xlsxwriter>=3.0

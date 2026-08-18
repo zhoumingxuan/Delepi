@@ -1,0 +1,38 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+release/
+.smoke-compiled/
+/conversations/
+/bin/
+/resources/*
+/scripts/*
+
+# Database
+data/*.db
+data/*.db-wal
+data/*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+
+# Logs
+*.log
+# Delepi runtime & build artifacts (appended)
+data/
+pack_log.txt
+.deps_migrated
+deps-installed.json
