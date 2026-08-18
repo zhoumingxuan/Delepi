@@ -45,15 +45,15 @@ export interface StreamChatOptions {
 }
 
 /**
- * 调用点思考意图（唯一思考意图通道；各调用点按机制基准硬编码，不支持 per-call 配置）：
+ * 调用点思考意图（唯一思考意图通道；子智能体档位已配置化，其余调用点按机制基准硬编码）：
  * - 不传（undefined）：零思考参数（主智能体——请求不携带任何思考键）
- * - { reasoningEffort: 'max' }：子智能体；{ reasoningEffort: 'low' }：标题生成
+ * - { reasoningEffort: 'low' | 'high' | 'max' }：子智能体（档位读 AppSettings.executorThinkingLevel，默认 'max'）；{ reasoningEffort: 'low' }：标题生成
  * - { enableThinking: true, reasoningEffort: 'low' }：上下文压缩·glm*（glm 判定在调用点）
  * - { enableThinking: false }：上下文压缩·非 glm*、图片识别
  * 翻译收口：本文件 buildThinkingParams（enableThinking→enable_thinking，reasoningEffort→reasoning_effort）
  */
 export type ThinkingIntent =
-  | { reasoningEffort: 'low' | 'max' }
+  | { reasoningEffort: 'low' | 'high' | 'max' }
   | { enableThinking: true; reasoningEffort: 'low' }
   | { enableThinking: false; reasoningEffort?: never };
 
@@ -66,7 +66,7 @@ export interface NonStreamChatOptions {
   tools?: OpenAI.Chat.ChatCompletionTool[];
   /** 中止信号 */
   signal?: AbortSignal;
-  /** 思考意图（不传=零思考参数；各调用点按机制基准硬编码） */
+  /** 思考意图（不传=零思考参数；子智能体档位读配置，其余调用点按机制基准硬编码） */
   thinking?: ThinkingIntent;
 }
 
@@ -144,11 +144,11 @@ function getOpenAIClient(modelConfig: ModelConfig): OpenAI {
  */
 function buildThinkingParams(intent?: ThinkingIntent): {
   enable_thinking?: boolean;
-  reasoning_effort?: 'low' | 'max';
+  reasoning_effort?: 'low' | 'high' | 'max';
 } {
   const params: {
     enable_thinking?: boolean;
-    reasoning_effort?: 'low' | 'max';
+    reasoning_effort?: 'low' | 'high' | 'max';
   } = {};
 
   if (!intent) {
@@ -412,7 +412,7 @@ async function nonStreamChatOnce(
     reasoning_split: true,
   } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
     enable_thinking?: boolean;
-    reasoning_effort?: 'low' | 'max';
+    reasoning_effort?: 'low' | 'high' | 'max';
     reasoning_split?: boolean;
   };
 

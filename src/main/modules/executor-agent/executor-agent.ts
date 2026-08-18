@@ -19,6 +19,7 @@ import type OpenAI from 'openai';
 
 import { nonStreamChat } from '../llm/openai-client';
 import { isModelApiAbortError } from '../llm/model-retry';
+import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
 import { buildExecutorSystemPrompt } from './executor-system-prompt';
 import {
@@ -437,7 +438,6 @@ function buildOutputDirectoryText(outputDir: string | undefined): string | undef
   return [
     `- 【输出目录】：${outputDir}`,
     '- 需要作为独立文件交付的文件、图片、方案、详细规划和关键材料必须写入该目录。',
-    '- 报告交付只需要按最终输出协议写入报告文件并由系统读取内容，不需要复制到该目录。',
     '- 如果任务要求在用户指定项目或工作区内生成、修改文件，则按任务要求写入原项目路径，不要改放到该目录。',
   ].join('\n');
 }
@@ -805,7 +805,8 @@ async function completeExecutorTurn(options: {
     messages: options.messages,
     tools: options.tools.length ? options.tools : undefined,
     signal: options.signal,
-    thinking: { reasoningEffort: 'max' }
+    // 思考档位配置化：读 AppSettings.executorThinkingLevel（默认 'max'），默认行为与原硬编码一致
+    thinking: { reasoningEffort: configManager.getSettings().executorThinkingLevel }
   });
 
   return result.assistantMessage;
@@ -902,7 +903,10 @@ export async function runDelegatedTask(
 
   // 获取工具定义
   // 复用 executor-registry.getExecutorOpenAITools() 构建 OpenAI 工具声明（消除 8 行重复）
-  const executorTools = getExecutorOpenAITools();
+  // 视觉识别总开关关闭时仅保留 run_exe / run_with_python（声明层过滤；执行层拦截见 executor-registry.executeToolCall）
+  const executorTools = getExecutorOpenAITools(
+    configManager.getSettings().visionEnabled ? undefined : ['run_exe', 'run_with_python'],
+  );
 
   // 读取工作流模板
   const workflowTemplates = await readWorkflowTemplates(parsedInput.skillTags);

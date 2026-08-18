@@ -18,11 +18,13 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   executorModelBaseUrl: '',
   executorModelApiKey: '',
   executorModelName: '',
+  executorThinkingLevel: 'max',
 
   // 视觉模型
   visionLlmApiKey: '',
   visionLlmBaseUrl: '',
   visionLlmModel: '',
+  visionEnabled: true,
   useBuiltinPython: true,
   customPythonPath: '',
 

@@ -18,11 +18,15 @@ export interface AppSettings {
   executorModelBaseUrl: string;
   executorModelApiKey: string;
   executorModelName: string;
+  /** 执行子智能体思考程度（默认 'max'；档位对齐 openai-client ThinkingIntent 的 'low'|'high'|'max'，不含 medium） */
+  executorThinkingLevel: 'low' | 'high' | 'max';
 
   // 视觉模型
   visionLlmApiKey: string;
   visionLlmBaseUrl: string;
   visionLlmModel: string;
+  /** 视觉识别总开关（默认 true）：关闭时 inspect_image 工具禁用，主智能体多模态同步关闭 */
+  visionEnabled: boolean;
   /** 是否使用内置Python环境（默认 true）。
    *  true: 使用内置 embeddable Python 3.14.6
    *  false: 使用自定义 Python 环境 */

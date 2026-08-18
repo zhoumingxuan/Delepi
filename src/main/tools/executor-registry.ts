@@ -7,6 +7,7 @@ import {
 } from './runtime-context';
 import { ensureErrorMessage } from '../utils/index';
 import { EXECUTOR_TOOLS } from '../modules/executor-agent/prompt';
+import { configManager } from '../modules/config/config-manager';
 
 type ToolSchema = Record<string, unknown>;
 
@@ -137,6 +138,15 @@ export async function executeToolCall(
       success: false,
       code: 'TOOL_NOT_FOUND',
       message: `未找到工具 ${normalizedToolName}。可用工具：${availableToolNames}`,
+    }, toolCallId);
+  }
+
+  // 视觉识别总开关关闭时拒绝执行 inspect_image（执行层拦截；声明层过滤见 executor-agent.ts runDelegatedTask）
+  if (normalizedToolName === 'inspect_image' && !configManager.getSettings().visionEnabled) {
+    return buildSimpleToolResult({
+      success: false,
+      code: 'TOOL_DISABLED_VISION_OFF',
+      message: `视觉识别已关闭，${normalizedToolName} 工具不可用。请在设置中开启视觉识别后重试。`,
     }, toolCallId);
   }
 

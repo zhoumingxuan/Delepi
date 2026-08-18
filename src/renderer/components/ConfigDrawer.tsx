@@ -18,6 +18,7 @@ import {
   Flex,
   Form,
   Input,
+  Radio,
   Switch,
   Tabs,
   Typography,
@@ -64,6 +65,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const { token } = antdTheme.useToken();
   const { message: antdMessage } = AntApp.useApp();
   const [form] = Form.useForm<AppSettings>();
+
+  // 视觉模型三字段是否未配置（用于视觉识别开关旁轻量提示）
+  const visionLlmUnconfigured = !config.visionLlmBaseUrl
+    || !config.visionLlmApiKey
+    || !config.visionLlmModel;
 
   const calcDrawerWidth = useCallback(() => {
     const w = window.innerWidth;
@@ -185,8 +191,16 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       />
                     </Form.Item>
 
-                    <Form.Item label={<span style={{ color: token.colorTextSecondary, fontSize: 13 }}>支持多模态协议</span>} name="mainModelMultimodal" valuePropName="checked">
-                      <Switch onChange={(value) => onSave('mainModelMultimodal', value)} />
+                    <Form.Item
+                      label={<span style={{ color: token.colorTextSecondary, fontSize: 13 }}>支持多模态协议</span>}
+                      name="mainModelMultimodal"
+                      valuePropName="checked"
+                      extra={!config.visionEnabled ? '视觉识别已关闭，此开关暂不生效' : undefined}
+                    >
+                      <Switch
+                        disabled={!config.visionEnabled}
+                        onChange={(value) => onSave('mainModelMultimodal', value)}
+                      />
                     </Form.Item>
                   </div>
 
@@ -225,6 +239,29 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         onBlur={() => handleSave('executorModelName')}
                       />
                     </Form.Item>
+
+                    <Form.Item
+                      label={<span style={{ color: token.colorTextSecondary, fontSize: 13 }}>思考程度</span>}
+                      name="executorThinkingLevel"
+                    >
+                      <Radio.Group
+                        onChange={(e) => onSave('executorThinkingLevel', e.target.value)}
+                        style={{ display: 'flex', gap: 16 }}
+                      >
+                        <Radio value="low">
+                          <span style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>低</span>
+                          <span style={{ fontSize: 12, color: token.colorTextSecondary, marginLeft: 8 }}>更快响应</span>
+                        </Radio>
+                        <Radio value="high">
+                          <span style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>高</span>
+                          <span style={{ fontSize: 12, color: token.colorTextSecondary, marginLeft: 8 }}>均衡推理</span>
+                        </Radio>
+                        <Radio value="max">
+                          <span style={{ fontSize: 13, fontWeight: 500, color: token.colorText }}>最大</span>
+                          <span style={{ fontSize: 12, color: token.colorTextSecondary, marginLeft: 8 }}>深度推理（默认）</span>
+                        </Radio>
+                      </Radio.Group>
+                    </Form.Item>
                   </div>
 
                   {/* 视觉识别配置 */}
@@ -242,8 +279,25 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       </Flex>
                     </Typography.Title>
 
+                    <Form.Item
+                      label={<span style={{ color: token.colorTextSecondary, fontSize: 13 }}>启用视觉识别</span>}
+                      name="visionEnabled"
+                      valuePropName="checked"
+                      extra={visionLlmUnconfigured ? '视觉模型 API 未配置，图片识别会报错' : undefined}
+                    >
+                      <Switch
+                        onChange={(value) => {
+                          if (value) {
+                            antdMessage.info('开启视觉识别需配置模型 API，否则图片识别会报错');
+                          }
+                          onSave('visionEnabled', value);
+                        }}
+                      />
+                    </Form.Item>
+
                     <Form.Item label={<span style={{ color: token.colorTextSecondary, fontSize: 13 }}>Base URL</span>} name="visionLlmBaseUrl">
                       <Input
+                        disabled={configLoading || !config.visionEnabled}
                         placeholder="https://api.example.com/v1"
                         onBlur={() => handleSave('visionLlmBaseUrl')}
                       />
@@ -251,6 +305,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
 
                     <Form.Item label={<span style={{ color: token.colorTextSecondary, fontSize: 13 }}>API Key</span>} name="visionLlmApiKey">
                       <Input.Password
+                        disabled={configLoading || !config.visionEnabled}
                         placeholder="sk-..."
                         onBlur={() => handleSave('visionLlmApiKey')}
                       />
@@ -258,6 +313,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
 
                     <Form.Item label={<span style={{ color: token.colorTextSecondary, fontSize: 13 }}>模型名称</span>} name="visionLlmModel">
                       <Input
+                        disabled={configLoading || !config.visionEnabled}
                         placeholder="选择模型"
                         onBlur={() => handleSave('visionLlmModel')}
                       />
