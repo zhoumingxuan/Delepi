@@ -10,7 +10,7 @@
     "preview": "vite preview",
     "lint": "eslint src/ --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
-    "postinstall": "node scripts/postinstall.cjs",
+    "postinstall": "node scripts/postinstall.cjs && electron-builder install-app-deps",
     "pack": "electron-builder",
     "build:preset-python": "npx tsx scripts/build-preset-python.ts",
     "prepack": "npm run build:preset-python"

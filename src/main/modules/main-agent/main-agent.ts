@@ -821,7 +821,15 @@ export async function runMainAgent(
                 'utf-8',
               ),
             )
-            .catch(() => { /* 静默忽略 */ });
+            .catch((error: unknown) => {
+              // ★ BUG-3：快照落盘失败不再静默吞错——结构化日志（conversationId/toolCallId/error）
+              //   保持 fire-and-forget 语义不变：仅记录，不重试、不改变推送协议
+              console.error('[main-agent] writeSnapshot failed', {
+                conversationId,
+                toolCallId: payload.toolCall.toolCallId,
+                error,
+              });
+            });
         };
 
         /**

@@ -778,6 +778,24 @@ export function useChat(options?: UseChatOptions) {
    */
   const scheduleConversationNavigationReloadTimeoutRef = useRef<number | null>(null);
 
+  /**
+   * ★ BUG-1（激活对账）三重去重状态：
+   * - fingerprint：上次对账触发时活跃会话的列表指纹（conversationId|isRunning|updatedAt），未变则跳过
+   * - lastAt：上次对账触发时间戳（激活对账最小间隔 ≥2s 节流）
+   * - inFlight：激活对账进行中标记（同一会话进行中的对账加载未完成不重复发起）
+   */
+  const activationReconcileStateRef = useRef({
+    fingerprint: '',
+    lastAt: 0,
+    inFlight: false,
+  });
+  /**
+   * ★ BUG-1：会话列表镜像 ref——激活监听闭包内读取最新列表（isRunning/updatedAt 指纹来源）
+   *   渲染期同步模式对齐 messageApiRef，避免闭包过期
+   */
+  const conversationsRef = useRef<ConversationListItem[]>(conversations);
+  conversationsRef.current = conversations;
+
   // ============================================================
   // Phase 3 P1 + P3 适配层状态
   // ============================================================
@@ -1036,8 +1054,9 @@ export function useChat(options?: UseChatOptions) {
           //   覆盖式恢复（对齐 ai_fr 覆盖式 setToolSnapshots），不保留旧状态
           const restoredSnapshots: Record<string, ToolSnapshot> = {};
           snapshots.forEach((message) => {
+            // ★ BUG-7：恢复兜底键按条目唯一化（原固定 'snapshot-unknown' 会使多张未知快照同键互相覆盖）
             const callId = getToolCallIdFromPayload(message.payload)
-              ?? `snapshot-unknown`;
+              ?? `snapshot-${message.id}`;
             const converted = snapshotMessageToToolSnapshot(message, id, callId);
             if (converted) {
               restoredSnapshots[converted.taskId] = converted;
@@ -1601,13 +1620,14 @@ export function useChat(options?: UseChatOptions) {
       if (data.conversationId === conversationIdRef.current) {
         assistantMessageIdRef.current = null;
       }
-//      // ★ P1-E2：throw + messageApi.error 路径
-//      //   对齐 E:\ai_fr chat-shell.tsx L824/867/1167 等多处 messageApi.error(ensureErrorMessage(error))
-//      //   messageApi 已注入时调用顶部 toast；未注入时退回 setError 显示底部固定错误条
-//      const errMsg = data.error || '对话出错';
-//      if (messageApiRef.current) {
-//        messageApiRef.current.error(errMsg);
-//      }
+      // ★ P1-E2：throw + messageApi.error 路径
+      //   对齐 E:\ai_fr chat-shell.tsx L824/867/1167 等多处 messageApi.error(ensureErrorMessage(error))
+      //   messageApi 已注入时调用顶部 toast；未注入时退回 setError 显示底部固定错误条
+      // ★ BUG-5：恢复用户可见错误提示（原整段被注释导致错误静默，用户误以为还在跑）
+      const errMsg = data.error || '对话出错';
+      if (messageApiRef.current) {
+        messageApiRef.current.error(errMsg);
+      }
     });
     cleanups.push(unsubError);
 
@@ -2092,6 +2112,62 @@ export function useChat(options?: UseChatOptions) {
 
     void init();
   }, [loadConversations, switchConversation]);
+
+  // ============================================================
+  // ★ BUG-1：窗口/页面激活对账（visibilitychange + focus 双入口）
+  //   IPC 事件丢失/订阅时序空窗导致前端停留旧态时的兜底：激活即对当前活跃会话
+  //   做一次幂等对账（严禁无条件全量重载、严禁与 streaming 竞争的直写 setMessages）：
+  //   - 消息对账走 loadConversationMessages(id, { silent: true })，复用其内部
+  //     P1-C2 loadSeq 串行化 + conversationIdRef 闭包守卫（原有守卫链，不另起炉灶）
+  //   - 同步刷新会话列表 loadConversations()（isRunning/updatedAt 指纹来源）
+  //   防重复三重去重：
+  //   ① 状态指纹：活跃会话列表 isRunning/updatedAt 与上次对账触发时一致 → 跳过
+  //   ② 最小间隔节流：距上次对账触发 <2s → 跳过
+  //   ③ in-flight 去重：上次激活对账加载未完成 → 跳过
+  // ============================================================
+  useEffect(() => {
+    const ACTIVATION_RECONCILE_MIN_INTERVAL_MS = 2000;
+    const reconcileOnActivate = () => {
+      const state = activationReconcileStateRef.current;
+      // 去重②：激活对账最小间隔节流（≥2s）
+      if (Date.now() - state.lastAt < ACTIVATION_RECONCILE_MIN_INTERVAL_MS) return;
+      // 去重③：in-flight 去重——同一会话进行中的对账未完成不重复发起
+      if (state.inFlight) return;
+      const conversationId = conversationIdRef.current;
+      // 去重①：状态指纹——活跃会话 isRunning/updatedAt 未变则跳过
+      const activeConversation = conversationId
+        ? conversationsRef.current.find((c) => c.id === conversationId)
+        : undefined;
+      const fingerprint = activeConversation
+        ? `${conversationId}|${String(activeConversation.isRunning)}|${String(activeConversation.updatedAt)}`
+        : 'no-active-conversation';
+      if (fingerprint === state.fingerprint) return;
+      state.fingerprint = fingerprint;
+      state.lastAt = Date.now();
+      state.inFlight = true;
+      // 会话列表刷新（列表态对账 + 下次激活指纹来源）
+      void loadConversations();
+      if (!conversationId) {
+        state.inFlight = false;
+        return;
+      }
+      // 幂等对账：复用 loadConversationMessages 守卫链（loadSeq 串行化 + conversationIdRef 守卫）
+      loadConversationMessages(conversationId, { silent: true })
+        .catch(() => undefined)
+        .finally(() => {
+          activationReconcileStateRef.current.inFlight = false;
+        });
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') reconcileOnActivate();
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('focus', reconcileOnActivate);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('focus', reconcileOnActivate);
+    };
+  }, [loadConversationMessages, loadConversations]);
 
   // ★ P1-C2：组件卸载时清理 200ms 节流定时器，避免内存泄漏
   useEffect(() => {
