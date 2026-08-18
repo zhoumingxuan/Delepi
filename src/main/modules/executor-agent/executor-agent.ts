@@ -183,7 +183,7 @@ function normalizeTaskTags(value: unknown): TaskTag[] {
 function normalizeExpectedDeliveryType(value: unknown): ExecutorDeliveryType | '' {
   const text = normalizeString(value);
   const mapped =
-    text === '结论'
+    text === '结论' || text === '独立结论'
       ? '权威结论'
       : text === '线索' || text === '独立线索'
         ? '线索集合'
@@ -192,6 +192,17 @@ function normalizeExpectedDeliveryType(value: unknown): ExecutorDeliveryType | '
   return EXECUTOR_DELIVERY_TYPE_SET.has(mapped)
     ? mapped as ExecutorDeliveryType
     : '';
+}
+function normalizeTaskTarget(value: DelegateExecutorInput): unknown {
+  const tasktarget = normalizeString(value.tasktarget);
+
+  // 兼容映射：tasktarget 缺失或为空但 target 非空时，将 target 的值映射为 tasktarget
+  const mapped =
+    !tasktarget && normalizeString((value as Record<string, unknown>).target)
+      ? (value as Record<string, unknown>).target
+      : value.tasktarget;
+
+  return mapped;
 }
 
 function collectExpectedDelivery(value: DelegateExecutorInput): ExpectedDelivery | null {
@@ -273,6 +284,9 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
   }
 
   const parsed = rawParsed as DelegateExecutorInput;
+
+  parsed.tasktarget = normalizeTaskTarget(parsed);
+
   const issues = collectDelegateExecutorInputIssues(parsed);
 
   const taskName = normalizeString(parsed.taskname);
