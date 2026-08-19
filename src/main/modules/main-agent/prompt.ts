@@ -53,7 +53,7 @@ function buildDelegateToolParameters(): ToolSchema {
         type: 'string',
         description: '精简且严谨的任务中文名称',
       },
-      tasktype: {
+      task_type: {
         type: 'string',
         enum: TASK_TYPE_VALUES,
         description:
@@ -74,13 +74,13 @@ function buildDelegateToolParameters(): ToolSchema {
             '单条原子【任务规则和约束】，必须写清【约束对象、规则对象以及严谨的判定条件】',
         },
       },
-      deliverytype: {
+      delivery_type: {
         type: 'string',
         enum: EXECUTOR_DELIVERY_TYPES,
         description:
           '交付物类型',
       },
-      deliveryspec: {
+      delivery_spec: {
         type: 'string',
         description:
           '交付物描述，必须写清内容范围、粒度要求和格式限定。',
@@ -107,11 +107,11 @@ function buildDelegateToolParameters(): ToolSchema {
     },
     required: [
       'taskname',
-      'tasktype',
+      'task_type',
       'tasktarget',
       'constraints',
-      'deliverytype',
-      'deliveryspec',
+      'delivery_type',
+      'delivery_spec',
       'context',
       'skills',
     ],

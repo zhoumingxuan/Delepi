@@ -96,12 +96,22 @@ export function isConversationUploadStorageKey(
   conversationId: string,
   storageKey: string,
 ): boolean {
-  return normalizeStorageKey(storageKey).startsWith(
+  const normalized = normalizeStorageKey(storageKey);
+  // 兼容绝对路径输入（message 附件持久化为绝对路径）：剥离客户端 bin 前缀后再校验
+  const binPrefix = `${normalizeStorageKey(resolveClientBinDir())}/`;
+  const relativeKey = normalized.startsWith(binPrefix)
+    ? normalized.slice(binPrefix.length)
+    : normalized;
+  return relativeKey.startsWith(
     `${CONVERSATIONS_DIR_NAME}/${conversationId}/${UPLOADS_DIR_NAME}/`,
   );
 }
 
 export function resolveStoragePath(storageKey: string): string {
+  // 兼容绝对路径输入（message 附件持久化为绝对路径后直接返回，不再拼接 bin）
+  if (path.isAbsolute(storageKey)) {
+    return storageKey;
+  }
   const normalizedStorageKey = normalizeStorageKey(storageKey);
   return path.join(resolveClientBinDir(), normalizedStorageKey);
 }

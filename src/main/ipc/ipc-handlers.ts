@@ -44,6 +44,7 @@ import {
   createConversation as createConversationRecord,
   deleteConversation as deleteConversationRecord,
   ensureConversation,
+  getConversationById,
   listConversations,
   listRendererMessages,
   saveSetting,
@@ -124,7 +125,9 @@ function resolveLocalOpenPath(target: unknown): string {
     return path.resolve(trimmed);
   }
 
-  throw new Error('仅支持本地文件链接');
+  // 兼容相对 storageKey（如 conversations/{id}/uploads/{fileId}.ext）：
+  // 乐观插入/历史消息中 attachment.storageKey 可能为相对路径，按存储 key 解析到客户端 bin 目录
+  return resolveStoragePath(trimmed);
 }
 
 function fileInputToBuffer(file: {
@@ -212,14 +215,14 @@ async function persistUploadedFiles(
       : 'application/octet-stream';
 
     // chat:send 直接使用已通过 file:upload 落盘的 uploads storageKey 组装元数据（不再前置校验磁盘归属与存在性）。
+    // storageKey 经 resolveStoragePath 绝对化后写入 message（与 file:upload 实际落盘路径指向同一文件）
     if (file.storageKey) {
-      const normalizedKey = normalizeStorageKey(file.storageKey);
       uploadedFiles.push({
         id: file.id || uuidv4(),
         name: originalName,
         size: typeof file.size === 'number' ? file.size : 0,
         contentType,
-        storageKey: normalizedKey,
+        storageKey: resolveStoragePath(file.storageKey),
         uploadedAt: new Date().toISOString(),
       });
       continue;
@@ -621,7 +624,11 @@ async function loadSnapshotMessages(
         .map((message) => message.toolCall?.callId)
         .filter((v): v is string => typeof v === 'string' && !!v),
     );
-    const snapshotMessages = await loadSnapshotMessages(conversationId, existingToolCallIds);
+    // 仅当会话运行中（is_running=true）才加载快照消息；is_running=false 时永不读取 tasks/*/snapshot.json
+    const conversation = getConversationById(conversationId);
+    const snapshotMessages = conversation?.isRunning
+      ? await loadSnapshotMessages(conversationId, existingToolCallIds)
+      : [];
 
     return {
       messages: list,

@@ -52,24 +52,13 @@ export interface UseFileUploadReturn {
   removePendingFile: (localKey: string) => void;
   clearPendingFiles: () => void;
   /**
-   * P7 切换会话：仅清空本地 pendingFiles state，**不**触发 file:delete（保留磁盘文件供后续会话使用）
+   * P7 切换会话：仅清空本地 pendingFiles state，**不**触发 file:delete（保留磁盘文件）
    * 用于切会话时的清理：避免清空时误删磁盘文件，也避免 new conversation 看到旧 session 的待发送文件
    * 与 clearPendingFiles 的差异：
    * - clearPendingFiles: 卸载/发送后清理，对已上传文件触发 file:delete
-   * - clearLocalOnly: 切会话时清理，仅清 state,磁盘文件保留供切回后用 loadPendingFiles 拉回
+   * - clearLocalOnly: 切会话时清理，仅清本地 state，不触发 file:delete（磁盘文件保留）
    */
   clearLocalOnly: () => void;
-  /**
-   * P7 切换会话：从主进程拉回指定会话的待发送文件并重建 ObjectURL 预览
-   * 调用链：file:list{conversationId} → file:read{conversationId, storageKey} → URL.createObjectURL
-   * 重建的 UploadPendingFile:
-   * - uploadStatus: 'uploaded'（磁盘已存在,无需重新上传）
-   * - previewUrl: Blob URL（图片可见,文件无预览）
-   * - localKey: `${storageKey}-${timestamp}`（确保唯一）
-   * - file: 伪 File 对象（new File([], name)）,用于 SenderBox 渲染兼容
-   * 注:调用方应先 clearLocalOnly 清空本地 state 再 loadPendingFiles,避免旧会话残留
-   */
-  loadPendingFiles: (conversationId: string) => Promise<void>;
   pendingFilesRef: React.MutableRefObject<UploadPendingFile[]>;
   /** 当前正在上传的文件数量（P3-1 守卫 4 使用） */
   uploadingCount: number;
@@ -421,7 +410,7 @@ export function useFileUpload(): UseFileUploadReturn {
 
   /**
    * P7 切换会话：仅清空本地 state,不触发 file:delete
-   * 与 clearPendingFiles 的区别：磁盘文件保留,供切回后 loadPendingFiles 拉回重建预览
+   * 与 clearPendingFiles 的区别：仅清本地 state，磁盘文件保留
    */
   const clearLocalOnly = useCallback(() => {
     for (const item of pendingFilesRef.current) {
@@ -434,92 +423,6 @@ export function useFileUpload(): UseFileUploadReturn {
       }
     }
     setPendingFiles([]);
-  }, []);
-
-  /**
-   * P7 切换会话：从主进程拉回指定会话的待发送文件并重建 ObjectURL 预览
-   * - 调用 file:list 拿到 ChatUploadedFile[] 元数据
-   * - 对每个文件调 file:read 拿 ArrayBuffer
-   * - new Blob([data], { type: contentType }) → URL.createObjectURL 重建预览
-   * - 构造 UploadPendingFile 推入 pendingFiles（uploadStatus='uploaded'）
-   *
-   * 重要：
-   * - 调用方应先 clearLocalOnly 清空本地 state(否则新文件 append 到旧 state)
-   * - 该函数是 idempotent 的:同一会话多次调用,结果相同
-   * - 若该会话无已上传文件,则清空后保留空数组
-   *
-   * 实现要点：
-   * - 使用 pendingFilesRef.current 在 setPendingFiles 回调中读取最新 state
-   * - 异步 file:read 失败时,跳过该文件(不阻塞其他文件拉回)
-   */
-  const loadPendingFiles = useCallback(async (conversationId: string) => {
-    if (!window.electronAPI?.file?.list || !window.electronAPI?.file?.read) {
-      return;
-    }
-    try {
-      const listResult = await window.electronAPI.file.list({ conversationId });
-      const remoteFiles = listResult?.files ?? [];
-      if (remoteFiles.length === 0) {
-        return;
-      }
-
-      // 并发读取所有文件的二进制内容
-      const readResults = await Promise.all(
-        remoteFiles.map(async (file) => {
-          try {
-            const readResult = await window.electronAPI.file.read({
-              conversationId,
-              storageKey: file.storageKey,
-            });
-            return { file, readResult };
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn('[useFileUpload] loadPendingFiles read failed:', err);
-            return null;
-          }
-        }),
-      );
-
-      // 过滤失败的读取
-      // ★ Phase 3 P3-3：readResult 类型补 contentType（来自 file:read 后端返回）
-      const successResults = readResults.filter(
-        (item): item is { file: typeof remoteFiles[number]; readResult: { data: ArrayBuffer; contentType: string; name: string; size: number } } =>
-          item !== null,
-      );
-      if (successResults.length === 0) {
-        return;
-      }
-
-      // 构造 UploadPendingFile[]
-      const newItems: UploadPendingFile[] = successResults.map(({ file, readResult }) => {
-        // ★ Phase 3 P3-3：使用 readResult.contentType (来自 file:read 后端直接返回)
-        const blob = new Blob([readResult.data], { type: readResult.contentType });
-        const previewUrl = URL.createObjectURL(blob);
-        const localKey = `loaded-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-        return {
-          localKey,
-          file: new File([readResult.data], file.name, { type: file.contentType }),
-          previewUrl,
-          isImage: file.contentType.startsWith('image/'),
-          contentType: file.contentType,
-          uploadStatus: 'uploaded',
-          uploadedFile: {
-            id: file.id,
-            name: file.name,
-            size: file.size,
-            contentType: file.contentType,
-            storageKey: file.storageKey,
-            uploadedAt: file.uploadedAt,
-          },
-        };
-      });
-
-      // 直接覆盖（loadPendingFiles 应在 clearLocalOnly 后调用,等价于覆盖）
-      setPendingFiles(newItems);
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error('[useFileUpload] loadPendingFiles failed:', err);
-    }
   }, []);
 
   const setConversationId = useCallback((id: string | null) => {
@@ -552,7 +455,6 @@ export function useFileUpload(): UseFileUploadReturn {
     removePendingFile,
     clearPendingFiles,
     clearLocalOnly,
-    loadPendingFiles,
     pendingFilesRef,
     uploadingCount,
     setConversationId,

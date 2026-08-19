@@ -74,7 +74,6 @@ export function ChatShell() {
     addPendingFiles,
     removePendingFile,
     clearLocalOnly,
-    loadPendingFiles,
     uploadingCount: fileUploadingCount,
     setConversationId: setUploadConversationId,
     setPendingUploadStatus,        // ★新增：发送流程预标记/回滚 pendingFiles 上传状态
@@ -85,7 +84,6 @@ export function ChatShell() {
   // 期间二次点击可能重复建会话/重复发送，故该键在途时保持与原全局锁一致的全局拦截语义
   const NO_CONVERSATION_FLIGHT_KEY = '__no_conversation_in_flight__';
   const sendInFlightConversationIdsRef = useRef<Set<string>>(new Set()); // 防重入（按会话隔离）：记录在途发送的会话 id，拦截同会话重复触发
-  const skipNextLoadPendingRef = useRef(false);   // 本次 null→id 会话由发送流程显式创建：跳过 loadPendingFiles
   const latestConversationIdRef = useRef<string | null>(conversationId);  // 上传等待期间检测会话是否被切换
 
   const [inputValue, setInputValue] = useState('');
@@ -149,31 +147,16 @@ const { check, canCheck } = useConfigReadiness({
   );
 
   // ============================================================
-  // P5 + P7 适配：useFileUpload 需要知道当前会话 ID 才能调用 file:upload
+  // P5 适配：useFileUpload 需要知道当前会话 ID 才能调用 file:upload
   // conversationId 变化（包括新建会话、切换会话）时同步给 useFileUpload
-  //
-  // P7 切会话恢复待发送文件：
-  // 1. 先 clearLocalOnly 清空本地 pendingFiles state（**不**触发 file:delete,磁盘文件保留）
-  // 2. 再 loadPendingFiles 调 file:list + file:read 拉回该会话的已上传文件
-  // 3. URL.createObjectURL(Blob) 重建 ObjectURL 预览（Delepi 无 static token 鉴权,不能直接用远端 URL）
-  // 4. uploadStatus='uploaded',与用户本地上传完成的文件行为一致
-  //
-  // 注：loadPendingFiles 是 async,失败时静默忽略（不影响发送/UI 渲染）
+  // 切会话时清空旧会话的本地预览（clearLocalOnly 仅清本地 state，不触发 file:delete，
+  // 磁盘文件保留；已随消息发送的文件不再拉回输入框）
   // ============================================================
   useEffect(() => {
     setUploadConversationId(conversationId);
-    // 切会话时:清空旧会话的本地预览(保留磁盘文件) + 拉回新会话的待发送文件
+    // 切会话时:清空旧会话的本地预览(保留磁盘文件)
     clearLocalOnly();
-    if (conversationId) {
-      if (skipNextLoadPendingRef.current) {
-        // 本次会话由发送流程显式创建（handleSend 内 createConversation）：
-        // 跳过拉回，防止把刚上传/刚随消息发送的文件重新放回输入框 chip
-        skipNextLoadPendingRef.current = false;
-      } else {
-        void loadPendingFiles(conversationId); // P7：切换/选中会话恢复待发送文件（原行为保留）
-      }
-    }
-  }, [conversationId, setUploadConversationId, clearLocalOnly, loadPendingFiles]);
+  }, [conversationId, setUploadConversationId, clearLocalOnly]);
 
   // ============================================================
   // P5 适配：上传中文件数取自 useFileUpload（覆盖 useChat 的 uploadingCount）
@@ -272,7 +255,6 @@ const { check, canCheck } = useConfigReadiness({
         // ── 场景a核心：发送时序前置串行化（创建会话 → 上传落盘 → 发送）──
         let convId = conversationId;
         if (!convId) {
-          skipNextLoadPendingRef.current = true; // 防 effect 拉回刚发送文件
           const conv = await createConversation(); // 复用 useChat 既有函数（L837-868，非新增创建策略）
           if (!conv) {
             setPendingUploadStatus(pendingItems.map((i) => i.localKey), 'pending'); // 回滚可重试状态

@@ -103,11 +103,11 @@ export interface DelegatedUploadedFile {
 type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 type DelegateExecutorInput = {
   taskname?: unknown;
-  tasktype?: unknown;
+  task_type?: unknown;
   tasktarget?: unknown;
   constraints?: unknown;
-  deliverytype?: unknown;
-  deliveryspec?: unknown;
+  delivery_type?: unknown;
+  delivery_spec?: unknown;
   skills?: unknown;
   context?: unknown;
 };
@@ -206,8 +206,8 @@ function normalizeTaskTarget(value: DelegateExecutorInput): unknown {
 }
 
 function collectExpectedDelivery(value: DelegateExecutorInput): ExpectedDelivery | null {
-  const deliveryType = normalizeExpectedDeliveryType(value.deliverytype);
-  const deliveryDescription = normalizeString(value.deliveryspec);
+  const deliveryType = normalizeExpectedDeliveryType(value.delivery_type);
+  const deliveryDescription = normalizeString(value.delivery_spec);
 
   if (!deliveryType || !deliveryDescription) {
     return null;
@@ -236,20 +236,20 @@ function collectDelegateExecutorInputIssues(parsed: DelegateExecutorInput): stri
     issues.push('taskname 缺失或不是非空字符串');
   }
 
-  if (!normalizeString(parsed.tasktype)) {
-    issues.push('tasktype 缺失或不是非空字符串');
+  if (!normalizeString(parsed.task_type)) {
+    issues.push('task_type 缺失或不是非空字符串');
   }
 
   if (!normalizeString(parsed.tasktarget)) {
     issues.push('tasktarget 缺失或不是非空字符串');
   }
 
-  if (!normalizeExpectedDeliveryType(parsed.deliverytype)) {
-    issues.push('deliverytype 缺失或不在允许范围内');
+  if (!normalizeExpectedDeliveryType(parsed.delivery_type)) {
+    issues.push('delivery_type 缺失或不在允许范围内');
   }
 
-  if (!normalizeString(parsed.deliveryspec)) {
-    issues.push('deliveryspec 缺失或不是非空字符串');
+  if (!normalizeString(parsed.delivery_spec)) {
+    issues.push('delivery_spec 缺失或不是非空字符串');
   }
 
   if (!normalizeString(parsed.context)) {
@@ -290,7 +290,7 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
   const issues = collectDelegateExecutorInputIssues(parsed);
 
   const taskName = normalizeString(parsed.taskname);
-  const taskType = normalizeString(parsed.tasktype);
+  const taskType = normalizeString(parsed.task_type);
   const contextData = normalizeString(parsed.context);
   const taskTarget = normalizeString(parsed.tasktarget);
   const taskConstraints = collectTaskConstraintDescriptions(parsed.constraints);
