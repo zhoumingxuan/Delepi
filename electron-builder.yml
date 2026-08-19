@@ -17,6 +17,9 @@ win:
       arch:
         - x64
   icon: resources/icon.png
+  # 显式声明 asInvoker：保持无管理员权限要求（electron-builder 默认即 asInvoker，显式声明防止默认变更）
+  requestedExecutionLevel: asInvoker
+  # 签名未配置：cert/DelepiDev.pfx 密码不可用（只读探测：空密码失败；openssl 不可用；README/cert 目录/git 历史均无密码说明），按任务约束放弃签名，保持 NotSigned
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
