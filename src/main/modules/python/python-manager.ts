@@ -296,7 +296,13 @@ export class PythonManager {
     if (app.isPackaged) {
       return path.join(process.resourcesPath, 'python');
     }
-    return path.join(app.getAppPath(), 'resources', 'python');
+    const appPath = app.getAppPath();
+    if (path.extname(appPath).toLowerCase() === '.asar') {
+      // 调试模式：appPath 指向 asar 文件本身（如 electron.exe 直接加载 app.asar），
+      // 预置 Python 位于 asar 同级的 resources 目录（extraResources 输出位置）
+      return path.join(path.dirname(appPath), 'python');
+    }
+    return path.join(appPath, 'resources', 'python');
   }
 
   public getPythonDir(): string {

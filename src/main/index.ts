@@ -3,7 +3,7 @@
  * 创建 BrowserWindow，初始化数据库、注册 IPC 处理器
  */
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, Menu } from 'electron';
 import path from 'path';
 import { getDb } from './db/sqlite-adapter';
 import { resetInterruptedRuntimeState } from './db';
@@ -63,6 +63,7 @@ function createWindow(): void {
 }
 
 app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   // 初始化数据库
   getDb();
   resetInterruptedRuntimeState();

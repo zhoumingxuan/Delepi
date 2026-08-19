@@ -11,7 +11,7 @@
     "lint": "eslint src/ --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
     "postinstall": "node scripts/postinstall.cjs && electron-builder install-app-deps",
-    "pack": "electron-builder",
+    "pack": "node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && npm run build && electron-builder",
     "build:preset-python": "npx tsx scripts/build-preset-python.ts",
     "prepack": "npm run build:preset-python"
   },

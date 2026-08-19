@@ -32,7 +32,7 @@ const OUTPUT_DIR = path.join(__dirname, '..', 'resources', 'python', `python-${P
 const PRESET_MARKER_FILE = '.beez-preset';
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
-const EXEC_TIMEOUT_MS = 120_000;
+const EXEC_TIMEOUT_MS = 600_000;
 
 // 预装依赖清单（对应6类功能需求，方案文档第5章）
 const PRESET_PACKAGES: Record<string, string> = {
@@ -387,7 +387,7 @@ async function main() {
   }
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...pkgSpecs, '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', ...pkgSpecs, '--target', sitePackagesDir],
     buildPythonDir,
   );
   log(`预装依赖安装完成: ${pkgSpecs.length} 个包`);
