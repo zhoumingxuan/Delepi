@@ -1805,7 +1805,7 @@ export function useChat(options?: UseChatOptions) {
                 arguments: data.arguments || '',
                 result: data.result || '',
                 status: mapStatus(data.status),
-                startedAt: now,
+                startedAt: existing?.createdAt ?? now,
                 ...(data.status === 'completed' || data.status === 'failed'
                   ? { finishedAt: now }
                   : {}),
@@ -1868,6 +1868,14 @@ export function useChat(options?: UseChatOptions) {
           //   （运行态思考显示数据源；进度快照携带的仍是最新 latestThinking，不会被进度覆盖——对齐 ai_fr L730 语义）
           const snapshotThinking =
             (data as { message?: { payload?: { thinking?: string } } }).message?.payload?.thinking;
+          // ★ 修复计时器刷新后重新计时：事件载荷 message（main-agent.ts L882-888 emit 的
+          //   snapshotMessage，buildToolSnapshotMessage 产物）携带持久化任务开始时间
+          //   （payload.startedAt=createdAt=toolStartedAt，main-agent.ts L839/L843）。
+          //   刷新后 toolSnapshots 恢复为空、由事件流重建任务卡片时，以它为计时基准，
+          //   避免 createdAt/toolCalls[].startedAt 退化为 now（刷新时刻）导致计时从 0 重新起算。
+          const snapshotMessage = (data as { message?: StreamMessage }).message;
+          const snapshotStartedAt =
+            snapshotMessage?.payload?.startedAt ?? snapshotMessage?.createdAt ?? undefined;
           setToolSnapshots((prev) => {
             // ★ S4（M6）字典键统一 callId：本通道载荷 callId=委派 toolCall.id（main-agent emit 实证），
             //   taskId 仅作旧载荷兜底键
@@ -1887,13 +1895,30 @@ export function useChat(options?: UseChatOptions) {
                 thinking: isTerminal
                   ? existing?.thinking
                   : (snapshotThinking ?? existing?.thinking ?? ''),
-                toolCalls: data.toolCalls ?? existing?.toolCalls ?? [],
+                toolCalls:
+                  data.toolCalls ??
+                  existing?.toolCalls ??
+                  (snapshotStartedAt
+                    ? [
+                        {
+                          callId: snapshotMessage?.payload?.toolCallId ?? key,
+                          name: snapshotMessage?.payload?.name ?? '',
+                          arguments: snapshotMessage?.payload?.arguments ?? '',
+                          result: snapshotMessage?.payload?.result ?? '',
+                          status: 'loading',
+                          startedAt: snapshotStartedAt,
+                          isError: snapshotMessage?.payload?.isError ?? false,
+                          isDelegatedExecutor:
+                            snapshotMessage?.payload?.name === 'delegate_executor',
+                        },
+                      ]
+                    : []),
                 result: isTerminal ? existing.result ?? data.result : data.result ?? existing?.result,
                 isError: isTerminal ? existing.isError ?? data.isError : data.isError ?? existing?.isError,
                 finishedAt: isTerminal
                   ? existing.finishedAt ?? data.finishedAt
                   : data.finishedAt ?? existing?.finishedAt,
-                createdAt: data.createdAt || existing?.createdAt || now,
+                createdAt: data.createdAt || existing?.createdAt || snapshotStartedAt || now,
                 updatedAt: isTerminal ? existing.updatedAt : data.updatedAt || now,
                 source: data.source ?? existing?.source ?? 'executor',
                 // ★ Phase 3 P3-8 messageId ↔ taskId 关联键
