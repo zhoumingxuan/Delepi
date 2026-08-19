@@ -215,6 +215,7 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
     messages: options.messages,
     tools: options.tools?.length ? options.tools : undefined,
     // 思考参数由调用点意图决定：唯一流式调用点（主智能体）为零思考参数，此处不组装任何思考键
+    parallel_tool_calls: true,
     reasoning_split: true,
   };
 
@@ -410,6 +411,7 @@ async function nonStreamChatOnce(
     tools: options.tools?.length ? options.tools : undefined,
     ...thinkingParams,
     reasoning_split: true,
+    parallel_tool_calls: true,
   } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
     enable_thinking?: boolean;
     reasoning_effort?: 'low' | 'high' | 'max';
