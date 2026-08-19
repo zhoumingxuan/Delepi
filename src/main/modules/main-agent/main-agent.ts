@@ -52,6 +52,7 @@ import {
   resolveTaskWorkspaceDir,
 } from '../../utils/storage-paths';
 import type { ChatAttachment, ChatContentPart, StreamMessage, StreamStatus } from '@shared/types/chat';
+import { runningAssistantMessages } from './running-assistant-message-map';
 import {
   setRunningAssistantMessage,
   updateRunningAssistantMessage,
@@ -235,6 +236,12 @@ async function buildMainAgentMessages(options: {
         tool_calls: toolCalls?.length
           ? toolCalls as OpenAI.Chat.ChatCompletionMessageToolCall[]
           : undefined,
+        // ★ 跨轮思考回填：历史 assistant 的 payload.thinking 原文原封不动转为 reasoning_content
+        //   对齐 ai_fr lib/chat/openai.ts L334-345 + lib/chat/runtime-assistant-message.ts L38（原文直转，不追加加工文本）
+        //   类型处理对齐同函数 L644-646 同轮回填先例（as 断言；thinking 为空时不产生该键）
+        ...(typeof payload.thinking === 'string' && payload.thinking
+          ? ({ reasoning_content: payload.thinking } as { reasoning_content?: string })
+          : {}),
       });
       continue;
     }
@@ -460,6 +467,9 @@ export async function runMainAgent(
     currentSeq,
     multimodalEnabled,
   });
+
+  console.log(messages)
+
   let contextCompressionMaxMessageSeq: number | null = userMessage.seq;
   let contextCompressionMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [...messages];
 
@@ -523,7 +533,6 @@ export async function runMainAgent(
     if (options.signal?.aborted) {
       throw new Error(ERR_ABORTED);
     }
-
     const streamResult = await streamChat({
       modelConfig: options.modelConfig,
       messages: turnMessages,
@@ -612,7 +621,6 @@ export async function runMainAgent(
         }
       },
     });
-
     fullContent = streamResult.content;
     fullThinking = streamResult.reasoning || '';
 
@@ -1391,6 +1399,10 @@ export async function runMainAgent(
     {
       role: 'assistant',
       content: fullContent || null,
+      // ★ 压缩最终轮思考回填：对齐 ai_fr app/api/chat/stream/route.ts L646-649（最终轮 assistant 携带 reasoning_content）
+      ...(fullThinking
+        ? ({ reasoning_content: fullThinking } as { reasoning_content?: string })
+        : {}),
     },
   ];
   // ★ P1-C3：落库完成后从 runningAssistantMessages 移除
