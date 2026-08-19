@@ -468,8 +468,6 @@ export async function runMainAgent(
     multimodalEnabled,
   });
 
-  console.log(messages)
-
   let contextCompressionMaxMessageSeq: number | null = userMessage.seq;
   let contextCompressionMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [...messages];
 
