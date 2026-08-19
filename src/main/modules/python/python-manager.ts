@@ -80,6 +80,17 @@ export class PythonManager {
   /** 依赖安装回调（由 DepsManager 在模块初始化时通过 setDepsInstallCallback 注入） */
   private _depsInstallCallback: (() => Promise<void>) | null = null;
 
+  /**
+   * ★ 竞态修复：渲染进程就绪门控。
+   * 启动期 pythonManager.init() 早于渲染进程 preload 隔离世界初始化（ipcNative 注入）完成，
+   * 此时 webContents.send 会在 C++ 层触发
+   * "ERROR: Attempted to get the 'ipcNative' object but it was missing" 且该次推送丢失。
+   * 故未就绪期间仅缓存最新状态，待渲染进程 did-finish-load 后补推。
+   */
+  private _rendererReady = false;
+  /** 就绪前缓存的最新状态（latest-wins）：每次未就绪 emitStatus 均覆盖，就绪后仅补推一次 */
+  private _pendingStatusForRenderer: PythonStatus | null = null;
+
   static getInstance(): PythonManager {
     if (!PythonManager.instance) {
       PythonManager.instance = new PythonManager();
@@ -267,6 +278,25 @@ export class PythonManager {
     this._depsInstallCallback = cb;
   }
 
+  /**
+   * ★ 竞态修复：绑定主窗口并注册"渲染进程加载完成"门控。
+   * 由 main/index.ts 的 createWindow() 在 BrowserWindow 创建后、loadURL/loadFile 之前调用
+   * （含 app 'activate' 重建窗口路径）。门控行为：
+   * - did-finish-load（页面 load 完成，必然晚于 preload 隔离世界 ipcNative 注入）→ 放行推送并补推缓存
+   * - did-start-loading（重载/新导航，ipcNative 将随新页面重新注入）→ 重新关门，防重载窗口竞态
+   * 监听器挂在对应窗口的 webContents 上，随窗口销毁一并释放，无泄漏。
+   */
+  attachMainWindow(win: BrowserWindow): void {
+    this._rendererReady = false;
+    win.webContents.on('did-start-loading', () => {
+      this._rendererReady = false;
+    });
+    win.webContents.on('did-finish-load', () => {
+      this._rendererReady = true;
+      this._flushPendingStatusForRenderer();
+    });
+  }
+
   // ==============================================================
   // 内部实现
   // ==============================================================
@@ -280,10 +310,31 @@ export class PythonManager {
         // 忽略回调异常
       }
     }
-    // IPC 推送：通知渲染进程状态变更
+    // IPC 推送：通知渲染进程状态变更。
+    // ★ 竞态修复：仅当渲染进程已完成加载（did-finish-load，preload 隔离世界 ipcNative 已注入）
+    //   才允许 send；否则只缓存最新状态（latest-wins），由 attachMainWindow 注册的
+    //   did-finish-load 门控放行后补推，确定性消除启动期 ipcNative 竞态。
+    const win = BrowserWindow.getAllWindows()[0];
+    if (this._rendererReady && win && !win.isDestroyed()) {
+      win.webContents.send(IPC_PYTHON.STATUS_CHANGED, status);
+    } else {
+      this._pendingStatusForRenderer = status;
+    }
+  }
+
+  /**
+   * ★ 竞态修复：渲染进程就绪后补推缓存的最新状态（仅一次）。
+   * 仅在 did-finish-load 事件回调内被调用，此时 ipcNative 注入必然已完成，send 安全。
+   */
+  private _flushPendingStatusForRenderer(): void {
+    const pending = this._pendingStatusForRenderer;
+    this._pendingStatusForRenderer = null;
+    if (!pending) {
+      return;
+    }
     const win = BrowserWindow.getAllWindows()[0];
     if (win && !win.isDestroyed()) {
-      win.webContents.send(IPC_PYTHON.STATUS_CHANGED, status);
+      win.webContents.send(IPC_PYTHON.STATUS_CHANGED, pending);
     }
   }
 

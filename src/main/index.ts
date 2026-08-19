@@ -50,6 +50,11 @@ function createWindow(): void {
     },
   });
 
+  // ★ 竞态修复：绑定渲染进程加载门控——pythonManager 启动期自动推送（python:status-changed）
+  //   在窗口首次 did-finish-load（preload 隔离世界 ipcNative 注入完成）前一律缓存，
+  //   加载完成后补推，消除启动期 "ipcNative missing" 竞态（详见 python-manager attachMainWindow）
+  pythonManager.attachMainWindow(mainWindow);
+
   // 开发环境加载 Vite dev server，生产环境加载打包文件
   // VITE_DEV_SERVER_URL 是 Electron+Vite 框架运行时的必要依赖，不可去除
   if (process.env.VITE_DEV_SERVER_URL) {
