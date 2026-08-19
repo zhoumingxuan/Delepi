@@ -81,7 +81,10 @@ export function ChatShell() {
     uploadFilesForSend,            // ★新增：发送流程显式指定会话上传并等待完成
   } = useFileUpload();
 
-  const sendInFlightRef = useRef(false);          // 防重入：异步发送流程期间拦截重复触发
+  // 无会话 id（conversationId === null）发送流程的哨兵键：null 在途期间发送流程会异步创建会话，
+  // 期间二次点击可能重复建会话/重复发送，故该键在途时保持与原全局锁一致的全局拦截语义
+  const NO_CONVERSATION_FLIGHT_KEY = '__no_conversation_in_flight__';
+  const sendInFlightConversationIdsRef = useRef<Set<string>>(new Set()); // 防重入（按会话隔离）：记录在途发送的会话 id，拦截同会话重复触发
   const skipNextLoadPendingRef = useRef(false);   // 本次 null→id 会话由发送流程显式创建：跳过 loadPendingFiles
   const latestConversationIdRef = useRef<string | null>(conversationId);  // 上传等待期间检测会话是否被切换
 
@@ -242,8 +245,14 @@ const { check, canCheck } = useConfigReadiness({
       return;
     }
     if (!canSend) return;
-    if (sendInFlightRef.current) return; // 防重入（双击/回车连击）
-    sendInFlightRef.current = true;
+    // 防重入（按会话隔离，双击/回车连击）：同会话在途则拦截；无会话 id（null→创建会话流程）在途时保持原全局拦截语义
+    const flightConversationId = conversationId; // 捕获进入 handleSend 时的会话 id：finally 释放必须用此捕获值，防会话切换后误删他话
+    const flightKey = flightConversationId ?? NO_CONVERSATION_FLIGHT_KEY;
+    if (
+      sendInFlightConversationIdsRef.current.has(NO_CONVERSATION_FLIGHT_KEY) ||
+      sendInFlightConversationIdsRef.current.has(flightKey)
+    ) return;
+    sendInFlightConversationIdsRef.current.add(flightKey);
     try {
       const uploadedItems = pendingFiles.filter((i) => i.uploadStatus === 'uploaded' && i.uploadedFile);
       const errorItems = pendingFiles.filter((i) => i.uploadStatus === 'error');
@@ -309,7 +318,7 @@ const { check, canCheck } = useConfigReadiness({
       setInputValue(''); // ★修复：对齐 ai_fr chat-shell.tsx L2171-2173——消息受理即清空输入框。闭包 inputValue 已捕获原文本，下行 sendMessage 发送内容不受影响
       await sendMessage(inputValue, attachments);
     } finally {
-      sendInFlightRef.current = false;
+      sendInFlightConversationIdsRef.current.delete(flightKey); // 释放进入时捕获的键：禁用 finally 时刻的 conversationId 状态变量（会话切换后已变值会误删他话）
     }
   }, [
     showCancel,

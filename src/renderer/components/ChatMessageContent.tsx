@@ -25,7 +25,7 @@
 import { Button, Flex, Image, Space, Spin, Typography } from 'antd';
 import { Think, ThoughtChain } from '@ant-design/x';
 import { FileOutlined } from '@ant-design/icons';
-import { memo, useEffect, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { RichMarkdown } from './RichMarkdown';
 import type { ToolCallInfo } from './ToolCallCard';
 import { ToolCallCard } from './ToolCallCard';
@@ -580,6 +580,10 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     return attachments.filter((att) => isImageContentType(att.contentType));
   }, [message]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  // ★ 修复 blobURL 过早撤销: 镜像最新 previewUrls, 供加载 effect 在不依赖 previewUrls 的前提下判断哪些附件仍缺有效预览 URL
+  const previewUrlsRef = useRef<Record<string, string>>({});
+  // ★ 修复 blobURL 过早撤销: 登记本组件创建的 blob URL, 组件卸载时统一 revoke, 不在 effect 重跑时提前撤销
+  const createdUrlsRef = useRef<string[]>([]);
   useEffect(() => {
     const next: Record<string, string> = {};
     for (const att of imageAttachments) {
@@ -591,6 +595,10 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     // ★ Phase 3 P3-2 合并语义：异步获取的 previewUrl 不能被同步覆盖清空
     setPreviewUrls((prev) => ({ ...prev, ...next }));
   }, [imageAttachments]);
+  // ★ 修复 blobURL 过早撤销: previewUrls 变化时同步镜像到 ref, 供下方加载 effect 的 needed 判断读取
+  useEffect(() => {
+    previewUrlsRef.current = previewUrls;
+  }, [previewUrls]);
   useEffect(() => {
     if (!conversationId || imageAttachments.length === 0) {
       return;
@@ -599,13 +607,12 @@ export const ChatMessageContent = memo(function ChatMessageContent({
       return;
     }
     const needed = imageAttachments.filter(
-      (att) => !previewUrls[att.storageKey],
+      (att) => !previewUrlsRef.current[att.storageKey],
     );
     if (needed.length === 0) {
       return;
     }
     let cancelled = false;
-    const localCreated: string[] = [];
     (async () => {
       for (const att of needed) {
         if (cancelled) return;
@@ -617,7 +624,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
           if (cancelled) return;
           const blob = new Blob([result.data], { type: att.contentType });
           const url = URL.createObjectURL(blob);
-          localCreated.push(url);
+          createdUrlsRef.current.push(url);
           setPreviewUrls((prev) => ({ ...prev, [att.storageKey]: url }));
         } catch (err) {
           // eslint-disable-next-line no-console
@@ -627,7 +634,16 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     })();
     return () => {
       cancelled = true;
-      for (const url of localCreated) {
+    };
+    // ★ 修复 blobURL 过早撤销: previewUrls 已移出依赖数组(needed 判断改读 previewUrlsRef 镜像),
+    //   依赖变化重跑时不再提前 revoke 本次创建的 blob URL(否则 img 渲染时 src 已失效);
+    //   统一交由下方卸载 effect 在组件卸载时 revoke createdUrlsRef 登记的 URL
+  }, [conversationId, imageAttachments]);
+
+  // ★ 修复 blobURL 过早撤销: 独立卸载 effect —— 仅在组件卸载时统一 revoke 本组件创建的全部 blob URL
+  useEffect(() => {
+    return () => {
+      for (const url of createdUrlsRef.current) {
         try {
           URL.revokeObjectURL(url);
         } catch {
@@ -635,8 +651,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
         }
       }
     };
-    // previewUrls 变化会触发 effect 重跑,需要靠 cancelled 标志阻止重复
-  }, [conversationId, imageAttachments, previewUrls]);
+  }, []);
 
   // 用户消息
   if (message.role === 'user') {
