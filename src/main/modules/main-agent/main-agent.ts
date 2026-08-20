@@ -229,6 +229,13 @@ async function buildMainAgentMessages(options: {
         : Array.isArray(payload.content)
           ? contentPartsToText(payload.content as ChatContentPart[])
           : '';
+      // ★ 400 防御：历史 assistant 消息 content 为空且无 tool_calls 时整体过滤，不加入回放消息数组
+      //   （DashScope：Invalid assistant message: content or tool_calls must be set）
+      const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
+      const hasContent = content.trim() !== '';
+      if (!hasContent && !hasToolCalls) {
+        continue;
+      }
 
       messages.push({
         role: 'assistant',
