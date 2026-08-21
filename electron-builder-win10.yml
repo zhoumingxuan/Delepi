@@ -1,0 +1,32 @@
+appId: com.delepi.win10
+productName: Delepi Win10
+directories:
+  output: release-win10
+  buildResources: resources
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: resources/python-win10
+    to: python
+    filter:
+      - "**/*"
+  - from: skills
+    to: skills
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/icon.png
+  # 显式声明 asInvoker：保持无管理员权限要求（electron-builder 默认即 asInvoker，显式声明防止默认变更）
+  requestedExecutionLevel: asInvoker
+  signtoolOptions:
+    certificateFile: cert/DelepiDev.pfx
+    # 自定义签名：跳过 resources\python（内置 python）下的文件签名
+    sign: ./scripts/sign.cjs
+    # 显式声明发布者（证书 CN），避免 electron-builder 内部解析 pfx 失败导致打包中断
+    publisherName: Delepi Dev
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

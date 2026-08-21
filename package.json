@@ -13,6 +13,8 @@
     "postinstall": "node scripts/postinstall.cjs && electron-builder install-app-deps",
     "pack": "node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && npm run build && electron-builder",
     "build:preset-python": "npx tsx scripts/build-preset-python.ts",
+    "build:preset-python-win10": "npx tsx scripts/build-preset-python.ts --win10",
+    "pack:win10": "node -e \"require('fs').rmSync('release-win10',{recursive:true,force:true})\" && npm run build && npm run build:preset-python-win10 && npx electron-builder --config electron-builder-win10.yml",
     "prepack": "npm run build:preset-python"
   },
   "dependencies": {

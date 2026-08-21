@@ -16,7 +16,7 @@
  */
 
 import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'node:fs';
-import { readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { get } from 'node:https';
 import { IncomingMessage } from 'node:http';
 import { execFile } from 'node:child_process';
@@ -33,6 +33,50 @@ const PRESET_MARKER_FILE = '.beez-preset';
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const EXEC_TIMEOUT_MS = 600_000;
+
+// ================================================================
+// 构建变体（Win10 差异化打包，2026-08-22 新增）
+// 无参数 = default 变体：路径与命令与历史版本完全一致；
+// 传入 --win10 / win10 / --preset=win10 = win10 变体：
+//   独立输出目录 resources/python-win10、独立缓存 scripts/cache/win10、
+//   独立包清单 requirements/requirements-preset-win10.txt、独立 .beez-preset 标记。
+// ================================================================
+
+/** 构建变体配置 */
+interface BuildVariant {
+  /** 最终输出目录 */
+  outputDir: string;
+  /** 嵌入式 zip 缓存路径（win10 独立，避免复用主线缓存） */
+  cacheZipPath: string;
+  /** 临时构建目录名（scripts/.build/<name>） */
+  buildDirName: string;
+  /** requirements 包清单文件；null = 使用 PRESET_PACKAGES 常量（主线行为） */
+  requirementsFile: string | null;
+  /** pip 是否禁用本地缓存（win10：规避用户级 wheels 缓存权限问题，2026-08-22 实测 Errno13） */
+  pipNoCacheDir: boolean;
+}
+
+const VARIANTS: Record<'default' | 'win10', BuildVariant> = {
+  default: {
+    outputDir: OUTPUT_DIR,
+    cacheZipPath: path.join(CACHE_DIR, `python-${PYTHON_VERSION}-embed-amd64.zip`),
+    buildDirName: `python-${PYTHON_VERSION}`,
+    requirementsFile: null,
+    pipNoCacheDir: false,
+  },
+  win10: {
+    outputDir: path.join(__dirname, '..', 'resources', 'python-win10', `python-${PYTHON_VERSION}`),
+    cacheZipPath: path.join(CACHE_DIR, 'win10', `python-${PYTHON_VERSION}-embed-amd64.zip`),
+    buildDirName: `python-${PYTHON_VERSION}-win10`,
+    requirementsFile: path.join(__dirname, '..', 'requirements', 'requirements-preset-win10.txt'),
+    pipNoCacheDir: true,
+  },
+};
+
+// 命令行参数识别：--win10 / win10 / --preset=win10 均识别为 win10 变体；其余（含无参数）为 default
+const VARIANT_ARG = process.argv.slice(2).find((a) => a === '--win10' || a === 'win10' || a === '--preset=win10');
+const VARIANT_KEY: 'default' | 'win10' = VARIANT_ARG ? 'win10' : 'default';
+const VARIANT = VARIANTS[VARIANT_KEY];
 
 // 预装依赖清单（对应6类功能需求，方案文档第5章）
 const PRESET_PACKAGES: Record<string, string> = {
@@ -98,6 +142,27 @@ const IMPORT_NAMES: Record<string, string> = {
   'psycopg2-binary': 'psycopg2',
   'SQLAlchemy': 'sqlalchemy',
 };
+
+/** win10 增量包的 pip 包名 → import 模块名映射（追加生效；2026-08-22 预演实测 wheel 自带 pywin32.pth，import win32api 可用） */
+const WIN10_IMPORT_NAMES: Record<string, string> = {
+  pywin32: 'win32api',
+};
+
+/** 解析 requirements 包清单文件为 包名 → 版本约束 映射（忽略空行与 # 注释行） */
+async function parseRequirements(filePath: string): Promise<Record<string, string>> {
+  const content = await readFile(filePath, 'utf-8');
+  const pkgs: Record<string, string> = {};
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const m = line.match(/^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(.*)$/);
+    if (!m) {
+      throw new Error(`requirements 行无法解析: "${line}" (${filePath})`);
+    }
+    pkgs[m[1]] = m[2].trim();
+  }
+  return pkgs;
+}
 
 function log(msg: string): void {
   console.log(`[build-preset-python] ${msg}`);
@@ -306,7 +371,7 @@ async function cleanup(buildPythonDir: string): Promise<void> {
 }
 
 /** 验证预置环境：python 版本、pip 可用、各预装包可导入 */
-async function verify(buildPythonDir: string, pythonExe: string): Promise<void> {
+async function verify(buildPythonDir: string, pythonExe: string, presetPackages: Record<string, string>): Promise<void> {
   // 1. python --version → 3.14.6
   const versionResult = await runCommand(pythonExe, ['--version'], buildPythonDir);
   const versionOutput = (versionResult.stdout || versionResult.stderr || '').trim();
@@ -325,21 +390,21 @@ async function verify(buildPythonDir: string, pythonExe: string): Promise<void> 
   log(`pip 验证通过: ${pipOutput}`);
 
   // 3. 逐个验证预装包可导入（Pillow/python-docx 使用导入名映射）
-  for (const pkgName of Object.keys(PRESET_PACKAGES)) {
-    const importName = IMPORT_NAMES[pkgName] || pkgName;
+  for (const pkgName of Object.keys(presetPackages)) {
+    const importName = IMPORT_NAMES[pkgName] ?? WIN10_IMPORT_NAMES[pkgName] ?? pkgName;
     await runCommand(pythonExe, ['-c', `import ${importName}`], buildPythonDir);
     log(`预装包导入验证通过: ${pkgName} (import ${importName})`);
   }
 }
 
 /** 生成 .beez-preset 标记文件（记录构建信息和包版本清单） */
-async function writePresetMarker(outputDir: string, pythonExe: string): Promise<void> {
+async function writePresetMarker(outputDir: string, pythonExe: string, presetPackages: Record<string, string>): Promise<void> {
   // 通过 pip list --format=json 获取实际安装版本
   const installedMap: Record<string, string> = {};
   try {
     const pipListResult = await runCommand(pythonExe, ['-m', 'pip', 'list', '--format=json'], outputDir);
     const pipPkgs: Array<{ name: string; version: string }> = JSON.parse(pipListResult.stdout.trim());
-    const wanted = new Set(Object.keys(PRESET_PACKAGES).map((n) => n.toLowerCase()));
+    const wanted = new Set(Object.keys(presetPackages).map((n) => n.toLowerCase()));
     for (const pkg of pipPkgs) {
       if (wanted.has(pkg.name.toLowerCase())) {
         installedMap[pkg.name] = pkg.version;
@@ -353,6 +418,8 @@ async function writePresetMarker(outputDir: string, pythonExe: string): Promise<
     version: '1.0.0',
     pythonVersion: PYTHON_VERSION,
     buildDate: new Date().toISOString(),
+    // win10 变体附加标识（default 变体保持历史字段结构不变）
+    ...(VARIANT_KEY === 'win10' ? { variant: 'win10' } : {}),
     packages: installedMap,
   };
 
@@ -363,10 +430,19 @@ async function writePresetMarker(outputDir: string, pythonExe: string): Promise<
 
 async function main() {
   log('Starting...');
+  if (VARIANT_KEY === 'win10') {
+    log('Win10 差异化变体: requirements-preset-win10.txt / resources/python-win10 / 独立缓存 / pip --no-cache-dir');
+  }
 
   // ---- Step 1: 检查缓存，必要时下载 embeddable zip ----
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const cacheZip = path.join(CACHE_DIR, `python-${PYTHON_VERSION}-embed-amd64.zip`);
+  mkdirSync(path.dirname(VARIANT.cacheZipPath), { recursive: true });
+  const cacheZip = VARIANT.cacheZipPath;
+  // win10 独立缓存：优先复制主线缓存中的同一份官方 zip（上游原样发行物，不含包集，复制零污染）；缺失才联网下载
+  const mainlineCacheZip = path.join(CACHE_DIR, `python-${PYTHON_VERSION}-embed-amd64.zip`);
+  if (VARIANT_KEY === 'win10' && !existsSync(cacheZip) && existsSync(mainlineCacheZip)) {
+    await copyFile(mainlineCacheZip, cacheZip);
+    log(`Win10 缓存初始化: 复制主线缓存 -> ${cacheZip}`);
+  }
   if (existsSync(cacheZip)) {
     log(`缓存命中，跳过下载: ${cacheZip}`);
   } else {
@@ -376,7 +452,7 @@ async function main() {
   }
 
   // ---- Step 2: 解压到临时构建目录 ----
-  const buildPythonDir = path.join(BUILD_DIR, `python-${PYTHON_VERSION}`);
+  const buildPythonDir = path.join(BUILD_DIR, VARIANT.buildDirName);
   await rm(buildPythonDir, { recursive: true, force: true });
   mkdirSync(buildPythonDir, { recursive: true });
   log(`解压到临时目录: ${buildPythonDir}`);
@@ -405,20 +481,28 @@ async function main() {
   log('安装预装依赖...');
   const sitePackagesDir = path.join(buildPythonDir, 'Lib', 'site-packages');
 
+  // 变体包清单：default = PRESET_PACKAGES 常量（历史行为不变）；win10 = requirements 清单文件
+  const presetPackages: Record<string, string> = VARIANT.requirementsFile
+    ? await parseRequirements(VARIANT.requirementsFile)
+    : PRESET_PACKAGES;
+  if (VARIANT.requirementsFile) {
+    log(`包清单来源: ${VARIANT.requirementsFile}（${Object.keys(presetPackages).length} 个包）`);
+  }
+
   // 预装构建后端（setuptools/wheel）：embeddable Python 的 _pth 忽略 PYTHONPATH，
   // pip 默认构建隔离注入 sitecustomize 失效，需关闭隔离并由宿主 site-packages 提供 setuptools.build_meta
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
     buildPythonDir,
   );
   const pkgSpecs: string[] = [];
-  for (const [name, ver] of Object.entries(PRESET_PACKAGES)) {
+  for (const [name, ver] of Object.entries(presetPackages)) {
     pkgSpecs.push(`${name}${ver}`);
   }
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-build-isolation', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', ...pkgSpecs, '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '--no-build-isolation', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', ...pkgSpecs, '--target', sitePackagesDir],
     buildPythonDir,
   );
   log(`预装依赖安装完成: ${pkgSpecs.length} 个包`);
@@ -429,20 +513,20 @@ async function main() {
 
   // ---- Step 7: 验证 ----
   log('验证预置环境...');
-  await verify(buildPythonDir, pythonExe);
+  await verify(buildPythonDir, pythonExe, presetPackages);
 
   // ---- Step 8: 移动到最终位置 ----
-  log(`移动到最终位置: ${OUTPUT_DIR}`);
-  await rm(OUTPUT_DIR, { recursive: true, force: true });
-  mkdirSync(path.dirname(OUTPUT_DIR), { recursive: true });
-  await rename(buildPythonDir, OUTPUT_DIR);
+  log(`移动到最终位置: ${VARIANT.outputDir}`);
+  await rm(VARIANT.outputDir, { recursive: true, force: true });
+  mkdirSync(path.dirname(VARIANT.outputDir), { recursive: true });
+  await rename(buildPythonDir, VARIANT.outputDir);
 
   // 生成 .beez-preset 标记文件
   log('生成 .beez-preset 标记文件...');
-  await writePresetMarker(OUTPUT_DIR, path.join(OUTPUT_DIR, 'python.exe'));
+  await writePresetMarker(VARIANT.outputDir, path.join(VARIANT.outputDir, 'python.exe'), presetPackages);
 
   log('构建完成 ✔');
-  log(`输出目录: ${OUTPUT_DIR}`);
+  log(`输出目录: ${VARIANT.outputDir}`);
 }
 
 main().catch((err) => {
