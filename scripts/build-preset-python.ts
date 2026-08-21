@@ -63,16 +63,13 @@ const PRESET_PACKAGES: Record<string, string> = {
   'pandas': '>=1.5',
   // 报表导出（Excel写出）
   'xlsxwriter': '>=3.0',
-  // ---- HTML/XML/浏览器/Windows 窗口（2026-08-20 新增）----
+  // ---- HTML/XML/浏览器（2026-08-20 新增）----
   'beautifulsoup4': '>=4.12.0',
   'html5lib':       '>=1.1',
   'xmltodict':      '>=0.13.0',
   'defusedxml':     '>=0.7.1',
   'playwright':     '>=1.40.0',
-  'pywinauto':      '>=0.6.8',
-  'pywin32':        '>=306',
   'pygetwindow':    '>=0.0.9',
-  'comtypes':       '>=1.1.11',
   // ---- 数据库驱动与常用工具（2026-08-20 新增）----
   'pymysql':                '>=1.2.0',
   'mysql-connector-python': '>=26.7.0',
@@ -97,7 +94,6 @@ const IMPORT_NAMES: Record<string, string> = {
   'paramiko': 'paramiko',
   'xlsxwriter': 'xlsxwriter',
   'beautifulsoup4': 'bs4',
-  'pywin32': 'win32api',
   'mysql-connector-python': 'mysql.connector',
   'psycopg2-binary': 'psycopg2',
   'SQLAlchemy': 'sqlalchemy',
