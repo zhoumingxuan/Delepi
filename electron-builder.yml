@@ -19,7 +19,12 @@ win:
   icon: resources/icon.png
   # 显式声明 asInvoker：保持无管理员权限要求（electron-builder 默认即 asInvoker，显式声明防止默认变更）
   requestedExecutionLevel: asInvoker
-  # 签名未配置：cert/DelepiDev.pfx 密码不可用（只读探测：空密码失败；openssl 不可用；README/cert 目录/git 历史均无密码说明），按任务约束放弃签名，保持 NotSigned
+  signtoolOptions:
+    certificateFile: cert/DelepiDev.pfx
+    # 自定义签名：跳过 resources\python（内置 python）下的文件签名
+    sign: ./scripts/sign.cjs
+    # 显式声明发布者（证书 CN），避免 electron-builder 内部解析 pfx 失败导致打包中断
+    publisherName: Delepi Dev
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
