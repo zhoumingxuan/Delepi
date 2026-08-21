@@ -5,6 +5,8 @@
 
 import path from 'node:path';
 
+import { app } from 'electron';
+
 // ============================================================
 // 工作流模板
 // ============================================================
@@ -12,9 +14,9 @@ import path from 'node:path';
 /** 最大工作流模板数量 */
 export const MAX_WORKFLOW_TEMPLATE_COUNT = 3;
 
-/** 执行子智能体技能目录 */
+/** 执行子智能体技能目录（生产：打包 resources/skills；开发：项目根 skills） */
 export const EXECUTOR_WORKER_SKILLS_DIR = path.join(
-  process.cwd(),
+  app.isPackaged ? process.resourcesPath : process.cwd(),
   'skills',
 );
 

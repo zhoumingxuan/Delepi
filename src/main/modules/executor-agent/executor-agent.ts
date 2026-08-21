@@ -33,7 +33,6 @@ import type {
 } from './executor-structured-payload';
 import type { AssistantRuntimeConfig } from './assistant-config';
 import {
-  BASELINE_WORKFLOW_TEMPLATE_ID,
   EXECUTOR_WORKFLOW_TEMPLATES,
   TASK_TAG_WORKFLOW_TEMPLATE_ID,
   type ExecutorWorkflowTemplate,
@@ -728,14 +727,6 @@ function selectWorkflowTemplates(taskTags: TaskTag[]): ExecutorWorkflowTemplate[
     }
   }
 
-  // baseline 模板仅在无匹配模板时兜底添加
-  if (templates.length === 0) {
-    const baselineTemplate = EXECUTOR_WORKFLOW_TEMPLATES[BASELINE_WORKFLOW_TEMPLATE_ID];
-    if (baselineTemplate) {
-      templates.push(baselineTemplate);
-    }
-  }
-
   return templates.slice(0, MAX_WORKFLOW_TEMPLATE_COUNT);
 }
 
@@ -751,7 +742,13 @@ async function readWorkflowTemplateContent(fileName: string): Promise<string> {
 ${content}
 \`\`\`
 `;
-  } catch {
+  } catch (error) {
+    const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
+      ? (error as NodeJS.ErrnoException).code
+      : 'unknown';
+    console.warn(
+      `[executor-agent] 读取工作流模板内容失败，将返回空串: templatePath=${templatePath}, errorCode=${errCode}`,
+    );
     return '';
   }
 }

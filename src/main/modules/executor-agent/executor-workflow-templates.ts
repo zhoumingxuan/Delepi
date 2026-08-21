@@ -8,15 +8,9 @@ export type ExecutorWorkflowTemplateId =
   | 'simulation_operation'
   | 'use_case_writing'
   | 'use_case_execution'
-  | 'visual_design'
-  | 'task_baseline';
+  | 'visual_design';
 
-export type TaskSpecificWorkflowTemplateId = Exclude<
-  ExecutorWorkflowTemplateId,
-  'task_baseline'
->;
-
-export type ExecutorWorkflowTemplateKind = 'specific' | 'baseline';
+export type ExecutorWorkflowTemplateKind = 'specific';
 
 export type ExecutorWorkflowTemplate = {
   id: ExecutorWorkflowTemplateId;
@@ -85,22 +79,12 @@ export const EXECUTOR_WORKFLOW_TEMPLATES: Record<
     title: '视觉设计',
     description: '用于海报、封面、插画、图标、示意图、视觉素材等视觉内容的设计和生成类任务。',
     fileName: 'visual-design/visual-design.md',
-  },
-  task_baseline: {
-    id: 'task_baseline',
-    kind: 'baseline',
-    title: '通用',
-    description: '用于兜底通用执行底线。',
-    fileName: 'task-baseline/task-baseline.md',
   }
 };
 
-export const BASELINE_WORKFLOW_TEMPLATE_ID: ExecutorWorkflowTemplateId =
-  'task_baseline';
-
 export const TASK_TAG_WORKFLOW_TEMPLATE_ID: Record<
   TaskTag,
-  TaskSpecificWorkflowTemplateId
+  ExecutorWorkflowTemplateId
 > = {
   问题诊断: 'issue_location',
   方案设计: 'solution_design',

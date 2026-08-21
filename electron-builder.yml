@@ -11,6 +11,8 @@ extraResources:
     to: python
     filter:
       - "**/*"
+  - from: skills
+    to: skills
 win:
   target:
     - target: nsis
