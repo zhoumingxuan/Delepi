@@ -725,7 +725,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
         message.status === 'loading',
         message.createdAt,
         toolSummaries,
-        { includeStructuredFilePreview: !isExecutorResult, thinkingText: message.thinking },
+        { includeStructuredFilePreview: true, thinkingText: message.thinking },
       );
     }
     return <ToolCallCard toolCall={toolInfo} />;

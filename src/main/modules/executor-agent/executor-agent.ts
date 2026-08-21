@@ -82,6 +82,7 @@ import {
   buildLocalFileUrls,
 } from '../../utils/file-url';
 import {
+  copyFileToOutputDir,
   copyFilesToOutputDir,
 } from '../../utils/storage-output';
 import {
@@ -461,6 +462,74 @@ async function removeTemporaryPaths(temporaryPaths: string[]): Promise<void> {
   );
 }
 
+/**
+ * R5②：收集本次交付的源文件路径（复制到 output 前 payload.result 中的原始路径）。
+ */
+function collectSourceDeliveredFilePaths(
+  payload: ExecutorStructuredPayload,
+  deliveryType: ExecutorDeliveryType,
+): string[] {
+  const fileFieldName = getFileResultFieldName(deliveryType);
+
+  if (!fileFieldName) {
+    return [];
+  }
+
+  return readStringArrayResultField(payload.result ?? {}, fileFieldName);
+}
+
+/**
+ * R5②：收集复制到 output 后的最终交付文件路径（resultData.result 中）。
+ */
+function collectResultDeliveredFilePaths(
+  resultData: Record<string, unknown> | undefined,
+  deliveryType: ExecutorDeliveryType,
+): string[] {
+  const fileFieldName = getFileResultFieldName(deliveryType);
+
+  if (!fileFieldName || !resultData || !isRecord(resultData.result)) {
+    return [];
+  }
+
+  return readStringArrayResultField(resultData.result, fileFieldName);
+}
+
+/**
+ * R5②：从待清理临时路径中剔除交付文件路径（兜底保护，防止 cleanable_info.json
+ * 登记的临时路径被递归删除时误删本次交付文件，含源文件与 output 副本）。
+ * 剔除规则：临时路径与交付路径相同，或交付文件位于临时路径目录之内。
+ */
+function excludeDeliveredPathsFromTemporaryPaths(
+  temporaryPaths: string[],
+  deliveredPaths: string[],
+): string[] {
+  if (temporaryPaths.length === 0 || deliveredPaths.length === 0) {
+    return temporaryPaths;
+  }
+
+  const normalizedDeliveredPaths = deliveredPaths
+    .filter((deliveredPath) => Boolean(deliveredPath) && path.isAbsolute(deliveredPath))
+    .map((deliveredPath) => path.resolve(deliveredPath));
+
+  if (normalizedDeliveredPaths.length === 0) {
+    return temporaryPaths;
+  }
+
+  return temporaryPaths.filter((temporaryPath) => {
+    if (!temporaryPath || !path.isAbsolute(temporaryPath)) {
+      return true;
+    }
+
+    const resolvedTemporaryPath = path.resolve(temporaryPath);
+
+    return !normalizedDeliveredPaths.some((deliveredPath) => {
+      const relative = path.relative(resolvedTemporaryPath, deliveredPath);
+
+      return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+    });
+  });
+}
+
 function getFileResultFieldName(
   deliveryType: ExecutorDeliveryType,
 ): 'image_files' | 'local_files' | null {
@@ -525,7 +594,8 @@ ${errors}
  * 设计依据：参考 E:\ai_fr\lib\chat\executor-agent.ts:524-531
  *   local_files → can_openfile_url
  *   image_files → image_urls
- * Delepi 改造：文件链接不复制到 output，仅基于原始本地路径生成 file:// URL。
+ * Delepi 改造（R5①）：文件链接复制到 output（源已在 output 内不重复复制、重名自动追加序号），
+ * 基于 output 副本路径生成 file:// URL。
  */
 function getFileResultUrlFieldName(
   fileFieldName: 'image_files' | 'local_files',
@@ -533,6 +603,34 @@ function getFileResultUrlFieldName(
   return fileFieldName === IMAGE_FILES_FIELD_NAME
     ? IMAGE_URLS_FIELD_NAME
     : FILE_URLS_FIELD_NAME;
+}
+
+/** R4：文件链接交付 local_files 为空时的可观测警告文案 */
+const EMPTY_LOCAL_FILES_WARNING = '本地文件列表为空，未生成文件链接';
+
+/**
+ * R5①：local_files 逐个复制到输出目录，复制失败时保留原始路径并记录警告。
+ * 复用 copyFileToOutputDir 既有模式：源文件已在输出目录内时不重复复制、重名自动追加序号。
+ */
+async function copyLocalFilesToOutputDir(
+  sourceFilePaths: string[],
+  outputDir: string | undefined,
+): Promise<{ outputFilePaths: string[]; warnings: string[] }> {
+  const outputFilePaths: string[] = [];
+  const warnings: string[] = [];
+
+  for (const sourcePath of sourceFilePaths) {
+    try {
+      outputFilePaths.push(await copyFileToOutputDir(sourcePath, outputDir));
+    } catch (error) {
+      outputFilePaths.push(sourcePath);
+      warnings.push(
+        `文件复制到输出目录失败，已保留原始路径 ${sourcePath}：${ensureErrorMessage(error)}`,
+      );
+    }
+  }
+
+  return { outputFilePaths, warnings };
 }
 
 async function buildExecutorResultData(options: {
@@ -556,19 +654,41 @@ async function buildExecutorResultData(options: {
   );
 
   if (sourceFilePaths.length === 0) {
+    if (fileFieldName !== LOCAL_FILES_FIELD_NAME) {
+      return {
+        result: options.payload.result,
+        ...buildExecutorMetadataResultData(options.payload),
+      };
+    }
+
+    // R4：local_files 为空时不再静默返回，注入可观测警告（不注入 URL 属合理降级）
+    const warnings = [...options.payload.warnings];
+
+    if (!warnings.includes(EMPTY_LOCAL_FILES_WARNING)) {
+      warnings.push(EMPTY_LOCAL_FILES_WARNING);
+    }
+
     return {
       result: options.payload.result,
-      ...buildExecutorMetadataResultData(options.payload),
+      ...buildWarningsResultData(warnings),
     };
   }
 
   if (fileFieldName === LOCAL_FILES_FIELD_NAME) {
+    // R5①：local_files 复制到输出目录后，基于 output 副本路径生成 file:// URL
+    const {
+      outputFilePaths,
+      warnings: copyWarnings,
+    } = await copyLocalFilesToOutputDir(sourceFilePaths, options.outputDir);
+    const warnings = [...options.payload.warnings, ...copyWarnings];
+
     return {
       result: {
         ...options.payload.result,
-        [FILE_URLS_FIELD_NAME]: buildLocalFileUrls(sourceFilePaths),
+        [LOCAL_FILES_FIELD_NAME]: outputFilePaths,
+        [FILE_URLS_FIELD_NAME]: buildLocalFileUrls(outputFilePaths),
       },
-      ...buildExecutorMetadataResultData(options.payload),
+      ...buildWarningsResultData(warnings),
     };
   }
 
@@ -1195,12 +1315,18 @@ export async function runDelegatedTask(
     });
   }
 
+  // R5②：本次交付文件路径（源文件 + output 副本）需在临时路径清理前剔除，防止误删交付文件
+  const deliveredFilePaths: string[] = [];
+
   try {
     const metadataResultData = buildExecutorMetadataResultData(structuredPayload);
     let resultData: Record<string, unknown> | undefined =
       Object.keys(metadataResultData).length > 0 ? metadataResultData : undefined;
 
     if (structuredPayload.success) {
+      // R5②：先收集原始交付源文件路径（复制成功后 result 字段会被 output 副本路径覆盖）
+      deliveredFilePaths.push(...collectSourceDeliveredFilePaths(structuredPayload, deliveryType));
+
       try {
         resultData = await buildExecutorResultData({
           payload: structuredPayload,
@@ -1208,6 +1334,8 @@ export async function runDelegatedTask(
           context: toolContext as ExecutorRuntimeContext,
           outputDir: options.outputDir,
         });
+        // R5②：再收集复制到 output 后的最终交付路径
+        deliveredFilePaths.push(...collectResultDeliveredFilePaths(resultData, deliveryType));
       } catch (error) {
         const failedResult = buildToolResult({
           success: false,
@@ -1243,6 +1371,11 @@ export async function runDelegatedTask(
       startAt: taskStartedAt,
     });
   } finally {
-    await removeTemporaryPaths(structuredPayload.temporaryPaths);
+    await removeTemporaryPaths(
+      excludeDeliveredPathsFromTemporaryPaths(
+        structuredPayload.temporaryPaths,
+        deliveredFilePaths,
+      ),
+    );
   }
 }

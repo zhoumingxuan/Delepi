@@ -4,6 +4,7 @@
  * + ECharts图表 + LaTeX公式 + 思考链
  */
 
+import { message } from 'antd';
 import {
   Actions,
   CodeHighlighter,
@@ -45,9 +46,12 @@ const markdownConfig = {
  * file: 不在其中，会导致 XMarkdown 渲染的图片 src 被剥离。
  *
  * 注意：放宽该正则会引入 file:// XSS 风险，仅在受信桌面应用中使用。
+ *
+ * 新增分支 [a-z]:(?=[\\/])：放行 Windows 盘符绝对路径形态（E:\... / E:/...），
+ * 由 LinkRenderer 的 normalizeWindowsPathToFileUrl 规范化为 file:/// URL 后再走本地文件打开链路。
  */
 const ALLOWED_URI_REGEXP =
-  /^(?:(?:(?:f|ht)tps?|file|mailto|tel|callto|sms|cid|xmpp|matrix):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
+  /^(?:(?:(?:f|ht)tps?|file|mailto|tel|callto|sms|cid|xmpp|matrix):|[a-z]:(?=[\\/])|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i;
 
 const blockquoteStyle: CSSProperties = {
   margin: '0.25rem 0',
@@ -336,6 +340,35 @@ function isLocalFileUrl(urlText: string): boolean {
   }
 }
 
+/**
+ * Windows 绝对路径规范化：盘符形态（E:\... / E:/...）或 UNC（\\server\share\...）
+ * 转换为 file:/// URL，使 isLocalFileUrl 能识别并经 IPC 打开。
+ * 非 Windows 绝对路径形态返回 undefined，保持原 href 不变。
+ */
+function normalizeWindowsPathToFileUrl(href: string): string | undefined {
+  if (/^\\\\/.test(href)) {
+    // UNC 路径：\\\\server\\share\\... → file://server/share/...
+    const normalized = href.replace(/\\/g, '/');
+    const rest = normalized.slice(2);
+    const hostEnd = rest.indexOf('/');
+    if (hostEnd <= 0) {
+      return undefined;
+    }
+    const host = rest.slice(0, hostEnd);
+    const encoded = rest.slice(hostEnd + 1).split('/').filter(Boolean).map(encodeURIComponent).join('/');
+    return `file://${host}/${encoded}`;
+  }
+
+  if (!/^[A-Za-z]:[\\/]/.test(href)) {
+    return undefined;
+  }
+
+  // 盘符路径：E:\\foo bar\\baz.txt → file:///E:/foo%20bar/baz.txt
+  const drive = href.slice(0, 2);
+  const encoded = href.slice(3).replace(/\\/g, '/').split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  return `file:///${drive}/${encoded}`;
+}
+
 function getUrlFileName(urlText: string): string | undefined {
   try {
     const url = new URL(urlText);
@@ -355,7 +388,10 @@ function LinkRenderer({
   const props = rest as ComponentProps & {
     href?: string;
   };
-  const href = props.href;
+  const rawHref = props.href;
+  const href = typeof rawHref === 'string'
+    ? normalizeWindowsPathToFileUrl(rawHref) ?? rawHref
+    : rawHref;
   const isLocalFile = typeof href === 'string' && isLocalFileUrl(href);
   const title = isLocalFile && typeof href === 'string'
     ? `打开 ${getUrlFileName(href) ?? '本地文件'}`
@@ -369,11 +405,14 @@ function LinkRenderer({
     event.preventDefault();
     const fileApi = window.electronAPI?.file;
     if (!fileApi) {
+      message.error('无法打开文件：本地文件接口不可用');
       return;
     }
 
     void fileApi.open(href).catch((error) => {
       console.error('[RichMarkdown] failed to open local file:', error);
+      const reason = error instanceof Error ? error.message : String(error);
+      message.error(`打开文件失败：${reason}`);
     });
   };
 

@@ -1004,7 +1004,7 @@ export function useChat(options?: UseChatOptions) {
 
   // 加载对话历史消息
   const loadConversationMessages = useCallback(
-    async (id: string, options?: { silent?: boolean }) => {
+    async (id: string, options?: { silent?: boolean; suppressActiveRunResume?: boolean }) => {
       // ★ P1-C2：串行化序号自增，响应回来时检查是否过期
       // 对齐 E:\ai_fr chat-shell.tsx L1130 loadSeq = ++conversationLoadSeqRef.current
       const loadSeq = ++conversationLoadSeqRef.current;
@@ -1045,9 +1045,30 @@ export function useChat(options?: UseChatOptions) {
             (message) => message.role === 'assistant' && message.status === 'loading',
           );
 
-          setMessages(msgs);
-          setConversationStreaming(id, hasActiveRun);
-          setConversationSending(id, hasActiveRun);
+          // ★ 修复（手动取消 loading 复活/挂起）：手动取消后主进程 runMainAgent 异步退出前，
+          //   runningAssistantMessages 中 status='loading' 的陈旧消息仍会被 conv:get-messages
+          //   附加返回；原逻辑无条件按 hasActiveRun 复活 streaming/sending，导致取消后 loading
+          //   重新出现且无后续事件收口（长时间挂起）。
+          //   守卫 1：chat:aborted 触发的重载（suppressActiveRunResume=true）强制不复活，
+          //           防 conversationsRef 渲染期镜像滞后导致守卫失效；
+          //   守卫 2：仅当会话列表权威态 isRunning=true 时才恢复（主进程 chat:abort 已先于
+          //           chat:aborted 将 isRunning 置 false 并推送 conversation:updated）。
+          const resumeActiveRun = hasActiveRun
+            && !options?.suppressActiveRunResume
+            && Boolean(conversationsRef.current.find((c) => c.id === id)?.isRunning);
+          // ★ 修复配套：权威态非运行（取消竞态窗口）时，将陈旧 loading assistant 消息归一化
+          //   为 abort，防止消息气泡复现 loading（语义对齐 markRunningMessagesAbortedInList）
+          const finalMsgs = hasActiveRun && !resumeActiveRun
+            ? msgs.map((message) =>
+                message.role === 'assistant' && message.status === 'loading'
+                  ? { ...message, status: 'abort' as const }
+                  : message,
+              )
+            : msgs;
+
+          setMessages(finalMsgs);
+          setConversationStreaming(id, resumeActiveRun);
+          setConversationSending(id, resumeActiveRun);
 
           // ★ S4（M5/M6）恢复单源：仅 snapshotMessages 直通恢复（对齐 ai_fr buildConversationDisplayState），
           //   字典键=快照 payload.toolCallId（委派 toolCall.id，与三通道事件键一致）；
@@ -2077,7 +2098,12 @@ export function useChat(options?: UseChatOptions) {
           setMessages((prev) => markRunningMessagesAbortedInList(prev));
           setToolSnapshots((prev) => markRunningToolSnapshotsAbortedInList(prev));
           // ★ 对齐 ai_fr：取消回复后静默刷新当前会话，从 DB 恢复权威消息/快照状态
-          void loadConversationMessages(data.conversationId, { silent: true });
+          // ★ 修复（手动取消 loading 复活/挂起）：携带 suppressActiveRunResume，防止主进程
+          //   runMainAgent 退出前 conv:get-messages 附加的陈旧 loading 消息复活 streaming/sending
+          void loadConversationMessages(data.conversationId, {
+            silent: true,
+            suppressActiveRunResume: true,
+          });
         }
 
         // ★ 修复 4：清空该对话在 Map 中的 ID

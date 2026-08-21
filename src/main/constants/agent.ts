@@ -72,6 +72,9 @@ export const DELIVERY_TYPE_PLAN = '方案';
 /** 详细规划交付类型 */
 export const DELIVERY_TYPE_PLAN_BOOK = '详细规划';
 
+/** 测试用例交付类型 */
+export const DELIVERY_TYPE_TEST_CASE = '测试用例';
+
 /** 图片交付类型对应的文件路径字段名 */
 export const IMAGE_FILES_FIELD_NAME = 'image_files';
 

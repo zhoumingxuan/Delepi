@@ -14,6 +14,7 @@ import {
   JSON_CODE_BLOCK_END,
   DELIVERY_TYPE_PLAN,
   DELIVERY_TYPE_PLAN_BOOK,
+  DELIVERY_TYPE_TEST_CASE,
   type ExecutorDeliveryType,
 } from '../../constants';
 
@@ -229,6 +230,7 @@ async function readDeliverable(
   if (
     deliveryType === DELIVERY_TYPE_PLAN
     || deliveryType === DELIVERY_TYPE_PLAN_BOOK
+    || deliveryType === DELIVERY_TYPE_TEST_CASE
   ) {
     return content ? { [nameWithoutExt]: content } : {};
   }
@@ -256,12 +258,17 @@ function getDocumentPathFieldName(deliveryType: ExecutorDeliveryType): string | 
     return '方案文档路径';
   }
 
+  if (deliveryType === DELIVERY_TYPE_TEST_CASE) {
+    return '测试用例文档路径';
+  }
+
   return null;
 }
 
 function shouldCopyDeliverableToOutput(deliveryType: ExecutorDeliveryType): boolean {
   return (
     deliveryType === DELIVERY_TYPE_PLAN
+    || deliveryType === DELIVERY_TYPE_TEST_CASE
   );
 }
 
