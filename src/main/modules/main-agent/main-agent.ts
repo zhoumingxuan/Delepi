@@ -25,10 +25,11 @@ import {
   isImageContentType,
 } from './main-agent-message-content';
 import { contentPartsToText } from '../../utils/chat-content';
+import { formatCurrentDateTime } from '../../utils/helper';
 import { SYSTEM_PROMPT, MAIN_TOOLS } from './prompt';
 import { getLatestCompletedContextCompression, runContextCompressionIfNeeded } from './context-compression-task';
 import { generateConversationTitle, truncateConversationTitle } from './title-generation';
-import { runDelegatedTask } from '../executor-agent/executor-agent';
+import { runDelegatedTask, computeTaskDurationSeconds } from '../executor-agent/executor-agent';
 import { buildToolResult, type ToolResult } from '../../tools/result';
 import {
   isExecutorToolProgressText,
@@ -127,14 +128,17 @@ type AssistantMessageSegment =
   | { id: string; type: 'tool_call'; toolCallId: string };
 
 
-// P1：已完成任务类型（对齐 ai_fr route.ts CompletedTask）
+// P1：已完成任务类型（对齐 ai_fr route.ts CompletedTask；元素直接展开 execResult=RunDelegatedTaskResult，
+//   即 { success, message, data?, startAt?, finishedAt?, durationSeconds? }，不再做字段转换）
 type CompletedTask = {
   seq: number;
   taskName: string;
-  finishedAt: string;
-  summary: string;
-  logPath: string;
-  status: 'success' | 'failed';
+  success: boolean;
+  message: string;
+  data?: Record<string, unknown>;
+  startAt?: string;
+  finishedAt?: string;
+  durationSeconds?: number;
 };
 
 // ============================================================
@@ -318,6 +322,8 @@ async function buildMainAgentMessages(options: {
   const currentUserPayload = currentUserMessage.payload;
 
   // 添加当前用户消息
+  // ★ 用户消息时间注入：在消息传给 AI 前，将当前时间（本地时间、不带时区）附加到该轮用户消息内容，
+  //   使 AI 每次收到消息时都能看到该消息的当前时间；历史用户消息不注入，避免时间语义错位。
   messages.push({
     role: 'user',
     content: await buildMainAgentUserContent({
@@ -327,6 +333,10 @@ async function buildMainAgentMessages(options: {
       attachments: Array.isArray(currentUserPayload.attachments)
         ? currentUserPayload.attachments as ChatAttachment[]
         : undefined,
+      heading: [
+        '## 当前用户输入内容（**最新用户需求和意图以此为准**）',
+        ` - 时间戳：\`${formatCurrentDateTime()}\` `,
+      ].join('\n'),
       ...multimodalConfig,
     }),
   });
@@ -359,13 +369,23 @@ async function resetConversationTasksDir(conversationId: string): Promise<void> 
  * 收到的结果包含 success/message/data 三段结构，便于下游 prompt 模板区分执行子智能体结果
  */
 function stringifyDelegatedTaskResultForMainAgent(
-  result: { success: boolean; message: string; data?: unknown },
+  result: {
+    success: boolean;
+    message: string;
+    startAt?: string;
+    finishedAt?: string;
+    durationSeconds?: number;
+    data?: unknown;
+  },
 ): string {
   return JSON.stringify(
     {
       current_task_execution_result: {
         success: result.success,
         message: result.message,
+        ...(typeof result.startAt === 'string' ? { startAt: result.startAt } : {}),
+        ...(typeof result.finishedAt === 'string' ? { finishedAt: result.finishedAt } : {}),
+        ...(typeof result.durationSeconds === 'number' ? { durationSeconds: result.durationSeconds } : {}),
         data: result.data,
       },
     },
@@ -377,15 +397,24 @@ function stringifyDelegatedTaskResultForMainAgent(
 function buildDelegatedTaskFailureResult(
   error: unknown,
   aborted: boolean,
-): ToolResult {
-  return buildToolResult({
-    success: false,
-    code: aborted ? 'DELEGATED_TASK_ABORTED' : 'DELEGATED_TASK_EXECUTION_ERROR',
-    message: aborted
-      ? '执行子智能体任务已取消。'
-      : `执行子智能体任务失败：${ensureErrorMessage(error)}`,
-    data: {},
-  });
+  startAt: string,
+): ToolResult & { startAt: string; finishedAt: string; durationSeconds: number } {
+  // 失败时刻取失败结果构造时刻，与正常路径 finishedAt 语义一致（formatCurrentDateTime，本地时间不带时区）
+  const finishedAt = formatCurrentDateTime();
+  const durationSeconds = computeTaskDurationSeconds(startAt, finishedAt);
+  return {
+    ...buildToolResult({
+      success: false,
+      code: aborted ? 'DELEGATED_TASK_ABORTED' : 'DELEGATED_TASK_EXECUTION_ERROR',
+      message: aborted
+        ? '执行子智能体任务已取消。'
+        : `执行子智能体任务失败：${ensureErrorMessage(error)}`,
+      data: {},
+    }),
+    startAt,
+    finishedAt,
+    durationSeconds,
+  };
 }
 
 // ============================================================
@@ -744,6 +773,9 @@ export async function runMainAgent(
       });
 
       if (isDelegatedExecutor) {
+        // 任务发起时刻（本地时间，不带时区）：失败路径（abort 未启动 / catch 异常）startAt 的真实来源，
+        // 与正常路径 executor-agent runDelegatedTask 入口 taskStartedAt 语义一致。
+        const delegatedTaskStartedAt = formatCurrentDateTime();
         // 委派给 ExecutorAgent
         // ★ 修复主/子智能体消息混淆：在 emit 'executor:thinking' / 'executor:tool-progress' 时
         //   携带 source='executor' + taskName 字段，前端可据此判定消息来源于执行子智能体并
@@ -915,7 +947,7 @@ export async function runMainAgent(
         //   循环顶作用域不可达；按语义锚点落位（sendToolSnapshot 可用、runDelegatedTask 实质启动前）。
         //   S4：委派任务表已随读取链全链摘除，本出口不再有表补偿写（零读写，对齐 ai_fr）。
         if (options.signal?.aborted) {
-          const failureResult = buildDelegatedTaskFailureResult(undefined, true);
+          const failureResult = buildDelegatedTaskFailureResult(undefined, true, delegatedTaskStartedAt);
           const failureResultText = stringifyDelegatedTaskResultForMainAgent(failureResult);
           const toolFinishedAt = new Date().toISOString();
           pendingToolMessagePayloads.push({
@@ -996,11 +1028,9 @@ export async function runMainAgent(
               conversationId,
               runDir: conversationDir,
             },
-            // 阶段 2 修复：传入上一个委派任务上下文，供本次任务的 system prompt 拼接
+            // 已完成任务数组直接传下去（不做转换）：completedTasks.length>0 时传全量数组，否则 undefined
             // 与网站版 stream/route.ts L796-801 行为一致
-            previousTask: completedTasks.length > 0
-              ? { taskName: completedTasks[completedTasks.length - 1].taskName, output: completedTasks[completedTasks.length - 1].summary }
-              : undefined,
+            completedTasks: completedTasks.length > 0 ? completedTasks : undefined,
             onThinking: (text, info) => {
               // 透传子智能体 thinking / 工具进度 → EventBus → IPC → 前端
               // 对齐 ai_fr route.ts onThinking 分流：进度文本仅推送 result 不更新 thinking；
@@ -1149,19 +1179,13 @@ export async function runMainAgent(
             completedEntry = {
               seq: 0,
               taskName: parsedTaskName,
-              finishedAt: toolFinishedAt,
-              summary: toolResultContent,
-              logPath: finalOutputDir,
-              status: execResult.success ? 'success' : 'failed',
+              ...execResult,
             };
           } catch {
             completedEntry = {
               seq: 0,
               taskName: '',
-              finishedAt: toolFinishedAt,
-              summary: toolResultContent,
-              logPath: finalOutputDir,
-              status: execResult.success ? 'success' : 'failed',
+              ...execResult,
             };
           }
           return { toolCall, status: 'success' as const, completedEntry };
@@ -1173,6 +1197,7 @@ export async function runMainAgent(
           const failureResult = buildDelegatedTaskFailureResult(
             error,
             Boolean(options.signal?.aborted),
+            delegatedTaskStartedAt,
           );
           const failureResultText = stringifyDelegatedTaskResultForMainAgent(failureResult);
           const toolFinishedAt = new Date().toISOString();
@@ -1253,8 +1278,8 @@ export async function runMainAgent(
 
     // ★ 批次完成后：按 settled 结果汇总 completedTasks（对齐 ai_fr route.ts:970-987）——
     //   任务闭包不再直接 push（原串行循环内逐个 push 语义在并行下不成立）；seq 按批次末汇总序赋值。
-    //   配套效果：runDelegatedTask 入参 previousTask 在闭包启动时刻读到的 completedTasks
-    //   即"批次开始前最后完成的任务"（同批次 entry 全部延迟至此 push），语义对齐 ai_fr
+    //   配套效果：runDelegatedTask 入参 completedTasks（全量数组）在闭包启动时刻读到的 completedTasks
+    //   即"批次开始前已完成的任务"（同批次 entry 全部延迟至此 push），语义对齐 ai_fr
     //   route.ts:823（completedTasks 引用传入，批末才汇总）。
     for (const result of settled) {
       if (result.status === 'fulfilled' && result.value.status === 'success' && result.value.completedEntry) {

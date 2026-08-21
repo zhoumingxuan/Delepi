@@ -63,6 +63,28 @@ const PRESET_PACKAGES: Record<string, string> = {
   'pandas': '>=1.5',
   // 报表导出（Excel写出）
   'xlsxwriter': '>=3.0',
+  // ---- HTML/XML/浏览器/Windows 窗口（2026-08-20 新增）----
+  'beautifulsoup4': '>=4.12.0',
+  'html5lib':       '>=1.1',
+  'xmltodict':      '>=0.13.0',
+  'defusedxml':     '>=0.7.1',
+  'playwright':     '>=1.40.0',
+  'pywinauto':      '>=0.6.8',
+  'pywin32':        '>=306',
+  'pygetwindow':    '>=0.0.9',
+  'comtypes':       '>=1.1.11',
+  // ---- 数据库驱动与常用工具（2026-08-20 新增）----
+  'pymysql':                '>=1.2.0',
+  'mysql-connector-python': '>=26.7.0',
+  'pyodbc':                 '>=5.3.0',
+  'pymssql':                '>=2.3.13',
+  'psycopg2-binary':        '>=2.9.12',
+  'oracledb':               '>=4.0.2',
+  'redis':                  '>=8.1.0',
+  'pymongo':                '>=4.17.0',
+  'SQLAlchemy':             '>=2.0.52',
+  'pydantic':               '>=2.13.4',
+  'orjson':                 '>=3.12.0',
 };
 
 // pip 包名 → import 模块名映射（部分 pip 包名与 Python 导入模块名不一致）
@@ -74,6 +96,11 @@ const IMPORT_NAMES: Record<string, string> = {
   'networkx': 'networkx',
   'paramiko': 'paramiko',
   'xlsxwriter': 'xlsxwriter',
+  'beautifulsoup4': 'bs4',
+  'pywin32': 'win32api',
+  'mysql-connector-python': 'mysql.connector',
+  'psycopg2-binary': 'psycopg2',
+  'SQLAlchemy': 'sqlalchemy',
 };
 
 function log(msg: string): void {
@@ -381,13 +408,21 @@ async function main() {
   // ---- Step 5: 安装预装依赖 ----
   log('安装预装依赖...');
   const sitePackagesDir = path.join(buildPythonDir, 'Lib', 'site-packages');
+
+  // 预装构建后端（setuptools/wheel）：embeddable Python 的 _pth 忽略 PYTHONPATH，
+  // pip 默认构建隔离注入 sitecustomize 失效，需关闭隔离并由宿主 site-packages 提供 setuptools.build_meta
+  await runCommand(
+    pythonExe,
+    ['-m', 'pip', 'install', '--disable-pip-version-check', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
+    buildPythonDir,
+  );
   const pkgSpecs: string[] = [];
   for (const [name, ver] of Object.entries(PRESET_PACKAGES)) {
     pkgSpecs.push(`${name}${ver}`);
   }
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', ...pkgSpecs, '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-build-isolation', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', ...pkgSpecs, '--target', sitePackagesDir],
     buildPythonDir,
   );
   log(`预装依赖安装完成: ${pkgSpecs.length} 个包`);

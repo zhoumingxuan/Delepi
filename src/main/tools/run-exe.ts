@@ -771,7 +771,23 @@ export async function runExe(
   const execId = normalizeOptionalString(resolvedInput.exec_id) || randomUUID();
   const cmdLines = resolvedInput.cmd_lines;
 
-  if (!Array.isArray(cmdLines) || cmdLines.length === 0) {
+  // 容错：把非数组形态的 cmd_lines 包装成数组（与 run-with-python.ts 的 String() 强转风格一致）
+  let normalizedCmdLines: unknown = cmdLines;
+  if (typeof cmdLines === 'string' && cmdLines.trim()) {
+    normalizedCmdLines = [cmdLines];
+  } else if (typeof cmdLines === 'number' || typeof cmdLines === 'boolean') {
+    normalizedCmdLines = [String(cmdLines)];
+  } else if (Array.isArray(cmdLines)) {
+    normalizedCmdLines = cmdLines.map((item) =>
+      typeof item === 'string'
+        ? item
+        : typeof item === 'number' || typeof item === 'boolean'
+          ? String(item)
+          : item,
+    );
+  }
+
+  if (!Array.isArray(normalizedCmdLines) || normalizedCmdLines.length === 0) {
     return buildToolResult({
       success: false,
       code: ERR_INVALID_ARGUMENT,
@@ -779,7 +795,7 @@ export async function runExe(
     });
   }
 
-  if (!cmdLines.every((item) => typeof item === 'string')) {
+  if (!normalizedCmdLines.every((item) => typeof item === 'string')) {
     return buildToolResult({
       success: false,
       code: ERR_INVALID_ARGUMENT,
@@ -788,7 +804,7 @@ export async function runExe(
   }
 
   const platform = getShellPlatform();
-  const script = cmdLines.join(platform === 'windows' ? '\r\n' : '\n');
+  const script = normalizedCmdLines.join(platform === 'windows' ? '\r\n' : '\n');
   const requestedWorkDir =
     normalizeOptionalString(resolvedInput.run_dir) ||
     normalizeOptionalString(resolvedInput.work_dir) ||

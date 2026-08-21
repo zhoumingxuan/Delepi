@@ -55,6 +55,7 @@ import {
   normalizeString,
   isRecord,
 } from '../../utils/index';
+import { formatCurrentDateTime } from '../../utils/helper';
 import {
   MAX_WORKFLOW_TEMPLATE_COUNT,
   EXECUTOR_WORKER_SKILLS_DIR,
@@ -88,8 +89,8 @@ import {
   attachExecutionLogPathToResult,
   completeExecutionLogToolCall,
   createExecutorExecutionLog,
-  extractExecutionLogPathFromToolResultText,
   setExecutionLogStructuredOutput,
+  type ExecutorExecutionLog,
   type ExecutorExecutionLogToolCall,
 } from './executor-execution-log';
 /** 委派任务中携带的上传文件 */
@@ -132,18 +133,15 @@ type ParsedDelegateExecutorInputResult = {
   issues: string[];
 };
 
-type PreviousDelegatedTask = {
-  taskName: string;
-  output: string;
-};
-
 type CompletedTaskInfo = {
   seq: number;
   taskName: string;
-  finishedAt: string;
-  summary: string;
-  logPath: string;
-  status: string;
+  success: boolean;
+  message: string;
+  data?: Record<string, unknown>;
+  startAt?: string;
+  finishedAt?: string;
+  durationSeconds?: number;
 };
 
 type ExecutorRuntimeContext = Partial<ToolRuntimeContext>;
@@ -360,25 +358,17 @@ ${fileTexts.join('\n')}
 
 function buildExecutorTaskIntro(
   input: ParsedDelegateExecutorInput,
-  previousTasks?: CompletedTaskInfo[],
+  completedTasks?: CompletedTaskInfo[],
   currentUploadedFiles?: DelegatedUploadedFile[],
   finalOutputDir?: string,
   runDir?: string,
 ): string {
-  const previousTasksSection = previousTasks?.length
+  const completedTasksSection = completedTasks?.length
     ? `
-# 已完成任务列表
-${previousTasks.map((task) => `
+# 已完成任务清单（**仅供参考，用于任务交接**)
+\`\`\`json
+${JSON.stringify(completedTasks)}
 \`\`\`
-- [任务序号]：${task.seq}
-- [任务名称]：${task.taskName}
-- [完成时间]：${task.finishedAt}
-- [执行概要]：${task.summary.length > EXECUTOR_OUTPUT_TRUNCATE_LENGTH ? task.summary.slice(0, EXECUTOR_OUTPUT_TRUNCATE_LENGTH) + '...[截断]' : task.summary}
-- [日志文件路径]：
-  \`${task.logPath}\`
-- [任务结果]：${task.status}
-\`\`\`
-`).join('\n')}
 `
     : '';
   const currentUploadedFilesSection = buildCurrentUploadedFilesText(currentUploadedFiles);
@@ -393,7 +383,7 @@ ${previousTasks.map((task) => `
     : '';
 
   return `
-## 任务信息
+## 当前任务信息
 \`\`\`
 - [任务名称]：
   ${input.taskName}
@@ -408,19 +398,19 @@ ${buildExpectedDeliveryText(input.expectedDelivery)}
 \`\`\`
 ${runDirSection ? `\n${runDirSection}` : ''}
 ${finalOutputDirSection ? `\n${finalOutputDirSection}` : ''}
-${previousTasksSection}
 # 任务上下文（包含任务交接信息等内容）
 \`\`\`
   ${input.contextData}
 \`\`\`
 ${currentUploadedFilesSection ? `\n\n${currentUploadedFilesSection}` : ''}
+${completedTasksSection ? `\n\n${completedTasksSection}` : ''}
   `.trim();
 }
 
 function buildExecutorPlainTextPrompt(options: {
   taskInput: ParsedDelegateExecutorInput;
   workflowTemplates: string[];
-  previousTasks?: CompletedTaskInfo[];
+  completedTasks?: CompletedTaskInfo[];
   currentUploadedFiles?: DelegatedUploadedFile[];
   finalOutputDir?: string;
   runDir?: string;
@@ -428,7 +418,7 @@ function buildExecutorPlainTextPrompt(options: {
   const sections = [
     buildExecutorTaskIntro(
       options.taskInput,
-      options.previousTasks,
+      options.completedTasks,
       options.currentUploadedFiles,
       options.finalOutputDir,
       options.runDir,
@@ -451,7 +441,7 @@ function buildOutputDirectoryText(outputDir: string | undefined): string | undef
 
   return [
     `- 【输出目录】：${outputDir}`,
-    '- 需要作为独立文件交付的文件、图片、方案、详细规划和关键材料必须写入该目录。',
+    '- 需要作为独立文件交付的文件、图片、方案、详细规划必须写入该目录。',
     '- 如果任务要求在用户指定项目或工作区内生成、修改文件，则按任务要求写入原项目路径，不要改放到该目录。',
   ].join('\n');
 }
@@ -839,10 +829,8 @@ export type RunDelegatedTaskOptions = {
   conversationId: string;
   /** 工具运行时上下文 */
   toolContext?: Partial<ToolRuntimeContext>;
-  /** @deprecated 使用 previousTasks 替代 */
-  previousTask?: PreviousDelegatedTask;
   /** 已完成任务列表（用于任务交接） */
-  previousTasks?: CompletedTaskInfo[];
+  completedTasks?: CompletedTaskInfo[];
   /** 当前上传文件 */
   currentUploadedFiles?: DelegatedUploadedFile[];
   /** 最终输出目录 */
@@ -874,11 +862,79 @@ export type RunDelegatedTaskOptions = {
   onToolResult?: (toolName: string, success: boolean, message: string, callId: string) => void;
 };
 
-export type RunDelegatedTaskResult = ToolResult;
+export type RunDelegatedTaskResult = ToolResult & {
+  /** 任务开始时间（本地时间，不带时区，格式 YYYY-MM-DD HH:mm:ss） */
+  startAt?: string;
+  /** 任务结束时间（本地时间，不带时区，格式 YYYY-MM-DD HH:mm:ss） */
+  finishedAt?: string;
+  /** 任务执行总秒数（整数秒，非负，最小 0） */
+  durationSeconds?: number;
+};
+
+/**
+ * 计算任务执行总秒数（整数秒）。
+ * 基于字符串时间（YYYY-MM-DD HH:mm:ss，本地时间无时区）解析为 Date 后计算：
+ * durationSeconds = Math.floor((finishedAt - startAt) / 1000)，且必须为非负整数（最小 0）。
+ * 正常路径与失败路径统一复用本函数，保证算法一致。
+ */
+export function computeTaskDurationSeconds(startAt: string, finishedAt: string): number {
+  const startMs = parseLocalDateTimeMs(startAt);
+  const finishedMs = parseLocalDateTimeMs(finishedAt);
+  if (Number.isNaN(startMs) || Number.isNaN(finishedMs)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor((finishedMs - startMs) / 1000));
+}
+
+function parseLocalDateTimeMs(dateTimeText: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(dateTimeText);
+  if (!match) {
+    return Number.NaN;
+  }
+  const [, year, month, day, hour, minute, second] = match;
+  return new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+    Number(second),
+  ).getTime();
+}
+
+/**
+ * 任务输出时间附加：在任务输出（ToolResult）上统一附加 startAt / finishedAt。
+ * 作为 runDelegatedTask 所有返回路径的统一出口，保证任何任务输出都携带开始/结束时间；
+ * 时间来源为 formatCurrentDateTime()（本地时间，不带时区）。
+ */
+async function attachTaskOutputTimes(options: {
+  result: ToolResult;
+  log: ExecutorExecutionLog;
+  finalOutputDir?: string;
+  startAt: string;
+}): Promise<RunDelegatedTaskResult> {
+  const finishedAt = formatCurrentDateTime();
+  const durationSeconds = computeTaskDurationSeconds(options.startAt, finishedAt);
+  const timedResult: RunDelegatedTaskResult = {
+    ...options.result,
+    startAt: options.startAt,
+    finishedAt,
+    durationSeconds,
+  };
+
+  return attachExecutionLogPathToResult({
+    result: timedResult,
+    log: options.log,
+    finalOutputDir: options.finalOutputDir,
+  });
+}
 
 export async function runDelegatedTask(
   options: RunDelegatedTaskOptions,
 ): Promise<RunDelegatedTaskResult> {
+  // 任务开始时间（本地时间，不带时区）
+  const taskStartedAt = formatCurrentDateTime();
+
   // 解析委派任务输入
   const parseResult = parseDelegateExecutorInput(options.rawArguments);
   const executionLog = createExecutorExecutionLog({
@@ -898,10 +954,11 @@ export async function runDelegatedTask(
     });
     executionLog.errors.push(message);
 
-    return attachExecutionLogPathToResult({
+    return attachTaskOutputTimes({
       result: failedResult,
       log: executionLog,
       finalOutputDir: options.finalOutputDir,
+      startAt: taskStartedAt,
     });
   }
 
@@ -940,18 +997,7 @@ export async function runDelegatedTask(
       content: buildExecutorPlainTextPrompt({
         taskInput: parsedInput,
         workflowTemplates,
-        previousTasks: options.previousTasks ?? (
-          options.previousTask?.taskName && options.previousTask?.output
-            ? [{
-                seq: 1,
-                taskName: options.previousTask.taskName,
-                finishedAt: new Date().toISOString(),
-                summary: options.previousTask.output,
-                logPath: extractExecutionLogPathFromToolResultText(options.previousTask.output),
-                status: 'success',
-              }]
-            : undefined
-        ),
+        completedTasks: options.completedTasks,
         currentUploadedFiles: options.currentUploadedFiles,
         finalOutputDir: options.finalOutputDir,
         runDir: toolContext.runDir,
@@ -1141,10 +1187,11 @@ export async function runDelegatedTask(
       message: `执行智能体返回内容无法解析为可用执行结果。\n${outputDetail}`,
     });
 
-    return attachExecutionLogPathToResult({
+    return attachTaskOutputTimes({
       result: failedResult,
       log: executionLog,
       finalOutputDir: options.finalOutputDir,
+      startAt: taskStartedAt,
     });
   }
 
@@ -1169,10 +1216,11 @@ export async function runDelegatedTask(
         });
         executionLog.errors.push(failedResult.message);
 
-        return attachExecutionLogPathToResult({
+        return attachTaskOutputTimes({
           result: failedResult,
           log: executionLog,
           finalOutputDir: options.finalOutputDir,
+          startAt: taskStartedAt,
         });
       }
     }
@@ -1188,10 +1236,11 @@ export async function runDelegatedTask(
       data: resultData,
     });
 
-    return attachExecutionLogPathToResult({
+    return attachTaskOutputTimes({
       result: finalResult,
       log: executionLog,
       finalOutputDir: options.finalOutputDir,
+      startAt: taskStartedAt,
     });
   } finally {
     await removeTemporaryPaths(structuredPayload.temporaryPaths);

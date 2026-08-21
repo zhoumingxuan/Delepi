@@ -12,10 +12,8 @@ import { copyFileToOutputDir } from '../../utils/storage-output';
 import {
   JSON_CODE_BLOCK_START,
   JSON_CODE_BLOCK_END,
-  KEY_MATERIAL_TRUNCATE_THRESHOLD,
   DELIVERY_TYPE_PLAN,
   DELIVERY_TYPE_PLAN_BOOK,
-  DELIVERY_TYPE_KEY_MATERIAL,
   type ExecutorDeliveryType,
 } from '../../constants';
 
@@ -231,7 +229,6 @@ async function readDeliverable(
   if (
     deliveryType === DELIVERY_TYPE_PLAN
     || deliveryType === DELIVERY_TYPE_PLAN_BOOK
-    || deliveryType === DELIVERY_TYPE_KEY_MATERIAL
   ) {
     return content ? { [nameWithoutExt]: content } : {};
   }
@@ -265,7 +262,6 @@ function getDocumentPathFieldName(deliveryType: ExecutorDeliveryType): string | 
 function shouldCopyDeliverableToOutput(deliveryType: ExecutorDeliveryType): boolean {
   return (
     deliveryType === DELIVERY_TYPE_PLAN
-    || deliveryType === DELIVERY_TYPE_KEY_MATERIAL
   );
 }
 
@@ -341,7 +337,6 @@ export async function parseExecutorStructuredPayload(options: {
       return buildParseFailure(finalOutput.error ?? '最终 JSON 字段无法解析。');
     }
 
-    const isStructuredData = options.deliveryType === DELIVERY_TYPE_KEY_MATERIAL;
     const documentPathFieldName = getDocumentPathFieldName(options.deliveryType);
     const deliverableAbsolutePath = finalOutput.payload.deliverableFilename && options.finalOutputDir
       ? path.join(options.finalOutputDir, finalOutput.payload.deliverableFilename)
@@ -367,26 +362,9 @@ export async function parseExecutorStructuredPayload(options: {
       deliverableOutputPath,
     );
 
-    let structuredDataFilePath = deliverableOutputPath;
     let result: Record<string, unknown> | null = null;
 
-    if (isStructuredData) {
-      const dataContent = await readFinalOutputFileIfPresent(
-        options.finalOutputDir,
-        finalOutput.payload.deliverableFilename,
-      );
-      if (dataContent && dataContent.length > KEY_MATERIAL_TRUNCATE_THRESHOLD) {
-        result = {
-          structured_data_file_path: structuredDataFilePath,
-          first_part_content: `【必须注意以下仅为部分内容，不是完整内容】\n${dataContent.substring(0, KEY_MATERIAL_TRUNCATE_THRESHOLD)}......`,
-          important_message: `当前数据内容过大，已超过${KEY_MATERIAL_TRUNCATE_THRESHOLD}个字符，输出被截断，部分内容可参考【first_part_content】；若需要看完整的【关键材料】，请用【信息整理】并且访问【structured_data_file_path】表示的文件。`,
-        };
-      } else if (dataContent) {
-        result = readContent;
-      } else {
-        result = { read_error: '无法读取当前【关键材料】，可能需要重新执行' };
-      }
-    } else if (documentPathFieldName) {
+    if (documentPathFieldName) {
       readContent = { ...readContent, [documentPathFieldName]: deliverableOutputPath };
       result = readContent;
     } else {

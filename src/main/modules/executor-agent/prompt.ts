@@ -74,7 +74,7 @@ export const EXECUTOR_TOOLS = {
                 cmd_lines: {
                     type: 'array',
                     description:
-                        '按行提供的脚本内容。仅提交实际业务命令，不要再包一层 shell 启动命令。',
+                        'string[] 形态，按行提供的脚本内容（例如 ["echo hello", "dir"]）。仅提交实际业务命令，不要再包一层 shell 启动命令。',
                     items: {
                         type: 'string',
                     },

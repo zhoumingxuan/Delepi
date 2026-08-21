@@ -32,8 +32,6 @@ function buildDeliverableFieldDescription(deliveryType: ExecutorDeliveryType): s
       return `  - deliverable_filename  string类型  必填，非空，固定为 \`${IMAGE_FILES_FIELD_NAME}.json\`;文件内容必须是 JSON 对象，且只包含 \`${IMAGE_FILES_FIELD_NAME}\` 字段；\`${IMAGE_FILES_FIELD_NAME}\` 必须为非空 string[]，每项必须是已生成、可读取并覆盖验收对象的本地图片绝对路径。写入后必须用 Python 核验 JSON 可解析且顶层字段只有 \`${IMAGE_FILES_FIELD_NAME}\`。`;
     case '测试用例':
       return '  - deliverable_filename  string类型  必填，非空，依据【当前任务】实际落地【测试用例】填写文件名（文件名格式:***.***）;文件格式依据实际任务情况。';
-    case '关键材料':
-      return '  - deliverable_filename  string类型  必填，非空，依据【当前任务】实际落地【关键材料】填写文件名（文件名格式:***.***）;文件内容格式默认为 JSON。文件内容必须格式完整且合法。写入后必须用 Python 核验格式完整性（若为 JSON 则核验可解析；若为 CSV 则核验列一致性等）。';
   }
 }
 

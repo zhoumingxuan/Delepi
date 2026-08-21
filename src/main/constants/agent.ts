@@ -55,9 +55,6 @@ export const JSON_CODE_BLOCK_START = '```json';
 /** JSON 代码块结束标记 */
 export const JSON_CODE_BLOCK_END = '```';
 
-/** 关键材料数据内容截断阈值 */
-export const KEY_MATERIAL_TRUNCATE_THRESHOLD = 16384;
-
 // ============================================================
 // 交付类型判断用常量
 // ============================================================
@@ -74,9 +71,6 @@ export const DELIVERY_TYPE_PLAN = '方案';
 
 /** 详细规划交付类型 */
 export const DELIVERY_TYPE_PLAN_BOOK = '详细规划';
-
-/** 关键材料交付类型 */
-export const DELIVERY_TYPE_KEY_MATERIAL = '关键材料';
 
 /** 图片交付类型对应的文件路径字段名 */
 export const IMAGE_FILES_FIELD_NAME = 'image_files';
@@ -132,7 +126,6 @@ export const EXECUTOR_DELIVERY_TYPES = [
   '文件链接',
   '图片',
   '测试用例',
-  '关键材料',
 ] as const;
 export type ExecutorDeliveryType = (typeof EXECUTOR_DELIVERY_TYPES)[number];
 

@@ -34,7 +34,7 @@ import { depsStorage } from './deps-storage';
 // 常量
 // ================================================================
 
-/** 三级依赖包清单：核心6包 / 推荐14包（核心+8） / 全部24包（推荐+10） */
+/** 三级依赖包清单：核心6包 / 推荐23包（核心+17） / 全部33包（推荐+10） */
 const DEPS_PACKAGES: DepsPackage[] = [
   // ---- 核心6包 ----
   { name: 'numpy',          level: 'core',        status: 'pending' },
@@ -53,6 +53,16 @@ const DEPS_PACKAGES: DepsPackage[] = [
   { name: 'Pillow',         level: 'recommended', status: 'pending' },
   { name: 'pdfplumber',     level: 'recommended', status: 'pending' },
   { name: 'pandas',         level: 'recommended', status: 'pending' },
+  // ---- HTML/XML/浏览器/Windows 窗口（2026-08-20 新增）----
+  { name: 'beautifulsoup4', level: 'recommended', status: 'pending' },
+  { name: 'html5lib',       level: 'recommended', status: 'pending' },
+  { name: 'xmltodict',      level: 'recommended', status: 'pending' },
+  { name: 'defusedxml',     level: 'recommended', status: 'pending' },
+  { name: 'playwright',     level: 'recommended', status: 'pending' },
+  { name: 'pywinauto',      level: 'recommended', status: 'pending' },
+  { name: 'pywin32',        level: 'recommended', status: 'pending' },
+  { name: 'pygetwindow',    level: 'recommended', status: 'pending' },
+  { name: 'comtypes',       level: 'recommended', status: 'pending' },
 
   // ---- 全部+10包 ----
   { name: 'scipy',          level: 'full',        status: 'pending' },
@@ -656,7 +666,7 @@ export class DepsManager {
       throw new Error('pip 不可用，无法安装依赖包');
     }
 
-    // 筛选 recommended 级别包（core + recommended = 14 包）
+    // 筛选 recommended 级别包（core + recommended = 23 包）
     const levelOrder: Record<DepsLevel, number> = { core: 0, recommended: 1, full: 2 };
     const recommendedPackages = DEPS_PACKAGES.filter(
       pkg => levelOrder[pkg.level] <= levelOrder['recommended']

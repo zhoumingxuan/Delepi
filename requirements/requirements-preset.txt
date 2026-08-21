@@ -1,5 +1,5 @@
 # Delepi 预置 Python 环境依赖清单（内置 Python 3.14.6 预置环境）
-# 与 scripts/build-preset-python.ts 的 PRESET_PACKAGES 常量保持一致（14 包，顺序一致）
+# 与 scripts/build-preset-python.ts 的 PRESET_PACKAGES 常量保持一致（34 包，顺序一致）
 # 安装方式：pip install -r requirements-preset.txt
 # 说明：TCP/UDP 通信由 Python 标准库 socket 支持，无需第三方包
 #
@@ -29,3 +29,25 @@ networkx>=3.0
 pandas>=1.5
 # ---- 报表导出（Excel 写出）----
 xlsxwriter>=3.0
+# ---- HTML/XML/浏览器/Windows 窗口（2026-08-20 新增）----
+beautifulsoup4>=4.12.0
+html5lib>=1.1
+xmltodict>=0.13.0
+defusedxml>=0.7.1
+playwright>=1.40.0
+pywinauto>=0.6.8
+pywin32>=306
+pygetwindow>=0.0.9
+comtypes>=1.1.11
+# ---- 数据库驱动与常用工具（2026-08-20 新增）----
+pymysql>=1.2.0
+mysql-connector-python>=26.7.0
+pyodbc>=5.3.0
+pymssql>=2.3.13
+psycopg2-binary>=2.9.12
+oracledb>=4.0.2
+redis>=8.1.0
+pymongo>=4.17.0
+SQLAlchemy>=2.0.52
+pydantic>=2.13.4
+orjson>=3.12.0

@@ -16,7 +16,7 @@ function buildContextCompressionInstruction(): string {
 3.必须严格的按照时间顺序**原样保留**以下信息：1.用户提供的所有事实信息。2.所有已确认的【事实、结论、线索】。3.全部或者【最近10轮对话】中【用户输入】以及【助手回复】的信息中所有特征（如：数据特征、视觉特征、隐含特征、极难发现的特征等）。4.全部或者最近10条用户表达的意图。
 4.必须写入全部或者最近10轮对话摘要以及执行任务摘要信息；同时务必体现对话的用户意图和具体时序；超过10轮次的对话，允许只保留历史意图和核心要素概括说明。
 5.通用执行任务参考经验：可依据上下文分析的所有事实和所有【显式/隐式/细微/极难发现】的特征，总结出可提供给后续任务的通用执行任务参考经验；主要目的是为了简化任务执行路径，若没有就写无；**务必注意后续执行环境可能有变化，仅提供参考经验**。
-6.仅输出MarkDown文档且只能有以下【互相不耦合】的六个章节：1.事实和结论清单。2.线索清单。3.用户输入信息中特征清单（同时说明具体时序）4.用户历史意图（同时说明具体时序）5.历史对话概要（同时说明具体时序）6.通用执行任务参考经验；绝不输出MarkDown文档以外的其他内容。
+6.仅输出MarkDown文档且只能有以下【互相不耦合】的六个章节：1.事实和结论清单。2.线索清单。3.用户输入信息中特征清单（同时说明具体时序）4.用户历史意图（同时说明具体【时序和时间】）5.历史对话概要（同时说明具体【时序】以及【时间范围】）6.通用执行任务参考经验；绝不输出MarkDown文档以外的其他内容。
 `.trim();
 }
 function extractText(input: unknown): string {
@@ -59,7 +59,7 @@ export async function compressMessagesToContext(
   multimodalEnabled: boolean,
 ): Promise<string> {
   const requestMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    ...messages,
+    ...messages.filter((m) => m.role !== 'system'),
     {
       role: 'user',
       content: buildMainAgentTextContent(
