@@ -435,18 +435,6 @@ function buildExecutorPlainTextPrompt(options: {
   return sections.join('\n\n');
 }
 
-function buildOutputDirectoryText(outputDir: string | undefined): string | undefined {
-  if (!outputDir) {
-    return undefined;
-  }
-
-  return [
-    `- 【输出目录】：${outputDir}`,
-    '- 需要作为独立文件交付的文件、图片、方案、详细规划必须写入该目录。',
-    '- 如果任务要求在用户指定项目或工作区内生成、修改文件，则按任务要求写入原项目路径，不要改放到该目录。',
-  ].join('\n');
-}
-
 async function removeTemporaryPaths(temporaryPaths: string[]): Promise<void> {
   await Promise.all(
     temporaryPaths.map(async (temporaryPath) => {
@@ -1108,7 +1096,9 @@ export async function runDelegatedTask(
       role: 'system',
       content: buildExecutorSystemPrompt({
         deliveryType,
-        sessionDirectoryText: buildOutputDirectoryText(options.outputDir),
+        sessionDirectoryText: toolContext.runDir
+          ? `当前对话目录：${toolContext.runDir}`
+          : undefined,
         currentPid: process.pid,
       }),
     },
