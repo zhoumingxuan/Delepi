@@ -173,14 +173,8 @@ function renderToolResultContent(
   }
 
   if (isJsonString(value)) {
-    const parsed = JSON.parse(value) as unknown;
-    const previewMarkdown = options?.includeStructuredFilePreview === false
-      ? ''
-      : buildStructuredFilePreviewMarkdown(parsed);
     const jsonMarkdown = ['```json', prettyJsonString(value), '```'].join('\n');
-    return previewMarkdown
-      ? `${previewMarkdown}\n\n${jsonMarkdown}`
-      : jsonMarkdown;
+    return jsonMarkdown;
   }
 
   return value;
