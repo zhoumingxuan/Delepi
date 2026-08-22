@@ -26,6 +26,16 @@ import { pipeline } from 'node:stream/promises';
 const PYTHON_VERSION = '3.14.6';
 const PYTHON_SHORT = '3.14';
 const EMBED_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`;
+// mac/linux 变体运行时来源：python-build-standalone（PBS）便携发行版（python.org 无 macOS/Linux 免安装发行版）。
+// tag 固定 20260804：更新的 release tag 已无 cpython-3.14.6 资产（2026-08-22 盘点实测）。
+const PBS_TAG = '20260804';
+// triple 运行时解析：mac 按宿主 process.arch（arm64→aarch64-apple-darwin，否则 x86_64-apple-darwin）；linux 固定 x86_64-unknown-linux-gnu
+const PBS_MAC_TRIPLE = process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
+const PBS_LINUX_TRIPLE = 'x86_64-unknown-linux-gnu';
+/** PBS 缓存完整文件名（cpython-<版本>+<tag>-<triple>-install_only.tar.gz；同名 -freethreaded 资产因 triple 精确名天然排除） */
+const pbsTarballName = (triple: string) => `cpython-${PYTHON_VERSION}+${PBS_TAG}-${triple}-install_only.tar.gz`;
+/** PBS 下载 URL 模板（GitHub release 下载经多级 302 重定向，downloadFile 已支持） */
+const pbsUrl = (triple: string) => `https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PYTHON_VERSION}+${PBS_TAG}-${triple}-install_only.tar.gz`;
 const CACHE_DIR = path.join(__dirname, 'cache');
 const BUILD_DIR = path.join(__dirname, '.build');
 const OUTPUT_DIR = path.join(__dirname, '..', 'resources', 'python', `python-${PYTHON_VERSION}`);
@@ -35,18 +45,24 @@ const DOWNLOAD_TIMEOUT_MS = 120_000;
 const EXEC_TIMEOUT_MS = 600_000;
 
 // ================================================================
-// 构建变体（Win10 差异化打包，2026-08-22 新增）
+// 构建变体（Win10 差异化打包，2026-08-22 新增；mac/Linux 差异化打包，2026-08-22 新增）
 // 无参数 = default 变体：路径与命令与历史版本完全一致；
 // 传入 --win10 / win10 / --preset=win10 = win10 变体：
 //   独立输出目录 resources/python-win10、独立缓存 scripts/cache/win10、
 //   独立包清单 requirements/requirements-preset-win10.txt、独立 .beez-preset 标记。
+// 传入 --mac / mac / --preset=mac = mac 变体（须在 macOS 宿主执行，PBS 运行时）：
+//   独立输出目录 resources/python-mac、独立缓存 scripts/cache/mac、
+//   独立包清单 requirements/requirements-preset-mac.txt、独立 .beez-preset 标记。
+// 传入 --linux / linux / --preset=linux = linux 变体（须在 Linux 宿主执行，PBS 运行时）：
+//   独立输出目录 resources/python-linux、独立缓存 scripts/cache/linux、
+//   独立包清单 requirements/requirements-preset-linux.txt、独立 .beez-preset 标记。
 // ================================================================
 
 /** 构建变体配置 */
 interface BuildVariant {
   /** 最终输出目录 */
   outputDir: string;
-  /** 嵌入式 zip 缓存路径（win10 独立，避免复用主线缓存） */
+  /** 发行包缓存路径（embed=嵌入式 zip；pbs=PBS tarball；win10 独立，避免复用主线缓存） */
   cacheZipPath: string;
   /** 临时构建目录名（scripts/.build/<name>） */
   buildDirName: string;
@@ -54,15 +70,21 @@ interface BuildVariant {
   requirementsFile: string | null;
   /** pip 是否禁用本地缓存（win10：规避用户级 wheels 缓存权限问题，2026-08-22 实测 Errno13） */
   pipNoCacheDir: boolean;
+  /** 运行时来源：embed = python.org Windows embeddable zip；pbs = python-build-standalone 便携 tarball（mac/linux） */
+  runtime: 'embed' | 'pbs';
+  /** 构建宿主平台（mac/linux 变体在 main 入口做宿主防呆校验；default/win10 恒为 win32，不新增校验） */
+  hostPlatform: 'win32' | 'darwin' | 'linux';
 }
 
-const VARIANTS: Record<'default' | 'win10', BuildVariant> = {
+const VARIANTS: Record<'default' | 'win10' | 'mac' | 'linux', BuildVariant> = {
   default: {
     outputDir: OUTPUT_DIR,
     cacheZipPath: path.join(CACHE_DIR, `python-${PYTHON_VERSION}-embed-amd64.zip`),
     buildDirName: `python-${PYTHON_VERSION}`,
     requirementsFile: null,
     pipNoCacheDir: false,
+    runtime: 'embed',
+    hostPlatform: 'win32',
   },
   win10: {
     outputDir: path.join(__dirname, '..', 'resources', 'python-win10', `python-${PYTHON_VERSION}`),
@@ -70,12 +92,40 @@ const VARIANTS: Record<'default' | 'win10', BuildVariant> = {
     buildDirName: `python-${PYTHON_VERSION}-win10`,
     requirementsFile: path.join(__dirname, '..', 'requirements', 'requirements-preset-win10.txt'),
     pipNoCacheDir: true,
+    runtime: 'embed',
+    hostPlatform: 'win32',
+  },
+  mac: {
+    outputDir: path.join(__dirname, '..', 'resources', 'python-mac', `python-${PYTHON_VERSION}`),
+    cacheZipPath: path.join(CACHE_DIR, 'mac', pbsTarballName(PBS_MAC_TRIPLE)),
+    buildDirName: `python-${PYTHON_VERSION}-mac`,
+    requirementsFile: path.join(__dirname, '..', 'requirements', 'requirements-preset-mac.txt'),
+    pipNoCacheDir: false,
+    runtime: 'pbs',
+    hostPlatform: 'darwin',
+  },
+  linux: {
+    outputDir: path.join(__dirname, '..', 'resources', 'python-linux', `python-${PYTHON_VERSION}`),
+    cacheZipPath: path.join(CACHE_DIR, 'linux', pbsTarballName(PBS_LINUX_TRIPLE)),
+    buildDirName: `python-${PYTHON_VERSION}-linux`,
+    requirementsFile: path.join(__dirname, '..', 'requirements', 'requirements-preset-linux.txt'),
+    pipNoCacheDir: false,
+    runtime: 'pbs',
+    hostPlatform: 'linux',
   },
 };
 
-// 命令行参数识别：--win10 / win10 / --preset=win10 均识别为 win10 变体；其余（含无参数）为 default
-const VARIANT_ARG = process.argv.slice(2).find((a) => a === '--win10' || a === 'win10' || a === '--preset=win10');
-const VARIANT_KEY: 'default' | 'win10' = VARIANT_ARG ? 'win10' : 'default';
+// 命令行参数识别：--win10 / win10 / --preset=win10、--mac / mac / --preset=mac、--linux / linux / --preset=linux
+// 分别识别为对应变体；其余（含无参数）为 default（历史行为不变）
+const VARIANT_ARG = process.argv.slice(2).find(
+  (a) =>
+    a === '--win10' || a === 'win10' || a === '--preset=win10' ||
+    a === '--mac' || a === 'mac' || a === '--preset=mac' ||
+    a === '--linux' || a === 'linux' || a === '--preset=linux',
+);
+const VARIANT_KEY: 'default' | 'win10' | 'mac' | 'linux' = VARIANT_ARG
+  ? (VARIANT_ARG.includes('win10') ? 'win10' : VARIANT_ARG.includes('mac') ? 'mac' : 'linux')
+  : 'default';
 const VARIANT = VARIANTS[VARIANT_KEY];
 
 // 预装依赖清单（对应6类功能需求，方案文档第5章）
@@ -356,8 +406,8 @@ async function removePycacheDirs(rootDir: string): Promise<void> {
   }
 }
 
-/** 清理构建产物：删除 __pycache__、pip 缓存、get-pip.py */
-async function cleanup(buildPythonDir: string): Promise<void> {
+/** 清理构建产物：删除 __pycache__、pip 缓存、get-pip.py（对不存在路径容错：pbs 变体无 get-pip.py、无 Lib 布局） */
+async function cleanup(buildPythonDir: string, runtime: 'embed' | 'pbs'): Promise<void> {
   // 删除所有 __pycache__ 目录
   await removePycacheDirs(buildPythonDir);
 
@@ -365,8 +415,10 @@ async function cleanup(buildPythonDir: string): Promise<void> {
   const getPipPath = path.join(buildPythonDir, 'get-pip.py');
   try { unlinkSync(getPipPath); } catch { /* ignore */ }
 
-  // 删除 pip 缓存目录（构建产物内可能残留）
-  const pipCacheDir = path.join(buildPythonDir, 'Lib', 'site-packages', 'pip', '_vendor', 'cache');
+  // 删除 pip 缓存目录（构建产物内可能残留；pbs 变体为 lib/pythonX.Y 布局；rm force 对不存在路径容错）
+  const pipCacheDir = runtime === 'embed'
+    ? path.join(buildPythonDir, 'Lib', 'site-packages', 'pip', '_vendor', 'cache')
+    : path.join(buildPythonDir, 'lib', `python${PYTHON_SHORT}`, 'site-packages', 'pip', '_vendor', 'cache');
   try { await rm(pipCacheDir, { recursive: true, force: true }); } catch { /* ignore */ }
 }
 
@@ -418,8 +470,8 @@ async function writePresetMarker(outputDir: string, pythonExe: string, presetPac
     version: '1.0.0',
     pythonVersion: PYTHON_VERSION,
     buildDate: new Date().toISOString(),
-    // win10 变体附加标识（default 变体保持历史字段结构不变）
-    ...(VARIANT_KEY === 'win10' ? { variant: 'win10' } : {}),
+    // 变体附加标识：win10/mac/linux 写入 variant 字段（default 变体保持历史字段结构不变）
+    ...(VARIANT_KEY === 'default' ? {} : { variant: VARIANT_KEY }),
     packages: installedMap,
   };
 
@@ -430,11 +482,23 @@ async function writePresetMarker(outputDir: string, pythonExe: string, presetPac
 
 async function main() {
   log('Starting...');
+  // 宿主防呆校验：pbs 变体（PBS tarball + 宿主 tar 解压 + 平台专属包）必须在对应平台执行；default/win10 不新增校验（保持原行为）
+  if (VARIANT_KEY === 'mac' && process.platform !== VARIANT.hostPlatform) {
+    logError(`mac 变体必须在 macOS 宿主执行（当前平台: ${process.platform}）；请在 macOS 上运行 npm run build:preset-python-mac`);
+    process.exit(1);
+  }
+  if (VARIANT_KEY === 'linux' && process.platform !== VARIANT.hostPlatform) {
+    logError(`linux 变体必须在 Linux 宿主执行（当前平台: ${process.platform}）；请在 Linux 上运行 npm run build:preset-python-linux`);
+    process.exit(1);
+  }
   if (VARIANT_KEY === 'win10') {
     log('Win10 差异化变体: requirements-preset-win10.txt / resources/python-win10 / 独立缓存 / pip --no-cache-dir');
   }
+  if (VARIANT_KEY === 'mac' || VARIANT_KEY === 'linux') {
+    log(`${VARIANT_KEY === 'mac' ? 'Mac' : 'Linux'} 差异化变体（PBS 运行时）: requirements-preset-${VARIANT_KEY}.txt / resources/python-${VARIANT_KEY} / 独立缓存`);
+  }
 
-  // ---- Step 1: 检查缓存，必要时下载 embeddable zip ----
+  // ---- Step 1: 检查缓存，必要时下载发行包（embed=python.org embeddable zip；pbs=python-build-standalone tarball）----
   mkdirSync(path.dirname(VARIANT.cacheZipPath), { recursive: true });
   const cacheZip = VARIANT.cacheZipPath;
   // win10 独立缓存：优先复制主线缓存中的同一份官方 zip（上游原样发行物，不含包集，复制零污染）；缺失才联网下载
@@ -446,42 +510,73 @@ async function main() {
   if (existsSync(cacheZip)) {
     log(`缓存命中，跳过下载: ${cacheZip}`);
   } else {
-    log(`缓存未命中，开始下载: ${EMBED_URL}`);
-    await downloadFile(EMBED_URL, cacheZip);
+    // embed 变体走 python.org embeddable zip；pbs 变体（mac/linux）走 python-build-standalone tarball（tag 固定 20260804）
+    const downloadUrl = VARIANT.runtime === 'embed'
+      ? EMBED_URL
+      : pbsUrl(VARIANT_KEY === 'mac' ? PBS_MAC_TRIPLE : PBS_LINUX_TRIPLE);
+    log(`缓存未命中，开始下载: ${downloadUrl}`);
+    await downloadFile(downloadUrl, cacheZip);
     log(`下载完成: ${cacheZip}`);
   }
 
   // ---- Step 2: 解压到临时构建目录 ----
   const buildPythonDir = path.join(BUILD_DIR, VARIANT.buildDirName);
   await rm(buildPythonDir, { recursive: true, force: true });
-  mkdirSync(buildPythonDir, { recursive: true });
-  log(`解压到临时目录: ${buildPythonDir}`);
-  await runCommand('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    `Expand-Archive -Path '${cacheZip}' -DestinationPath '${buildPythonDir}' -Force`,
-  ]);
+  if (VARIANT.runtime === 'embed') {
+    // embed 变体：Windows embeddable zip，PowerShell Expand-Archive（原逻辑）
+    mkdirSync(buildPythonDir, { recursive: true });
+    log(`解压到临时目录: ${buildPythonDir}`);
+    await runCommand('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Expand-Archive -Path '${cacheZip}' -DestinationPath '${buildPythonDir}' -Force`,
+    ]);
+  } else {
+    // pbs 变体：PBS install_only tar.gz，宿主 tar 解压到临时目录，再上提顶层唯一目录 python/
+    const extractDir = `${buildPythonDir}.extract`;
+    await rm(extractDir, { recursive: true, force: true });
+    mkdirSync(extractDir, { recursive: true });
+    log(`解压到临时目录: ${extractDir}`);
+    await runCommand('tar', ['-xzf', cacheZip, '-C', extractDir]);
+    // tarball 顶层唯一目录为 python/，上提一层，保证 buildPythonDir 直接含 bin/lib/include/share
+    await rename(path.join(extractDir, 'python'), buildPythonDir);
+    await rm(extractDir, { recursive: true, force: true });
+    log(`PBS tarball 解压完成: ${buildPythonDir}`);
+  }
 
-  const pythonExe = path.join(buildPythonDir, 'python.exe');
+  // python 可执行文件：embed=python.exe；pbs=bin/python3.14 实体文件（bin/python、bin/python3 为符号链接）
+  const pythonExeRel = VARIANT.runtime === 'embed' ? 'python.exe' : path.join('bin', `python${PYTHON_SHORT}`);
+  const pythonExe = path.join(buildPythonDir, pythonExeRel);
   if (!existsSync(pythonExe)) {
     throw new Error(`解压后未找到 python.exe: ${pythonExe}`);
   }
 
-  // ---- Step 3: 配置 _pth 文件 ----
-  const pthPath = path.join(buildPythonDir, `python${PYTHON_SHORT.replace('.', '')}._pth`);
-  log(`配置 _pth 文件: ${pthPath}`);
-  await configurePth(pthPath);
+  // ---- Step 3: 配置 _pth 文件（仅 embed；PBS 发行版无 ._pth、site-packages 原生生效，整段跳过） ----
+  if (VARIANT.runtime === 'embed') {
+    const pthPath = path.join(buildPythonDir, `python${PYTHON_SHORT.replace('.', '')}._pth`);
+    log(`配置 _pth 文件: ${pthPath}`);
+    await configurePth(pthPath);
+  } else {
+    log('PBS 运行时无 ._pth 文件，跳过 _pth 配置');
+  }
 
-  // ---- Step 4: 安装 pip ----
-  log('安装 pip...');
-  await installPip(pythonExe, buildPythonDir);
+  // ---- Step 4: 安装 pip（仅 embed；PBS install_only 发行版已预装 pip，跳过引导） ----
+  if (VARIANT.runtime === 'embed') {
+    log('安装 pip...');
+    await installPip(pythonExe, buildPythonDir);
+  } else {
+    log('PBS 运行时已预装 pip，跳过 pip 安装');
+  }
 
   // ---- Step 5: 安装预装依赖 ----
   log('安装预装依赖...');
-  const sitePackagesDir = path.join(buildPythonDir, 'Lib', 'site-packages');
+  // site-packages 路径：embed=Lib/site-packages（Windows 布局）；pbs=lib/pythonX.Y/site-packages
+  const sitePackagesDir = VARIANT.runtime === 'embed'
+    ? path.join(buildPythonDir, 'Lib', 'site-packages')
+    : path.join(buildPythonDir, 'lib', `python${PYTHON_SHORT}`, 'site-packages');
 
-  // 变体包清单：default = PRESET_PACKAGES 常量（历史行为不变）；win10 = requirements 清单文件
+  // 变体包清单：default = PRESET_PACKAGES 常量（历史行为不变）；win10/mac/linux = requirements 清单文件
   const presetPackages: Record<string, string> = VARIANT.requirementsFile
     ? await parseRequirements(VARIANT.requirementsFile)
     : PRESET_PACKAGES;
@@ -509,7 +604,7 @@ async function main() {
 
   // ---- Step 6: 清理 ----
   log('清理构建产物...');
-  await cleanup(buildPythonDir);
+  await cleanup(buildPythonDir, VARIANT.runtime);
 
   // ---- Step 7: 验证 ----
   log('验证预置环境...');
@@ -523,7 +618,7 @@ async function main() {
 
   // 生成 .beez-preset 标记文件
   log('生成 .beez-preset 标记文件...');
-  await writePresetMarker(VARIANT.outputDir, path.join(VARIANT.outputDir, 'python.exe'), presetPackages);
+  await writePresetMarker(VARIANT.outputDir, path.join(VARIANT.outputDir, pythonExeRel), presetPackages);
 
   log('构建完成 ✔');
   log(`输出目录: ${VARIANT.outputDir}`);

@@ -1,0 +1,19 @@
+appId: com.delepi.linux
+productName: Delepi Linux
+directories:
+  output: release-linux
+  buildResources: resources
+files:
+  - dist/**/*
+  - package.json
+extraResources:
+  - from: resources/python-linux
+    to: python
+    filter:
+      - "**/*"
+  - from: skills
+    to: skills
+linux:
+  target: AppImage
+  icon: resources/icon.png
+  category: Utility

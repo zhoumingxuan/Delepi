@@ -5,6 +5,8 @@ node_modules/
 dist/
 release/
 release-win10/
+release-mac/
+release-linux/
 .smoke-compiled/
 /conversations/
 /bin/
