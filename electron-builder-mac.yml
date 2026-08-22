@@ -1,5 +1,5 @@
-appId: com.delepi.mac
-productName: Delepi Mac
+appId: com.delepi.app
+productName: Delepi
 directories:
   output: release-mac
   buildResources: resources

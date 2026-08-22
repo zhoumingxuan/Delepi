@@ -1,5 +1,5 @@
-appId: com.delepi.linux
-productName: Delepi Linux
+appId: com.delepi.app
+productName: Delepi
 directories:
   output: release-linux
   buildResources: resources

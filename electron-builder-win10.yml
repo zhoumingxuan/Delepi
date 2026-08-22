@@ -1,5 +1,5 @@
-appId: com.delepi.win10
-productName: Delepi Win10
+appId: com.delepi.app
+productName: Delepi
 directories:
   output: release-win10
   buildResources: resources
