@@ -46,3 +46,13 @@ export function splitLoadingToolContent(value: string): {
     progress: progressChunks.join('\n'),
   };
 }
+/**
+ * 取工具进度段最后一条非空进度行（显示用：仅最新一条，不累积）
+ * @param value 累积的 thinking 文本（多行以 \n 或 \n\n 分隔）
+ * @returns 最后一条非空进度行；无进度行时返回 ''
+ */
+export function latestToolProgressText(value: string): string {
+  const { progress } = splitLoadingToolContent(value);
+  const lines = progress.split('\n').filter(Boolean);
+  return lines.length ? lines[lines.length - 1] : '';
+}

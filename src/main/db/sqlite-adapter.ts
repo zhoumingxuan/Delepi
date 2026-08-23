@@ -1,6 +1,6 @@
 /**
  * SQLite 数据库适配器
- * 4 张表 DDL：conversations / messages / context_compressions / settings
+ * 5 张表 DDL：conversations / messages / context_compressions / settings / conversation_tags
  * WAL 模式开启，无全文索引
  * Schema DDL 已内联，避免打包后路径解析问题
  */
@@ -25,7 +25,7 @@ function resolveDbPath(): string {
 const SCHEMA_SQL = `-- ============================================================================
 -- SQLite 数据库 Schema
 -- 自动生成，请勿手动编辑
--- 包含 4 张表和 4 条索引，全部使用 IF NOT EXISTS
+-- 包含 5 张表和 5 条索引，全部使用 IF NOT EXISTS
 -- ============================================================================
 
 -- PRAGMA 配置（仅在新数据库创建时执行）
@@ -76,6 +76,17 @@ CREATE TABLE IF NOT EXISTS context_compressions (
 -- ============================================================================
 -- 4. 设置表（键值对存储用户可配配置项）
 -- ============================================================================
+-- ============================================================================
+-- 5. 对话标签表（方向3：对话列表自定义标签，独立新表零迁移）
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS conversation_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (conversation_id, tag)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value_json TEXT NOT NULL CHECK (json_valid(value_json)),
@@ -89,6 +100,23 @@ CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_seq ON messages(conversation_id, seq);
 CREATE INDEX IF NOT EXISTS idx_context_compressions_conversation_max_seq ON context_compressions(conversation_id, max_message_seq DESC);
 CREATE INDEX IF NOT EXISTS idx_context_compressions_conversation_status ON context_compressions(conversation_id, status);
+CREATE INDEX IF NOT EXISTS idx_conversation_tags_conversation ON conversation_tags(conversation_id);
+`;
+
+/**
+ * conversation_tags 建表 DDL（存量库就地补建用，与 SCHEMA_SQL 内定义逐字一致）
+ * 背景：getDb 的 needsInit 仅检查 conversations 表，存量库会跳过全量 SCHEMA_SQL，
+ *       新表必须在此单独补建（IF NOT EXISTS 幂等，重复执行安全）
+ */
+const CONVERSATION_TAGS_DDL = `-- conversation_tags（方向3：对话列表自定义标签）
+CREATE TABLE IF NOT EXISTS conversation_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (conversation_id, tag)
+);
+CREATE INDEX IF NOT EXISTS idx_conversation_tags_conversation ON conversation_tags(conversation_id);
 `;
 
 /** 数据库连接单例 */
@@ -141,9 +169,16 @@ export function getDb(): Database.Database {
     } else {
       console.log(`[SQLite] Database file existed but tables missing, re-initialized at: ${dbPath}`);
     }
-    console.log(`[SQLite] Tables: conversations, messages, context_compressions, settings`);
+    console.log(`[SQLite] Tables: conversations, messages, context_compressions, settings, conversation_tags`);
   } else {
     console.log(`[SQLite] Database already exists, skipping DDL/PRAGMA: ${dbPath}`);
+
+    // 方向3：存量库就地补建 conversation_tags（needsInit 仅检查 conversations 表，
+    // 既有库不会执行全量 SCHEMA_SQL，新表在此单独补建；IF NOT EXISTS 幂等）
+    if (!tableExists(dbInstance, 'conversation_tags')) {
+      dbInstance.exec(CONVERSATION_TAGS_DDL);
+      console.log('[SQLite] conversation_tags table created (in-place upgrade)');
+    }
   }
 
   return dbInstance;

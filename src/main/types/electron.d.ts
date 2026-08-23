@@ -73,41 +73,23 @@ export interface ElectronAPI {
      */
     onToolProgress: (listener: (payload: unknown) => void) => () => void;
   };
-  deps: {
-    /** 安装依赖包 */
-    install: (params: import('@shared/types/deps').DepsInstallParams) => Promise<{ success: boolean; error?: string; packages?: import('@shared/types/deps').DepsPackage[] }>;
-    /** 取消当前安装操作 */
-    cancelInstall: () => Promise<{ success: boolean; error?: string }>;
-    /** 导出当前已安装依赖包为离线 bundle（可选目标路径） */
-    exportBundle: (destPath?: string) => Promise<import('@shared/types/deps').DepsExportResult>;
-    /** 从离线 bundle 导入依赖包 */
-    importBundle: (filePath: string) => Promise<import('@shared/types/deps').DepsImportResult>;
-    /** 获取已安装的依赖包列表 */
-    getInstalledPackages: () => Promise<{ success: boolean; packages?: import('@shared/types/deps').DepsPackage[]; error?: string }>;
-    /** 弹出保存对话框选择导出路径 */
-    selectExportPath: () => Promise<{ success: boolean; filePath?: string | null; error?: string }>;
-    /** 获取已安装包列表（含 name+version+size）（Phase3） */
-    getPackages: () => Promise<{ name: string; version: string; size: number }[]>;
-    /** 触发刷新已安装包列表（Phase3） */
-    refresh: () => Promise<{ changed: boolean; error?: string }>;
-    /** 解析导入文件（.txt / .zip），返回解析出的依赖包列表 */
-    parseImportFile: (filePath: string) => Promise<import('@shared/types/deps-import').ParsedImportResult>;
-    /** 订阅依赖安装进度推送 */
-    onProgress: (callback: (progress: import('@shared/types/deps').DepsInstallProgress) => void) => () => void;
-  };
   python: {
-    /** 查询 Python 环境状态 */
-    getStatus: () => Promise<import('./python').PythonStatus>;
-    /** 订阅 Python 状态变更事件 */
-    onStatusChanged: (listener: (status: import('./python').PythonStatus) => void) => () => void;
-    /** 检测系统 Python 环境 */
-    detectSystem: () => Promise<import('./python').SystemPythonInfo>;
     /** 下载/安装 Python */
     download: () => Promise<void>;
     /** 选择自定义 Python 解释器路径 */
     selectCustom: () => Promise<import('./python').SystemPythonInfo>;
-    /** 取消当前 Python 安装/下载操作 */
-    cancel: () => Promise<void>;
+  };
+  skills: {
+    /** 列出内置8标签（只读，含 fileName）与自定义标签元数据+上限 */
+    list: () => Promise<unknown>;
+    /** 新建/编辑自定义技能标签与模板（originalName=编辑时的原标签名；新建不传） */
+    save: (params: unknown) => Promise<unknown>;
+    /** 删除自定义技能标签（连带删除 userData 模板目录） */
+    delete: (params: unknown) => Promise<unknown>;
+    /** 读取技能模板内容（source=builtin：fileName 白名单+覆写优先；source=custom：slug 回显，未写过模板返回空） */
+    readTemplate: (params: unknown) => Promise<{ success: boolean; content?: string; error?: string }>;
+    /** 保存内置技能模板覆写（content=null 恢复默认并删除覆写文件；fileName 白名单校验在主进程） */
+    saveBuiltinOverride: (params: unknown) => Promise<{ success: boolean; error?: string }>;
   };
   on: (channel: string, listener: (...args: unknown[]) => void) => () => void;
 }

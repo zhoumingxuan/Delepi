@@ -7,9 +7,8 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DEPS, IPC_DIALOG } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
-import type { DepsInstallParams, DepsInstallProgress } from '@shared/types/deps';
 
 const electronAPI = {
   chat: {
@@ -26,11 +25,43 @@ const electronAPI = {
      * 主进程内存维护，重启后返回 null → 场景C退化
      */
     getRestoreConversationId: () => ipcRenderer.invoke(GET_LAST_ACTIVE_CONVERSATION),
+    /** 方向3：重命名对话（主进程先安全关闭在途标题生成再写入；返回带 tags 的会话摘要） */
+    rename: (params: { id: string; title: string }) =>
+      ipcRenderer.invoke(IPC_CONV.RENAME, params),
+    /** 方向3：移除对话标签；返回最新 tags */
+    removeTag: (params: { id: string; tag: string }) =>
+      ipcRenderer.invoke(IPC_CONV.TAG_REMOVE, params),
   },
   config: {
     get: () => ipcRenderer.invoke(IPC_CONFIG.GET),
     save: (params: unknown) => ipcRenderer.invoke(IPC_CONFIG.SAVE, params),
     reload: () => ipcRenderer.invoke(IPC_CONFIG.RELOAD),
+    /** 列出全部模型档案与当前激活档案 id */
+    listProfiles: () => ipcRenderer.invoke(IPC_CONFIG.PROFILES_LIST),
+    /** 另存为模型档案：主进程把当前生效配置（九键+开关/档位）快照为新档案，同名覆盖 */
+    saveProfile: (params: { name: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SAVE, params),
+    /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状 */
+    deleteProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_DELETE, params),
+    /** 切换模型档案：主进程批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId */
+    switchProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SWITCH, params),
+  },
+  skills: {
+    /** 列出内置8标签（只读）与自定义标签元数据+上限 */
+    list: () => ipcRenderer.invoke(IPC_SKILLS.LIST),
+    /** 新建/编辑自定义技能标签与模板（originalName=编辑时的原标签名；新建不传） */
+    save: (params: unknown) => ipcRenderer.invoke(IPC_SKILLS.SAVE, params),
+    /** 删除自定义技能标签（连带删除 userData 模板目录） */
+    delete: (params: { name: string }) => ipcRenderer.invoke(IPC_SKILLS.DELETE, params),
+    /** 读取技能模板内容（source=builtin：fileName 白名单+覆写优先回显；source=custom：slug 回显，未写过模板返回空） */
+    readTemplate: (params: unknown) => ipcRenderer.invoke(IPC_SKILLS.READ_TEMPLATE, params),
+    /** 保存内置技能模板覆写（content=null 恢复默认内容并删除覆写文件） */
+    saveBuiltinOverride: (params: unknown) => ipcRenderer.invoke(IPC_SKILLS.SAVE_BUILTIN_OVERRIDE, params),
+  },
+  tools: {
+    /** 重载动态工具：先注销全部动态注册再重扫 userData/dyn-tools 目录（内置3工具锁定不受影响） */
+    dynReload: () => ipcRenderer.invoke(IPC_TOOLS.DYN_RELOAD),
+    /** 列出当前已注册动态工具（name/displayName/description/progressName/timeoutSeconds） */
+    dynList: () => ipcRenderer.invoke(IPC_TOOLS.DYN_LIST),
   },
   file: {
     open: (target: string) => ipcRenderer.invoke(IPC_FILE.OPEN, target),
@@ -118,101 +149,8 @@ const electronAPI = {
     },
   },
   python: {
-    /**
-     * 查询 Python 环境状态
-     * @returns PythonStatus { state, progress?, error?, pythonPath? }
-     */
-    getStatus: () => ipcRenderer.invoke(IPC_PYTHON.GET_STATUS),
-    /**
-     * 订阅 Python 状态变更事件
-     * @param listener 回调函数，参数为 PythonStatus
-     * @returns 取消监听的函数
-     */
-    onStatusChanged: (listener: (status: unknown) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) =>
-        listener(args[0]);
-      ipcRenderer.on(IPC_PYTHON.STATUS_CHANGED, handler);
-      return () => {
-        ipcRenderer.removeListener(IPC_PYTHON.STATUS_CHANGED, handler);
-      };
-    },
-    detectSystem: () => ipcRenderer.invoke(IPC_PYTHON.DETECT_SYSTEM),
     download: () => ipcRenderer.invoke(IPC_PYTHON.DOWNLOAD),
     selectCustom: () => ipcRenderer.invoke(IPC_PYTHON.SELECT_CUSTOM),
-    /** 取消当前 Python 安装/下载操作 */
-    cancel: () => ipcRenderer.invoke(IPC_PYTHON.CANCEL),
-  },
-  deps: {
-    /**
-     * 安装依赖包
-     * @param params DepsInstallParams { level, mirrorUrl?, autoBootstrap? }
-     * @returns Promise<{ success: boolean; error?: string }>
-     */
-    install: (params: DepsInstallParams) =>
-      ipcRenderer.invoke(IPC_DEPS.INSTALL, params),
-    /**
-     * 导出当前已安装依赖包为离线 bundle
-     * @returns Promise<DepsExportResult>
-     */
-    exportBundle: (destPath?: string) =>
-      ipcRenderer.invoke(IPC_DEPS.EXPORT, destPath),
-    /**
-     * 从离线 bundle 导入依赖包
-     * @param filePath bundle 文件路径
-     * @returns Promise<DepsImportResult>
-     */
-    importBundle: (filePath: string) =>
-      ipcRenderer.invoke(IPC_DEPS.IMPORT, filePath),
-    /**
-     * 取消当前安装操作
-     * @returns Promise<{ success: boolean; error?: string }>
-     */
-    cancelInstall: () =>
-      ipcRenderer.invoke(IPC_DEPS.CANCEL),
-    /**
-     * 获取已安装的依赖包列表
-     * @returns Promise<{ success: boolean; packages?: DepsPackage[]; error?: string }>
-     */
-    getInstalledPackages: () =>
-      ipcRenderer.invoke(IPC_DEPS.GET_INSTALLED),
-    /**
-     * 弹出保存对话框选择导出路径
-     * @returns Promise<{ success: boolean; filePath?: string | null; error?: string }>
-     */
-    selectExportPath: () =>
-      ipcRenderer.invoke(IPC_DEPS.SELECT_EXPORT_PATH),
-    /**
-     * 获取已安装包列表（含 name+version+size）（Phase3）
-     * @returns Promise<{ name: string; version: string; size: number }[]>
-     */
-    getPackages: () =>
-      ipcRenderer.invoke(IPC_DEPS.GET_PACKAGES),
-    /**
-     * 触发刷新已安装包列表（SHA256 对比+全量替换）（Phase3）
-     * @returns Promise<{ changed: boolean; error?: string }>
-     */
-    refresh: () =>
-      ipcRenderer.invoke(IPC_DEPS.REFRESH),
-    /**
-     * 解析导入文件（.txt / .zip），返回解析出的依赖包列表
-     * @param filePath 文件路径
-     * @returns Promise<ParsedImportResult>
-     */
-    parseImportFile: (filePath: string) =>
-      ipcRenderer.invoke(IPC_DEPS.PARSE_IMPORT_FILE, filePath),
-    /**
-     * 订阅依赖安装进度推送
-     * @param callback 进度回调，参数为 DepsInstallProgress
-     * @returns 取消订阅的函数
-     */
-    onProgress: (callback: (progress: DepsInstallProgress) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) =>
-        callback(args[0] as DepsInstallProgress);
-      ipcRenderer.on(IPC_DEPS.PROGRESS, handler);
-      return () => {
-        ipcRenderer.removeListener(IPC_DEPS.PROGRESS, handler);
-      };
-    },
   },
   dialog: {
     /**

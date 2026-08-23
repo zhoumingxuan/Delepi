@@ -9,7 +9,7 @@ export default defineConfig({
         // 主进程入口
         entry: 'src/main/index.ts',
         onstart(args) {
-          args.startup()
+          args.startup(['.'])
         },
         vite: {
           resolve: {
@@ -31,7 +31,10 @@ export default defineConfig({
         // preload 入口
         entry: 'src/preload/preload.ts',
         onstart(args) {
-          args.reload()
+          // 显式安全启动（禁用 reload()）：reload 在 electron 未启动时走插件无参 fallback，
+          // 默认 argv=['.', '--no-sandbox'] 会隐式传入 --no-sandbox 致 preload 不执行；
+          // 显式 startup(['.']) 与 main entry 一致，preload 变更后重启 electron 使新 preload 生效
+          args.startup(['.'])
         },
         vite: {
           resolve: {

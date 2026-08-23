@@ -4,7 +4,7 @@
  * 单例模式，状态机驱动，异步非阻塞
  */
 
-import { app, BrowserWindow, dialog } from 'electron';
+import { app, dialog } from 'electron';
 import { spawn, execFile } from 'node:child_process';
 import {
   createWriteStream,
@@ -20,7 +20,6 @@ import { get } from 'node:https';
 import { IncomingMessage } from 'node:http';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { IPC_PYTHON } from '@shared/ipc-channels';
 import type { SystemPythonInfo } from '../../types/python';
 export type { SystemPythonInfo };
 
@@ -47,7 +46,6 @@ export enum PythonState {
   DOWNLOADING = 'DOWNLOADING',
   EXTRACTING = 'EXTRACTING',
   INSTALLING_PIP = 'INSTALLING_PIP',
-  INSTALLING_DEPS = 'INSTALLING_DEPS',
   READY = 'READY',
   FAILED = 'FAILED',
   CANCELLED_PHASE1 = 'CANCELLED_PHASE1',
@@ -61,7 +59,6 @@ export interface PythonStatus {
   pythonPath?: string;  // READY 时的 Python 路径
 }
 
-type StatusCallback = (status: PythonStatus) => void;
 
 // ================================================================
 // PythonManager
@@ -73,23 +70,9 @@ export class PythonManager {
   private progress = 0;
   private errorMessage = '';
   private pythonPath = '';
-  private listeners: StatusCallback[] = [];
   private initPromise: Promise<void> | null = null;
   /** 下载取消控制器（M7：支持取消下载） */
   private _downloadAbortController: AbortController | null = null;
-  /** 依赖安装回调（由 DepsManager 在模块初始化时通过 setDepsInstallCallback 注入） */
-  private _depsInstallCallback: (() => Promise<void>) | null = null;
-
-  /**
-   * ★ 竞态修复：渲染进程就绪门控。
-   * 启动期 pythonManager.init() 早于渲染进程 preload 隔离世界初始化（ipcNative 注入）完成，
-   * 此时 webContents.send 会在 C++ 层触发
-   * "ERROR: Attempted to get the 'ipcNative' object but it was missing" 且该次推送丢失。
-   * 故未就绪期间仅缓存最新状态，待渲染进程 did-finish-load 后补推。
-   */
-  private _rendererReady = false;
-  /** 就绪前缓存的最新状态（latest-wins）：每次未就绪 emitStatus 均覆盖，就绪后仅补推一次 */
-  private _pendingStatusForRenderer: PythonStatus | null = null;
 
   static getInstance(): PythonManager {
     if (!PythonManager.instance) {
@@ -130,21 +113,7 @@ export class PythonManager {
   }
 
   getStatus(): PythonStatus {
-    // ★ 惰性快速检测：若 init() 从未被调用（initPromise 为 null）且状态仍为初始 DETECTING，
-    //    则同步检查内置 Python 是否已安装，避免前端永久卡在"正在检测中..."
-    //    场景 A: Python 已安装 → 直接切换为 READY
-    //    场景 B: Python 未安装 → 切换为 FAILED（前端会正确显示下载按钮）
-    if (this.state === PythonState.DETECTING && this.initPromise === null) {
-      const builtinPath = this.getPythonExePath();
-      if (existsSync(builtinPath)) {
-        this.pythonPath = builtinPath;
-        this.state = PythonState.READY;
-      } else {
-        this.errorMessage = '内置 Python 尚未安装，请点击下方按钮下载安装';
-        this.state = PythonState.FAILED;
-      }
-      this.emitStatus();
-    }
+    
 
     return {
       state: this.state,
@@ -157,7 +126,6 @@ export class PythonManager {
       pythonPath: (
         this.state === PythonState.READY ||
         this.state === PythonState.INSTALLING_PIP ||
-        this.state === PythonState.INSTALLING_DEPS ||
         this.state === PythonState.CANCELLED_PHASE2
       ) ? this.pythonPath : undefined,
     };
@@ -249,9 +217,6 @@ export class PythonManager {
     ) {
       this.errorMessage = '安装已取消';
       this.setState(PythonState.CANCELLED_PHASE1);
-    } else if (currentState === PythonState.INSTALLING_DEPS) {
-      this.errorMessage = '依赖包安装已取消，Python 基础环境就绪';
-      this.setState(PythonState.CANCELLED_PHASE2);
     }
   }
 
@@ -262,85 +227,12 @@ export class PythonManager {
     this.cancel();
   }
 
-  onStatusChange(callback: StatusCallback): () => void {
-    this.listeners.push(callback);
-    return () => {
-      this.listeners = this.listeners.filter((cb) => cb !== callback);
-    };
-  }
-
-  /**
-   * 注册依赖安装回调
-   * 由 DepsManager 在模块初始化时注入，避免 PythonManager 直接 import DepsManager 造成循环依赖
-   * @param cb 异步回调函数，执行 14 个 recommended 依赖包的安装
-   */
-  setDepsInstallCallback(cb: () => Promise<void>): void {
-    this._depsInstallCallback = cb;
-  }
-
-  /**
-   * ★ 竞态修复：绑定主窗口并注册"渲染进程加载完成"门控。
-   * 由 main/index.ts 的 createWindow() 在 BrowserWindow 创建后、loadURL/loadFile 之前调用
-   * （含 app 'activate' 重建窗口路径）。门控行为：
-   * - did-finish-load（页面 load 完成，必然晚于 preload 隔离世界 ipcNative 注入）→ 放行推送并补推缓存
-   * - did-start-loading（重载/新导航，ipcNative 将随新页面重新注入）→ 重新关门，防重载窗口竞态
-   * 监听器挂在对应窗口的 webContents 上，随窗口销毁一并释放，无泄漏。
-   */
-  attachMainWindow(win: BrowserWindow): void {
-    this._rendererReady = false;
-    win.webContents.on('did-start-loading', () => {
-      this._rendererReady = false;
-    });
-    win.webContents.on('did-finish-load', () => {
-      this._rendererReady = true;
-      this._flushPendingStatusForRenderer();
-    });
-  }
-
   // ==============================================================
   // 内部实现
   // ==============================================================
 
-  private emitStatus(): void {
-    const status = this.getStatus();
-    for (const cb of this.listeners) {
-      try {
-        cb(status);
-      } catch {
-        // 忽略回调异常
-      }
-    }
-    // IPC 推送：通知渲染进程状态变更。
-    // ★ 竞态修复：仅当渲染进程已完成加载（did-finish-load，preload 隔离世界 ipcNative 已注入）
-    //   才允许 send；否则只缓存最新状态（latest-wins），由 attachMainWindow 注册的
-    //   did-finish-load 门控放行后补推，确定性消除启动期 ipcNative 竞态。
-    const win = BrowserWindow.getAllWindows()[0];
-    if (this._rendererReady && win && !win.isDestroyed()) {
-      win.webContents.send(IPC_PYTHON.STATUS_CHANGED, status);
-    } else {
-      this._pendingStatusForRenderer = status;
-    }
-  }
-
-  /**
-   * ★ 竞态修复：渲染进程就绪后补推缓存的最新状态（仅一次）。
-   * 仅在 did-finish-load 事件回调内被调用，此时 ipcNative 注入必然已完成，send 安全。
-   */
-  private _flushPendingStatusForRenderer(): void {
-    const pending = this._pendingStatusForRenderer;
-    this._pendingStatusForRenderer = null;
-    if (!pending) {
-      return;
-    }
-    const win = BrowserWindow.getAllWindows()[0];
-    if (win && !win.isDestroyed()) {
-      win.webContents.send(IPC_PYTHON.STATUS_CHANGED, pending);
-    }
-  }
-
   private setState(state: PythonState): void {
     this.state = state;
-    this.emitStatus();
   }
 
   private getPythonBaseDir(): string {
@@ -618,7 +510,6 @@ export class PythonManager {
             downloadedSize += chunk.length;
             if (totalSize > 0) {
               this.progress = Math.round((downloadedSize / totalSize) * 100);
-              this.emitStatus();
             }
           });
 
@@ -872,18 +763,6 @@ export class PythonManager {
       return;
     }
 
-    // pip 安装成功，设置状态为 INSTALLING_DEPS
-    this.setState(PythonState.INSTALLING_DEPS);
-
-    // 通过回调安装 14 个依赖包
-    if (this._depsInstallCallback) {
-      try {
-        await this._depsInstallCallback();
-      } catch (err) {
-        // 依赖安装失败不阻塞 Python 就绪状态
-        console.warn('[PythonManager] 依赖包自动安装失败:', err instanceof Error ? err.message : String(err));
-      }
-    }
 
     // 无论依赖安装成功与否，Python 已就绪
     this.setState(PythonState.READY);

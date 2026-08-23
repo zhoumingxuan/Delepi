@@ -17,13 +17,15 @@ import path from 'node:path';
 
 import type OpenAI from 'openai';
 
-import { nonStreamChat } from '../llm/openai-client';
+import { streamChat } from '../llm/openai-client';
 import { isModelApiAbortError } from '../llm/model-retry';
 import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
 import { buildExecutorSystemPrompt } from './executor-system-prompt';
 import {
   type TaskTag,
+  type TaskTagName,
+  getAllTaskTags,
 } from '../../constants';
 import {
   parseExecutorStructuredPayload,
@@ -35,11 +37,18 @@ import type { AssistantRuntimeConfig } from './assistant-config';
 import {
   EXECUTOR_WORKFLOW_TEMPLATES,
   TASK_TAG_WORKFLOW_TEMPLATE_ID,
+  getCustomSkillTemplatePath,
+  getEnabledCustomSkillTags,
+  readBuiltinTemplateContent,
+  readCustomSkillTemplateContent,
   type ExecutorWorkflowTemplate,
 } from './executor-workflow-templates';
+import type { CustomSkillTag } from '@shared/types/config';
 import {
   executeToolCall,
   getExecutorOpenAITools,
+  getDefaultEnabledExecutorToolNames,
+  getDynamicExecutorToolMeta,
 } from '../../tools/executor-registry';
 import {
   buildToolResult,
@@ -58,12 +67,11 @@ import { formatCurrentDateTime } from '../../utils/helper';
 import {
   MAX_WORKFLOW_TEMPLATE_COUNT,
   EXECUTOR_WORKER_SKILLS_DIR,
-  EXECUTOR_TOOL_PROGRESS_NAMES,
+  resolveExecutorToolProgressDisplayName,
   MAX_EXECUTOR_FINAL_OUTPUT_REPAIR_ATTEMPTS,
   EXECUTOR_OUTPUT_TRUNCATE_LENGTH,
   EXECUTOR_INVALID_OUTPUT_TRUNCATE_LENGTH,
   EXECUTOR_DELIVERY_TYPE_SET,
-  TASK_TAG_SET,
   DELIVERY_TYPE_IMAGE,
   DELIVERY_TYPE_FILE_LINK,
   IMAGE_FILES_FIELD_NAME,
@@ -125,7 +133,7 @@ type ParsedDelegateExecutorInput = {
   taskConstraints: string[];
   contextData: string;
   expectedDelivery: ExpectedDelivery;
-  skillTags: TaskTag[];
+  skillTags: TaskTagName[];
 };
 
 type ParsedDelegateExecutorInputResult = {
@@ -158,21 +166,24 @@ function extractAssistantReasoning(
   return typeof reasoning === 'string' ? reasoning : '';
 }
 
-function normalizeTaskTags(value: unknown): TaskTag[] {
+function normalizeTaskTags(value: unknown): TaskTagName[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const tags: TaskTag[] = [];
+  // 方向2 A2-2 第二关：放行集合改「内置∪启用自定义」（单一定义源 getAllTaskTags）。
+  // 内置标签行为不变（内置集包含于合并集），启用自定义标签放行，未知标签仍丢弃，去重逻辑保持。
+  const allowedTagSet = new Set<string>(getAllTaskTags(configManager.getSettings().customSkillTags));
+  const tags: TaskTagName[] = [];
 
   for (const item of value) {
     const tag = normalizeString(item);
 
-    if (!TASK_TAG_SET.has(tag) || tags.includes(tag as TaskTag)) {
+    if (!allowedTagSet.has(tag) || tags.includes(tag)) {
       continue;
     }
 
-    tags.push(tag as TaskTag);
+    tags.push(tag);
   }
 
   return tags;
@@ -694,7 +705,9 @@ async function buildExecutorResultData(options: {
 }
 
 function resolveExecutorToolProgressName(toolName: string): string {
-  return EXECUTOR_TOOL_PROGRESS_NAMES[toolName] ?? toolName;
+  // S5-4 方向5：动态工具进度名三级回退（manifest.progressName→displayName→name，A5-3）；
+  // 内置工具 meta=null 走内置映射，输出与改造前逐字节一致（S5-1 等价性约束）。
+  return resolveExecutorToolProgressDisplayName(toolName, getDynamicExecutorToolMeta(toolName));
 }
 
 function buildExecutorToolProgressText(options: {
@@ -714,34 +727,62 @@ function buildExecutorToolProgressText(options: {
   return `${toolDisplayName}工具完成，继续处理...`;
 }
 
-function selectWorkflowTemplates(taskTags: TaskTag[]): ExecutorWorkflowTemplate[] {
-  const templates: ExecutorWorkflowTemplate[] = [];
+/** 工作流模板选取结果（内置/自定义双源；内置映射锁定优先，自定义仅绑自定义模板） */
+type WorkflowTemplateSelection = {
+  source: 'builtin' | 'custom';
+  /** 内置：相对 skills 目录的 fileName；自定义：模板目录 slug */
+  locator: string;
+  title: string;
+};
+
+function selectWorkflowTemplates(taskTags: TaskTagName[]): WorkflowTemplateSelection[] {
+  const selections: WorkflowTemplateSelection[] = [];
+  // 方向2 A2-2 第三关：映射查找接入自定义来源（启用的自定义标签元数据按 name 索引）
+  const customEnabledByName = new Map<string, CustomSkillTag>(
+    getEnabledCustomSkillTags().map((item) => [item.name, item]),
+  );
 
   for (const tag of taskTags) {
-    const templateId = TASK_TAG_WORKFLOW_TEMPLATE_ID[tag];
+    // 内置标签 → 内置模板映射锁定（Record<TaskTag,...> 类型级锁定 + 运行时优先，不可被自定义覆盖）
+    const templateId = TASK_TAG_WORKFLOW_TEMPLATE_ID[tag as TaskTag];
     if (templateId) {
       const template = EXECUTOR_WORKFLOW_TEMPLATES[templateId];
-      if (template && !templates.some((t) => t.id === template.id)) {
-        templates.push(template);
+      if (template && !selections.some((s) => s.source === 'builtin' && s.locator === template.fileName)) {
+        selections.push({ source: 'builtin', locator: template.fileName, title: template.title });
       }
+      continue;
+    }
+
+    // 自定义标签 → 自定义模板（仅能绑定自定义模板；停用标签不入选）
+    const custom = customEnabledByName.get(tag);
+    if (custom && !selections.some((s) => s.source === 'custom' && s.locator === custom.slug)) {
+      selections.push({ source: 'custom', locator: custom.slug, title: custom.title });
     }
   }
 
-  return templates.slice(0, MAX_WORKFLOW_TEMPLATE_COUNT);
+  // 单任务模板数上限维持 MAX_WORKFLOW_TEMPLATE_COUNT=3（内置+自定义合并计数）
+  return selections.slice(0, MAX_WORKFLOW_TEMPLATE_COUNT);
 }
 
-async function readWorkflowTemplateContent(fileName: string): Promise<string> {
-  const templatePath = path.join(EXECUTOR_WORKER_SKILLS_DIR, fileName);
-  try {
-    const content = (await readFile(templatePath, 'utf-8')).trim();
-    const template = Object.values(EXECUTOR_WORKFLOW_TEMPLATES).find((t) => t.fileName === fileName);
-    const title = template?.title ?? '';
-    return `
+/** 模板内容注入包装（内置/自定义同构格式） */
+function wrapWorkflowTemplateContent(title: string, content: string): string {
+  return `
 ##【${title}】工作方式（**若当前任务需要执行此工作方式，则必须精确符合其每一项要求**）
 \`\`\`
 ${content}
 \`\`\`
 `;
+}
+
+async function readWorkflowTemplateContent(fileName: string): Promise<string> {
+  // 内置模板读取：userData 覆写优先（builtin-skill-overrides/<fileName>），无覆写回退内置目录；
+  // 包装与失败语义（console.warn+空串）保持现状
+  const templatePath = path.join(EXECUTOR_WORKER_SKILLS_DIR, fileName);
+  try {
+    const content = (await readBuiltinTemplateContent(fileName)).trim();
+    const template = Object.values(EXECUTOR_WORKFLOW_TEMPLATES).find((t) => t.fileName === fileName);
+    const title = template?.title ?? '';
+    return wrapWorkflowTemplateContent(title, content);
   } catch (error) {
     const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
       ? (error as NodeJS.ErrnoException).code
@@ -753,18 +794,58 @@ ${content}
   }
 }
 
-async function readWorkflowTemplates(taskTags: TaskTag[]): Promise<string[]> {
-  const templates = selectWorkflowTemplates(taskTags);
-  const contents: string[] = [];
+/**
+ * 读取自定义模板（方向2 A2-4 感知改善：读取失败不再静默空串——console.warn + 告警上浮；
+ * 内置模板维持现状 warn 行为不变）。
+ */
+async function readCustomWorkflowTemplateContent(
+  selection: WorkflowTemplateSelection,
+): Promise<{ content: string; warning: string | null }> {
+  const templatePath = getCustomSkillTemplatePath(selection.locator);
+  try {
+    const content = await readCustomSkillTemplateContent(selection.locator);
+    if (!content) {
+      const warning = `自定义技能模板内容为空，该技能工作方式未注入: ${selection.title}(${templatePath})`;
+      console.warn(`[executor-agent] ${warning}`);
+      return { content: '', warning };
+    }
+    return { content: wrapWorkflowTemplateContent(selection.title, content), warning: null };
+  } catch (error) {
+    const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
+      ? (error as NodeJS.ErrnoException).code
+      : 'unknown';
+    const warning = `读取自定义技能模板失败，该技能工作方式未注入: ${selection.title}(${templatePath}), errorCode=${errCode}`;
+    console.warn(`[executor-agent] ${warning}`);
+    return { content: '', warning };
+  }
+}
 
-  for (const template of templates) {
-    const content = await readWorkflowTemplateContent(template.fileName);
-    if (content.trim()) {
-      contents.push(content);
+async function readWorkflowTemplates(
+  taskTags: TaskTagName[],
+): Promise<{ contents: string[]; warnings: string[] }> {
+  const selections = selectWorkflowTemplates(taskTags);
+  const contents: string[] = [];
+  const warnings: string[] = [];
+
+  for (const selection of selections) {
+    if (selection.source === 'builtin') {
+      const content = await readWorkflowTemplateContent(selection.locator);
+      if (content.trim()) {
+        contents.push(content);
+      }
+      continue;
+    }
+
+    const custom = await readCustomWorkflowTemplateContent(selection);
+    if (custom.content.trim()) {
+      contents.push(custom.content);
+    }
+    if (custom.warning) {
+      warnings.push(custom.warning);
     }
   }
 
-  return contents;
+  return { contents, warnings };
 }
 
 function buildExecutorFinalOutputRepairPrompt(options: {
@@ -889,9 +970,21 @@ function normalizeExecutorToolCalls(rawToolCalls: unknown[]): {
 }
 
 // ============================================================
-// 核心：非流式 LLM 调用（ExecutorAgent 使用）
+// 核心：流式 LLM 调用（ExecutorAgent 使用，S1-2 方向1思考流式化）
 // ============================================================
 
+/**
+ * 执行子智能体单轮补全（流式）。
+ *
+ * S1-2 流式化改造（A1-2 delta 聚合器，调用方零感知）：
+ * - 调用层从 nonStreamChat 整轮返回切换为 streamChat 流式调用；
+ * - reasoning delta 经 options.onThinking 逐个透传（增量推送源，见 runDelegatedTask 内接线）；
+ * - streamChat 内部已完成 delta 聚合（content 字符串累积 / tool_calls 按 index 合并 arguments 片段 /
+ *   reasoning 字符串累积），此处仅将聚合后的 reasoning 以 reasoning_content 字段挂回 assistantMessage，
+ *   输出与 nonStreamChat 返回的 message（服务端原样含 reasoning_content）结构等价——
+ *   调用方（extractAssistantReasoning 思考提取 / normalizeExecutorToolCalls 工具调用 /
+ *   buildRuntimeAssistantMessage 回填）对"流式或非流式"零感知。
+ */
 async function completeExecutorTurn(options: {
   assistantConfig: AssistantRuntimeConfig;
   messages: RuntimeMessage[];
@@ -904,8 +997,10 @@ async function completeExecutorTurn(options: {
     };
   }>;
   signal?: AbortSignal;
+  /** S1-2/A1-2 流式思考增量回调：每收到一个 reasoning delta 触发一次（delta 粒度推送） */
+  onThinking?: (delta: string) => void;
 }): Promise<OpenAI.Chat.ChatCompletionMessage> {
-  const result = await nonStreamChat({
+  const streamResult = await streamChat({
     modelConfig: {
       baseUrl: options.assistantConfig.executorModel.baseUrl,
       apiKey: options.assistantConfig.executorModel.apiKey,
@@ -914,11 +1009,23 @@ async function completeExecutorTurn(options: {
     messages: options.messages,
     tools: options.tools.length ? options.tools : undefined,
     signal: options.signal,
-    // 思考档位配置化：读 AppSettings.executorThinkingLevel（默认 'max'），默认行为与原硬编码一致
-    thinking: { reasoningEffort: configManager.getSettings().executorThinkingLevel }
+    // 思考档位配置化（A1-5 档位随流式请求携带）：读 AppSettings.executorThinkingLevel（默认 'max'），
+    // 同一意图经 streamChatOnce 的 thinking 参数传入（buildThinkingParams 统一翻译）
+    thinking: { reasoningEffort: configManager.getSettings().executorThinkingLevel },
+    // A1-1/A1-3 增量推送源：reasoning delta 逐个透传给上层（轮内 token 级可见）
+    onThinking: options.onThinking,
   });
 
-  return result.assistantMessage;
+  // A1-2 聚合收口：把聚合后的 reasoning 以 reasoning_content 挂回 assistantMessage
+  //   （nonStreamChat 的 message 由服务端原样携带 reasoning_content；此处流式聚合后补挂同名字段，
+  //    extractAssistantReasoning 读取 reasoning_content ?? reasoning 保持不变）
+  const assistantMessage = streamResult.assistantMessage as OpenAI.Chat.ChatCompletionMessage & {
+    reasoning_content?: string;
+  };
+  if (streamResult.reasoning) {
+    assistantMessage.reasoning_content = streamResult.reasoning;
+  }
+  return assistantMessage;
 }
 
 // ============================================================
@@ -1078,14 +1185,20 @@ export async function runDelegatedTask(
   };
 
   // 获取工具定义
-  // 复用 executor-registry.getExecutorOpenAITools() 构建 OpenAI 工具声明（消除 8 行重复）
-  // 视觉识别总开关关闭时仅保留 run_exe / run_with_python（声明层过滤；执行层拦截见 executor-registry.executeToolCall）
+  // 复用 executor-registry.getExecutorOpenAITools() 从合并视图（内置∪动态，S5-1 方向5）构建 OpenAI 工具声明。
+  // 视觉识别总开关关闭时从合并视图全集排除视觉类工具 inspect_image（声明层过滤；执行层拦截见
+  // executor-registry.executeToolCall）。动态工具全部纳入本禁用名单机制（A5-4）——首期 requiresVision=true
+  // 被拒绝注册，动态工具均为非视觉，视觉关闭时保留；空动态表时过滤结果与原硬编码
+  // ['run_exe', 'run_with_python'] 完全一致（S5-1 等价性约束）。
   const executorTools = getExecutorOpenAITools(
-    configManager.getSettings().visionEnabled ? undefined : ['run_exe', 'run_with_python'],
+    configManager.getSettings().visionEnabled
+      ? undefined
+      : getDefaultEnabledExecutorToolNames().filter((name) => name !== 'inspect_image'),
   );
 
-  // 读取工作流模板
-  const workflowTemplates = await readWorkflowTemplates(parsedInput.skillTags);
+  // 读取工作流模板（内置+自定义双源；自定义读取失败收集告警，最终附到委派结果 data）
+  const { contents: workflowTemplates, warnings: workflowTemplateWarnings } =
+    await readWorkflowTemplates(parsedInput.skillTags);
 
   // 构建消息
   const runtimeMessages: RuntimeMessage[] = [
@@ -1125,6 +1238,13 @@ export async function runDelegatedTask(
       messages: runtimeMessages,
       tools: executorTools,
       signal: options.signal,
+      // S1-3 增量推送：reasoning delta 到达即推送（token 级轮内可见）。
+      // 既有两条推送分支语义迁移到流式路径：
+      //   - 分支2「reasoning 非空才推」→ delta 到达即推理非空的流式形态，逐 delta 推送 type='thinking'；
+      //   - 分支1「reasoning 为空但 content 非空 → content 兜底充当 thinking」→ 保持轮末一次性整轮推送（见下方兜底块）。
+      onThinking: (delta) => {
+        options.onThinking?.(delta, { type: 'thinking' });
+      },
     });
 
     const {
@@ -1136,13 +1256,10 @@ export async function runDelegatedTask(
       typeof assistantMessage.content === 'string'
         ? assistantMessage.content.trim()
         : '';
-    let thinkingOutput = thinking;
-    if ((assistantContent && assistantContent !== '') &&
-      (!thinkingOutput || thinkingOutput === '')) {
-      thinkingOutput = assistantContent;
-      options.onThinking?.(thinkingOutput, { type: 'thinking' });
-    } else if (thinkingOutput && toolCalls.length > 0) {
-      options.onThinking?.(thinkingOutput, { type: 'thinking' });
+    // S1-3 轮末兜底（原分支1语义保持整轮推送）：reasoning 为空但 content 非空时，以整轮 content 充当 thinking。
+    //   流式期间无 reasoning delta（服务端未拆分/未推理）时不会发生增量推送，此兜底与原行为逐字节一致。
+    if (assistantContent && !thinking) {
+      options.onThinking?.(assistantContent, { type: 'thinking' });
     }
 
     // 无工具调用 → 解析最终输出
@@ -1338,6 +1455,11 @@ export async function runDelegatedTask(
           startAt: taskStartedAt,
         });
       }
+    }
+
+    // 方向2 A2-4：自定义模板读取失败告警附到委派结果 data（仅存在告警时出现该字段）
+    if (workflowTemplateWarnings.length > 0) {
+      resultData = { ...(resultData ?? {}), workflowTemplateWarnings };
     }
 
     const finalResult = buildToolResult({

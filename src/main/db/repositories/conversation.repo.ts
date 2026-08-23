@@ -9,6 +9,12 @@ import { getDb } from '../sqlite-adapter';
 import { nowIso } from '../helpers';
 import type { ConversationRecord } from '../types';
 
+/**
+ * 会话记录 + 聚合标签（方向3）
+ * 向后兼容：既有五字段不动，仅在 listConversations 返回结构上叠加 tags
+ */
+export type ConversationWithTags = ConversationRecord & { tags: string[] };
+
 function mapConversationRow(row: {
   id: string;
   title: string;
@@ -25,7 +31,7 @@ function mapConversationRow(row: {
   };
 }
 
-export function listConversations(): ConversationRecord[] {
+export function listConversations(): ConversationWithTags[] {
   const db = getDb();
   const rows = db.prepare(`
     SELECT id, title, is_running, created_at, updated_at
@@ -38,7 +44,26 @@ export function listConversations(): ConversationRecord[] {
     created_at: string;
     updated_at: string;
   }>;
-  return rows.map(mapConversationRow);
+
+  // 方向3：一次性聚合全部会话标签（conversation_tags 独立新表，内存按会话分组，
+  // 避免逐会话 N+1 查询；既有五字段经 mapConversationRow 保持不动，仅叠加 tags）
+  const tagRows = db.prepare(`
+    SELECT conversation_id, tag FROM conversation_tags ORDER BY id
+  `).all() as Array<{ conversation_id: string; tag: string }>;
+  const tagsByConversation = new Map<string, string[]>();
+  for (const row of tagRows) {
+    const existing = tagsByConversation.get(row.conversation_id);
+    if (existing) {
+      existing.push(row.tag);
+    } else {
+      tagsByConversation.set(row.conversation_id, [row.tag]);
+    }
+  }
+
+  return rows.map((row) => ({
+    ...mapConversationRow(row),
+    tags: tagsByConversation.get(row.id) ?? [],
+  }));
 }
 
 export function createConversation(title = DEFAULT_CONVERSATION_TITLE): ConversationRecord {
@@ -93,6 +118,7 @@ export function deleteConversation(conversationId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM context_compressions WHERE conversation_id = ?').run(conversationId);
+  db.prepare('DELETE FROM conversation_tags WHERE conversation_id = ?').run(conversationId);
   db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
 }
 
@@ -119,4 +145,58 @@ export function updateConversationTitle(conversationId: string, title: string): 
   db.prepare(`
     UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?
   `).run(title, nowIso(), conversationId);
+}
+
+// ============================================================
+// 方向3：conversation_tags 标签仓储 + 自定义重命名
+// （独立新表，UNIQUE(conversation_id, tag) 约束去重；
+//   标签与重命名均不触碰 updated_at / is_running —— 规划 A3-5）
+// ============================================================
+
+/** 列出会话的全部标签（按写入顺序） */
+export function listTags(conversationId: string): string[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT tag FROM conversation_tags WHERE conversation_id = ? ORDER BY id
+  `).all(conversationId) as Array<{ tag: string }>;
+  return rows.map((row) => row.tag);
+}
+
+/** 删除标签 */
+export function removeTag(conversationId: string, tag: string): void {
+  const db = getDb();
+  db.prepare(`
+    DELETE FROM conversation_tags WHERE conversation_id = ? AND tag = ?
+  `).run(conversationId, tag);
+}
+
+/**
+ * 自定义重命名（方向3 conv:rename 专用）
+ * 仅更新 title：不更新 updated_at（避免对话被顶到列表顶部）、不改 is_running
+ * （区别于 updateConversationTitle：自动标题生成沿用既有函数保持现状行为）
+ */
+export function renameConversationTitle(conversationId: string, title: string): void {
+  const db = getDb();
+  db.prepare(`
+    UPDATE conversations SET title = ? WHERE id = ?
+  `).run(title, conversationId);
+}
+
+/**
+ * 条件更新标题（方向3 A3-3 原子版本检查·最终防线）
+ * 仅当当前 title 仍等于 expectedTitle（生成期间的基线）时写入——
+ * 把"读检查→写入"两步合并为单条原子 UPDATE（CAS 语义），
+ * 彻底消除版本检查与入库之间的微时序窗口（期间被 conv:rename 改写则 changes=0 放弃）
+ * @returns 是否实际写入（false = 期间标题已被自定义写入，调用方应放弃 emit）
+ */
+export function updateConversationTitleIfUnchanged(
+  conversationId: string,
+  expectedTitle: string,
+  newTitle: string,
+): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    UPDATE conversations SET title = ?, updated_at = ? WHERE id = ? AND title = ?
+  `).run(newTitle, nowIso(), conversationId, expectedTitle);
+  return result.changes > 0;
 }

@@ -63,6 +63,14 @@ export const IPC_CONFIG = {
   SAVE: 'config:save',
   /** 重新加载配置 */
   RELOAD: 'config:reload',
+  /** 列出全部模型档案与当前激活档案 id（渲染→主，invoke） */
+  PROFILES_LIST: 'config:profiles-list',
+  /** 另存为模型档案：主进程把当前生效配置快照为新档案，同名覆盖（渲染→主，invoke） */
+  PROFILES_SAVE: 'config:profiles-save',
+  /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状（渲染→主，invoke） */
+  PROFILES_DELETE: 'config:profiles-delete',
+  /** 切换模型档案：批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId（渲染→主，invoke） */
+  PROFILES_SWITCH: 'config:profiles-switch',
 } as const;
 
 // --- 对话管理 IPC 通道 ---
@@ -77,6 +85,10 @@ export const IPC_CONV = {
   GET_MESSAGES: 'conv:get-messages',
   /** 对话摘要更新推送（主→渲染），用于同步 isRunning/title 等列表态 */
   UPDATED: 'conv:updated',
+  /** 重命名对话（渲染→主，invoke）：先安全关闭在途标题生成，再写入自定义标题（不动 updated_at/is_running） */
+  RENAME: 'conv:rename',
+  /** 移除对话标签（渲染→主，invoke） */
+  TAG_REMOVE: 'conv:tag-remove',
 } as const;
 
 // --- 执行子智能体 IPC 通道 ---
@@ -160,42 +172,33 @@ export const IPC_FILE = {
 
 // --- Python 内置环境 IPC 通道 ---
 export const IPC_PYTHON = {
-  /** 查询 Python 环境状态（渲染→主，invoke） */
-  GET_STATUS: 'python:get-status',
-  /** Python 状态变更推送（主→渲染，send） */
-  STATUS_CHANGED: 'python:status-changed',
-  /** 检测系统 Python 环境（渲染→主，invoke） */
-  DETECT_SYSTEM: 'python:detect-system',
   /** 下载/安装 Python（渲染→主，invoke） */
   DOWNLOAD: 'python:download',
   /** 选择自定义 Python 解释器路径（渲染→主，invoke） */
   SELECT_CUSTOM: 'python:select-custom',
-  /** 取消当前 Python 安装/下载操作（渲染→主，invoke） */
-  CANCEL: 'python:cancel',
 } as const;
 
-// --- 依赖管理 IPC 通道 ---
-export const IPC_DEPS = {
-  /** 安装依赖包（渲染→主，invoke） */
-  INSTALL: 'deps:install',
-  /** 取消安装（渲染→主，invoke） */
-  CANCEL: 'deps:cancel',
-  /** 导出依赖清单（渲染→主，invoke） */
-  EXPORT: 'deps:export',
-  /** 导入依赖清单（渲染→主，invoke） */
-  IMPORT: 'deps:import',
-  /** 安装进度推送（主→渲染，send） */
-  PROGRESS: 'deps:progress',
-  /** 获取已安装依赖包列表（渲染→主，invoke） */
-  GET_INSTALLED: 'deps:get-installed',
-  /** 弹出保存对话框选择导出路径（渲染→主，invoke） */
-  SELECT_EXPORT_PATH: 'deps:select-export-path',
-  /** 获取已安装包列表（含 name+version+size）（渲染→主，invoke） */
-  GET_PACKAGES: 'deps:get-packages',
-  /** 触发刷新已安装包列表（SHA256 对比+全量替换）（渲染→主，invoke） */
-  REFRESH: 'deps:refresh',
-  /** 解析导入文件（.txt / .zip）（渲染→主，invoke） */
-  PARSE_IMPORT_FILE: 'deps:parse-import-file',
+
+// --- 自定义技能 IPC 通道（方向2：内置8标签只读锁定，自定义标签/模板管理） ---
+export const IPC_SKILLS = {
+  /** 列出内置8标签（只读）与自定义标签元数据+上限（渲染→主，invoke） */
+  LIST: 'skills:list',
+  /** 新建/编辑自定义技能标签与模板（渲染→主，invoke）：写 settings customSkillTags 键 + userData 模板文件，成功后刷新主智能体 skills enum */
+  SAVE: 'skills:save',
+  /** 删除自定义技能标签（渲染→主，invoke）：连带删除 userData 模板目录，成功后刷新主智能体 skills enum */
+  DELETE: 'skills:delete',
+  /** 读取技能模板内容（builtin=fileName 白名单+覆写优先；custom=slug 回显，未写过模板返回空；渲染→主，invoke） */
+  READ_TEMPLATE: 'skills:read-template',
+  /** 保存内置技能模板覆写（content=null 恢复默认并删除覆写文件；渲染→主，invoke） */
+  SAVE_BUILTIN_OVERRIDE: 'skills:save-builtin-override',
+} as const;
+
+// --- 动态工具 IPC 通道（方向5：userData/dyn-tools 动态注册；内置3工具锁定不受重载影响） ---
+export const IPC_TOOLS = {
+  /** 重载动态工具：先注销全部动态注册再重扫 dyn-tools 目录（渲染→主，invoke） */
+  DYN_RELOAD: 'tools:dyn-reload',
+  /** 列出当前已注册动态工具（name/displayName/description/progressName/timeoutSeconds）（渲染→主，invoke） */
+  DYN_LIST: 'tools:dyn-list',
 } as const;
 
 // --- 对话框 IPC 通道 ---
@@ -212,6 +215,7 @@ export type IpcChannel =
   | (typeof IPC_EXECUTOR)[keyof typeof IPC_EXECUTOR]
   | (typeof IPC_FILE)[keyof typeof IPC_FILE]
   | (typeof IPC_PYTHON)[keyof typeof IPC_PYTHON]
-  | (typeof IPC_DEPS)[keyof typeof IPC_DEPS]
+  | (typeof IPC_SKILLS)[keyof typeof IPC_SKILLS]
+  | (typeof IPC_TOOLS)[keyof typeof IPC_TOOLS]
   | (typeof IPC_DIALOG)[keyof typeof IPC_DIALOG];
 

@@ -23,17 +23,18 @@
  */
 
 import { Button, Flex, Image, Space, Spin, Typography } from 'antd';
-import { Think, ThoughtChain } from '@ant-design/x';
+import { ThoughtChain } from '@ant-design/x';
 import { FileOutlined } from '@ant-design/icons';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { RichMarkdown } from './RichMarkdown';
+import { ThinkingBlock } from './ThinkingBlock';
 import type { ToolCallInfo } from './ToolCallCard';
 import { ToolCallCard } from './ToolCallCard';
 import type { ChatMessage } from '../hooks/useChat';
 import type { ChatAttachment } from '@shared/types/chat';
 import { isImageContentType } from '@shared/utils/image-type';
 import type { AssistantMessageSegment } from '../lib/message-filter';
-import { splitLoadingToolContent } from '../lib/executor-thinking';
+import { latestToolProgressText, splitLoadingToolContent } from '../lib/executor-thinking';
 import { isEmptyAssistantBubble } from '../lib/message-filter';
 import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
 
@@ -50,6 +51,9 @@ export interface ToolSummary {
 }
 
 const USER_TEXT_COLLAPSE_THRESHOLD = 600;
+
+/** 完成态工具结果展开区滚动高度上限（px）：与 ThinkingBlock 展开上限同族，避免展开大 JSON 无限撑高消息流 */
+const TOOL_RESULT_EXPANDED_MAX_HEIGHT_PX = 320;
 
 /**
  * ★ Phase 3 P3-5 修复：图片附件 previewUrl 缺失时的占位符
@@ -181,22 +185,22 @@ function renderToolResultContent(
 }
 
 function renderLoadingToolContent(value: string, thinkingOverride?: string) {
-  const { thinking: thinkingFromResult, progress } = splitLoadingToolContent(value);
+  const { thinking: thinkingFromResult } = splitLoadingToolContent(value);
   // ★ 项9：对齐 ai_fr renderLoadingToolContent(value, thinkingOverride?)——优先使用显式 thinking
   const thinking = thinkingOverride?.trim() || thinkingFromResult;
-  const progressContent = progress || (thinking ? '' : '执行中');
+  const progressContent = latestToolProgressText(value) || (thinking ? '' : '执行中');
 
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       {thinking ? (
-        <Think title="思考内容" loading={<span />} defaultExpanded>
-          <RichMarkdown content={thinking} />
-        </Think>
+        // S1-4 统一折叠策略：思考块改用 ThinkingBlock（超长折叠/字数摘要/摘要头/滚动上限），
+        //   loading={<span />} 与 title 保持既有视觉语义
+        <ThinkingBlock content={thinking} loading={<span />} title="思考内容" defaultExpanded />
       ) : null}
       {progressContent ? (
-        <Think title="工具调用" loading={<span />} defaultExpanded>
-          <RichMarkdown content={progressContent} />
-        </Think>
+        // S1-4 统一折叠策略：进度块改用 ThinkingBlock（与思考块/ToolCallCard 兜底路径同源），
+        //   超长进度获得滚动上限 + 尾部自动滚动 + 字数摘要，避免流式累积无限撑高消息流
+        <ThinkingBlock content={progressContent} loading={<span />} title="工具调用" defaultExpanded />
       ) : null}
     </Space>
   );
@@ -323,7 +327,7 @@ function renderToolResultSegment(
   loading: boolean,
   createdAt: string,
   toolSummaries?: ToolSummary[],
-  options?: { includeStructuredFilePreview?: boolean; thinkingText?: string },
+  options?: { includeStructuredFilePreview?: boolean; thinkingText?: string; progressText?: string },
 ) {
   const title = resolveTaskDisplayTitle({
     toolName: toolCall.name,
@@ -343,8 +347,11 @@ function renderToolResultSegment(
   ) : (
     title
   );
-  // ★ 项9：完成态不渲染思考链（对齐 ai_fr loading && thinkingText 守卫语义；执行中仍显示思考）
+  // ★ 项9 微调（执行智能体显示体验）：thinking 执行中随进度渲染；完成态以默认收起的
+  //   ThinkingBlock 保留（闭环 ChatArea 项6 虚拟消息附带 thinking 的数据消费，
+  //   缓解 loading→completed 思考内容整块消失的切换生硬感；复用组件既有标题，不新增文案）
   const thinkingText = options?.thinkingText?.trim() || '';
+  const progressText = options?.progressText?.trim() || '';
   const content = loading
     ? toolCall.result || ''
     : renderToolResultContent(toolCall.result || '', {
@@ -354,7 +361,13 @@ function renderToolResultSegment(
     renderLoadingToolContent(content, thinkingText)
   ) : (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
-      <RichMarkdown content={content} />
+      {thinkingText ? (
+        <ThinkingBlock content={thinkingText} title="思考过程" />
+      ) : null}
+      {progressText ? <ThinkingBlock content={progressText} title="工具调用" /> : null}
+      <div style={{ maxHeight: TOOL_RESULT_EXPANDED_MAX_HEIGHT_PX, overflowY: 'auto' }}>
+        <RichMarkdown content={content} />
+      </div>
     </Space>
   );
 
@@ -719,7 +732,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
         message.status === 'loading',
         message.createdAt,
         toolSummaries,
-        { includeStructuredFilePreview: true, thinkingText: message.thinking },
+        { includeStructuredFilePreview: true, thinkingText: message.thinking, progressText: message.progress },
       );
     }
     return <ToolCallCard toolCall={toolInfo} />;
@@ -775,14 +788,15 @@ export const ChatMessageContent = memo(function ChatMessageContent({
             message.status === 'loading' && index === segments.length - 1;
 
           return (
-            <Think
+            // S1-4 统一折叠策略：reasoning 段改用 ThinkingBlock（与 renderLoadingToolContent 思考块同源），
+            //   超长内容非 loading 默认收起 + 字数摘要 + 摘要头 + 展开态滚动上限
+            <ThinkingBlock
               key={`${segment.id}-${isActive ? 'active' : 'done'}`}
-              title={isActive ? '思考中' : '思考过程'}
+              content={text}
               loading={isActive}
               defaultExpanded={isActive}
-            >
-              <RichMarkdown content={text} />
-            </Think>
+              title={isActive ? '思考中' : '思考过程'}
+            />
           );
         }
 

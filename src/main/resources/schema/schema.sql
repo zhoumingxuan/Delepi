@@ -1,7 +1,7 @@
 -- ============================================================================
 -- SQLite 数据库 Schema
 -- 自动生成，请勿手动编辑
--- 包含 4 张表和 4 条索引，全部使用 IF NOT EXISTS
+-- 包含 5 张表和 5 条索引，全部使用 IF NOT EXISTS
 -- 本文件为开发参考镜像，运行时以 src/main/db/sqlite-adapter.ts 内联 SCHEMA_SQL 为准（打包生效=内联版）
 -- ============================================================================
 
@@ -53,6 +53,17 @@ CREATE TABLE IF NOT EXISTS context_compressions (
 -- ============================================================================
 -- 4. 设置表（键值对存储用户可配配置项）
 -- ============================================================================
+-- ============================================================================
+-- 5. 对话标签表（方向3：对话列表自定义标签，独立新表零迁移）
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS conversation_tags (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE (conversation_id, tag)
+);
+
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value_json TEXT NOT NULL CHECK (json_valid(value_json)),
@@ -66,3 +77,4 @@ CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated
 CREATE INDEX IF NOT EXISTS idx_messages_conversation_seq ON messages(conversation_id, seq);
 CREATE INDEX IF NOT EXISTS idx_context_compressions_conversation_max_seq ON context_compressions(conversation_id, max_message_seq DESC);
 CREATE INDEX IF NOT EXISTS idx_context_compressions_conversation_status ON context_compressions(conversation_id, status);
+CREATE INDEX IF NOT EXISTS idx_conversation_tags_conversation ON conversation_tags(conversation_id);

@@ -38,6 +38,7 @@ import { ensureErrorMessage } from '../../utils';
 import type { AssistantRuntimeConfig } from '../executor-agent/assistant-config';
 import { eventBus } from '../event-bus/event-bus';
 import {
+  getConversationById,
   getNextMessageSeq,
   insertMessage,
   insertMessages,
@@ -45,6 +46,7 @@ import {
   type StoredMessageRecord,
   touchConversation,
   updateConversationTitle,
+  updateConversationTitleIfUnchanged,
 } from '../../db';
 import {
   resolveConversationDir,
@@ -77,6 +79,29 @@ import {
   USER_MESSAGE_CREATED_EVENT,
   ERROR_TYPE_EXECUTOR_ERROR,
 } from '../../constants';
+
+// ============================================================
+// 方向3：标题生成独立取消注册表（自定义标题安全关闭）
+// - titleAbortRegistry：conversationId → 在途标题生成的独立 AbortController
+// - conv:rename 经 abortTitleGeneration 单独取消在途标题生成（不影响会话运行）
+// - 会话 signal abort 时同步连带取消标题（双信号源，保持"中止会话即中止标题"现状语义）
+// ============================================================
+
+const titleAbortRegistry = new Map<string, AbortController>();
+
+/**
+ * 安全关闭指定会话在途的标题生成（方向3 conv:rename 第①步）
+ * @returns 是否存在并已取消的在途标题生成
+ */
+export function abortTitleGeneration(conversationId: string): boolean {
+  const controller = titleAbortRegistry.get(conversationId);
+  if (!controller) {
+    return false;
+  }
+  controller.abort();
+  titleAbortRegistry.delete(conversationId);
+  return true;
+}
 
 // ============================================================
 // 类型定义
@@ -308,6 +333,7 @@ async function buildMainAgentMessages(options: {
 - b.委派【诊断问题】任务时，务必锁定当前已获得的实际现象，必须清晰说明，绝对禁止自行编造任何现象。
 - c.委派任何类型的任务时，必须锁定通过分析【用户最新意图】得出的所有目标对象，绝对禁止编造和假设目标对象。
 - d.获取任务实际输出结果时，**若查看实际任务输出结果和任务过程概要与预期【任务执行方向偏离】，则必须重新执行任务**。
+- e.**由于此刻已触发重置机制，小于【当前用户输入消息序号】的【execution_log_path】字段指示的【日志文件】都已实际不存在，必须注意**。
 \`\`\`
         `,
         multimodalConfig,
@@ -521,27 +547,62 @@ export async function runMainAgent(
     void (async () => {
       try {
         // 12.1 标题生成（首轮）
+        // ★ 方向3：独立取消句柄 + 双信号源 + 入库前版本检查（自定义标题安全关闭三保险）
         if (includeTitleGeneration && isFirstTurn) {
-          if (options.signal?.aborted) {
+          const sessionSignal = options.signal;
+          if (sessionSignal?.aborted) {
             return;
           }
 
-          const rawTitle = await generateConversationTitle({
-            modelConfig: options.modelConfig,
-            userMessage: options.userMessage,
-            signal: options.signal,
-          });
+          // ① 独立取消句柄：注册到 titleAbortRegistry，conv:rename 可单独安全关闭
+          const titleController = new AbortController();
+          titleAbortRegistry.set(conversationId, titleController);
 
-          if (options.signal?.aborted) {
-            return;
+          // ② 双信号源：会话 signal abort 时连带取消标题（保持现状用户预期）
+          const onSessionAbort = () => titleController.abort();
+          if (sessionSignal) {
+            sessionSignal.addEventListener('abort', onSessionAbort);
           }
 
-          const finalTitle = truncateConversationTitle(rawTitle, MAX_CONVERSATION_TITLE_LENGTH);
-          updateConversationTitle(conversationId, finalTitle);
-          eventBus.emit(MAIN_AGENT_TITLE_EVENT, {
-            conversationId,
-            title: finalTitle,
-          });
+          try {
+            // ③ 版本检查基线：生成开始时读 DB 当前 title
+            const baselineTitle = getConversationById(conversationId)?.title ?? null;
+
+            const rawTitle = await generateConversationTitle({
+              modelConfig: options.modelConfig,
+              userMessage: options.userMessage,
+              signal: titleController.signal,
+            });
+
+            if (titleController.signal.aborted) {
+              // 独立取消（conv:rename）或会话连带取消：不入库、不 emit
+              return;
+            }
+
+            // ④ 入库前版本检查：期间 title 已被自定义写入（conv:rename 改库）则放弃入库与 emit
+            const currentTitle = getConversationById(conversationId)?.title ?? null;
+            if (currentTitle !== baselineTitle) {
+              return;
+            }
+
+            const finalTitle = truncateConversationTitle(rawTitle, MAX_CONVERSATION_TITLE_LENGTH);
+            // ⑤ 原子版本检查写入（CAS）：期间标题被 conv:rename 改写则 changes=0，放弃 emit
+            if (baselineTitle === null || !updateConversationTitleIfUnchanged(conversationId, baselineTitle, finalTitle)) {
+              return;
+            }
+            // source 字段标记生成来源；payload 变量传递（结构超集，event-bus 类型不感知 source）
+            const titlePayload = {
+              conversationId,
+              title: finalTitle,
+              source: 'generated' as const,
+            };
+            eventBus.emit(MAIN_AGENT_TITLE_EVENT, titlePayload);
+          } finally {
+            if (sessionSignal) {
+              sessionSignal.removeEventListener('abort', onSessionAbort);
+            }
+            titleAbortRegistry.delete(conversationId);
+          }
         }
 
         // 12.2 上下文压缩（非首轮）
@@ -808,6 +869,13 @@ export async function runMainAgent(
         let latestThinking = '';
         // 完整思考链累积（每次真实思考推送时追加，去重），用于 tool 消息 payload.thinking 持久化
         const executorThinkingHistory: string[] = [];
+        // S1-3 增量分类窗口缓冲：累积全文（thinking delta + 进度文本全量），
+        //   分类匹配在累积全文的最后一段上执行（非裸 delta，防 D1R5 增量模式分类退化）——
+        //   进度行在整段完整后才能命中锚定正则（^正在调用.+工具\.\.\.$ 等），裸 delta 碎片永不误命中
+        let executorThinkingClassifyBuffer = '';
+        // S1-5 思考全量累积（跨轮，仅 thinking 分支的 delta 追加；进度文本不混入）：
+        //   作为 sendToolSnapshot 的 thinking/result 入参 → snapshot.json thinking 字段存储全量
+        let executorThinkingAccumulated = '';
         // snapshot.json 串行覆盖式写入队列
         let snapshotWriteQueue: Promise<void> = Promise.resolve();
 
@@ -901,9 +969,15 @@ export async function runMainAgent(
         ) => {
           const nextResult = result;
           // 思考内容跟踪：显式传入的思考文本优先；否则仅当推送文本不是进度文本时才视为思考
+          // S1-5 增量适配：S1-3 后 thinkingText 为累积全文（每 delta 触发一次本函数），
+          //   历史末项与新值呈前缀关系时替换末项（避免逐 delta 前缀快照膨胀），
+          //   保持「完整思考链累积」语义：末项恒为最新全量，新轮思考（非前缀关系）追加新项
           if (typeof thinkingText === 'string' && thinkingText.trim()) {
             latestThinking = thinkingText;
-            if (executorThinkingHistory[executorThinkingHistory.length - 1] !== thinkingText) {
+            const lastHistoryEntry = executorThinkingHistory[executorThinkingHistory.length - 1];
+            if (lastHistoryEntry && thinkingText.startsWith(lastHistoryEntry)) {
+              executorThinkingHistory[executorThinkingHistory.length - 1] = thinkingText;
+            } else if (lastHistoryEntry !== thinkingText) {
               executorThinkingHistory.push(thinkingText);
             }
           }
@@ -1037,8 +1111,22 @@ export async function runMainAgent(
               // 真实思考文本：写入 payload.thinking
               // 保留 Delepi 三通道形态：executor:thinking 仍按 type 分流推送（thinking/tool-progress）
               // 快照语义（thinking 跟踪 + 写 snapshot.json + executor:snapshot）统一由 sendToolSnapshot 负责
-              if (isExecutorToolProgressText(text)) {
-                // 进度文本：仅推送 result，不更新 thinking
+              //
+              // S1-3 增量分类窗口：text 在流式模式下为 reasoning delta（增量推送），
+              //   分类匹配必须在累积全文上执行（非裸 delta）——裸 delta 碎片（如「正在调」「用xx工具...」）
+              //   永远无法命中锚定正则，会被整体误分类为 thinking 导致分类退化（D1R5）。
+              //   窗口取累积全文按 \n{2,} 切分后的最后一段（对齐主进程 splitExecutorIntermediate 段级分类模式）：
+              //   进度行整段完整后归类准确；碎片期间不误命中进度正则。
+              // 进度行前插段落分隔：\n{2,} 切分后独立成段，整段锚定正则可命中，不混入 thinking 累积
+              executorThinkingClassifyBuffer += info?.type === 'tool-progress' ? `\n\n${text}` : text;
+              const lastClassifyChunk = executorThinkingClassifyBuffer
+                .split(/\n{2,}/)
+                .map((chunk) => chunk.trim())
+                .filter(Boolean)
+                .pop() ?? '';
+              if (isExecutorToolProgressText(lastClassifyChunk)) {
+                // 进度文本：仅推送 result，不更新 thinking（增量模式下 text 为完整进度块/进度 delta 碎片，
+                //   sendToolSnapshot 覆盖式写入，快照 result 收敛到最新进度态）
                 sendToolSnapshot(text);
                 eventBus.emit('executor:thinking', {
                   conversationId,
@@ -1053,7 +1141,17 @@ export async function runMainAgent(
                 });
               } else {
                 // 真实思考文本：thinkingText 第 5 参 → thinking + 快照
-                sendToolSnapshot(text, undefined, undefined, undefined, text);
+                // S1-5 存储同步：快照 thinking/result 均传累积全文（存储全量不截断）——
+                //   增量模式下若传裸 delta 会使 latestThinking/snapshot.json 只剩最后碎片；
+                //   累积全文覆盖式写入天然收敛到完整思考态（协议字段不变，仅值语义为全量）
+                executorThinkingAccumulated += text;
+                sendToolSnapshot(
+                  executorThinkingAccumulated,
+                  undefined,
+                  undefined,
+                  undefined,
+                  executorThinkingAccumulated,
+                );
                 eventBus.emit('executor:thinking', {
                   conversationId,
                   taskId,

@@ -48,6 +48,7 @@ type RunWithPythonInput = {
   save_file_path?: unknown;
   runtime_encoding?: unknown;
   timeout_seconds?: unknown;
+  suspend?: unknown;
 };
 
 type SpawnCommandResult = {
@@ -193,6 +194,25 @@ function toTimeoutSeconds(value: unknown): number {
   return DEFAULT_TIMEOUT_SECONDS;
 }
 
+function normalizeOptionalBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+  if (typeof value === 'number') {
+    return value !== 0;
+  }
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes' || normalized === 'on') {
+      return true;
+    }
+    if (normalized === 'false' || normalized === '0' || normalized === 'no' || normalized === 'off' || normalized === '') {
+      return false;
+    }
+  }
+  return false;
+}
+
 function getPythonCommand(): PythonCommand {
   // 读取配置：是否使用内置 Python
   const useBuiltinPython = configManager.getSettings().useBuiltinPython;
@@ -288,13 +308,6 @@ function checkPythonReady(): string | null {
     return null;
   }
 
-  if (status.state === PythonState.INSTALLING_DEPS) {
-    const pythonPath = pythonManager.getPythonPath();
-    if (!pythonPath) {
-      return 'Python 环境正在安装依赖包，请稍后重试。';
-    }
-    return null;
-  }
 
   return null;
 }
@@ -408,6 +421,199 @@ async function runSpawnCommand(
   });
 }
 
+/**
+ * 方向6挂起模式启动期（毫秒）：与 run-exe.ts 挂起启动期 200ms 对齐（A6-1）。
+ */
+const SUSPEND_STARTUP_DELAY_MS = 200;
+
+type SuspendedSpawnResult =
+  | {
+      exited: true;
+      returncode: number;
+      stdout: string;
+      stderr: string;
+      stdoutTruncated: boolean;
+      stderrTruncated: boolean;
+    }
+  | {
+      exited: false;
+      returncode: null;
+      stdout: string;
+      stderr: string;
+      stdoutTruncated: boolean;
+      stderrTruncated: boolean;
+      pid: number;
+      platform: NodeJS.Platform;
+    };
+
+/**
+ * 挂起模式执行（A6-1/A6-2）：
+ * - spawn 后不等 close：监听 stdout/stderr data 事件收集启动期输出；
+ * - 不设超时定时器（timeout_seconds 语义=忽略）；
+ * - 启动期（200ms）内 abort → kill 并以 ABORTED 结束（returncode 130 协议参照 run-exe.ts）；
+ * - 启动期内进程已 exit（秒退/启动失败）→ 返回 exited=true（不返回已死 pid）；
+ * - 启动期后进程仍活 → 挂起成功返回 pid；此后移除 abort 监听（启动期后不受会话 abort 影响），
+ *   tmp 脚本与 __pycache__ 保留（由调用方经 scriptPath 在任务结束前清理）。
+ */
+async function runSuspendedSpawnCommand(
+  pythonCommand: PythonCommand,
+  args: string[],
+  options: {
+    cwd: string;
+    encoding: string;
+  },
+  signal?: AbortSignal,
+): Promise<SuspendedSpawnResult> {
+  return new Promise<SuspendedSpawnResult>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('ABORTED'));
+      return;
+    }
+
+    const child = spawn(pythonCommand.command, [...pythonCommand.prefixArgs, ...args], {
+      cwd: options.cwd,
+      env: buildPythonUtf8Env(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let aborted = false;
+    let settled = false;
+    let collecting = true;
+
+    // A6-2：挂起模式不设超时定时器（timeout_seconds 语义=忽略，DEFAULT_TIMEOUT_SECONDS 豁免）
+    const startupTimer: NodeJS.Timeout = setTimeout(() => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      cleanup();
+
+      if (aborted) {
+        // 启动期内 abort 已 kill：即使进程尚未完全退出也不返回 pid
+        reject(new Error('ABORTED'));
+        return;
+      }
+
+      const pid = child.pid;
+
+      if (typeof pid !== 'number') {
+        child.kill();
+        reject(new Error('无法获取挂起 Python 进程 PID'));
+        return;
+      }
+
+      const stdout = truncateOutput(
+        decodeOutput(stdoutChunks, options.encoding),
+        'stdout',
+      );
+      const stderr = truncateOutput(
+        decodeOutput(stderrChunks, options.encoding),
+        'stderr',
+      );
+
+      // 挂起成功：停止收集后续输出（流切换 flowing 丢弃，防父进程内存膨胀且不阻塞子进程写管道）
+      collecting = false;
+      child.stdout.removeAllListeners('data');
+      child.stdout.resume();
+      child.stderr.removeAllListeners('data');
+      child.stderr.resume();
+
+      resolve({
+        exited: false,
+        returncode: null,
+        stdout: stdout.text,
+        stderr: stderr.text,
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
+        pid,
+        platform: process.platform,
+      });
+    }, SUSPEND_STARTUP_DELAY_MS);
+
+    const abortHandler = () => {
+      if (settled) {
+        return;
+      }
+      // A6-2：仅启动期内 abort 生效 → kill（close 事件触发后以 ABORTED 结束）
+      aborted = true;
+      child.kill();
+    };
+
+    const cleanup = () => {
+      clearTimeout(startupTimer);
+      if (signal) {
+        signal.removeEventListener('abort', abortHandler);
+      }
+    };
+
+    if (signal) {
+      signal.addEventListener('abort', abortHandler, { once: true });
+    }
+
+    child.stdout.on('data', (chunk: Buffer | string) => {
+      if (!collecting) {
+        return;
+      }
+      stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+
+    child.stderr.on('data', (chunk: Buffer | string) => {
+      if (!collecting) {
+        return;
+      }
+      stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    });
+
+    child.once('error', (error) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+      // spawn 启动失败：进程从未存活，走既有异常路径
+      reject(error);
+    });
+
+    child.once('close', (code) => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      cleanup();
+
+      if (aborted) {
+        // 启动期内 abort：kill 后进程退出 → ABORTED（returncode 130）
+        reject(new Error('ABORTED'));
+        return;
+      }
+
+      // 启动期内秒退：不返回已死 pid，结果交由普通模式既有结果路径处理
+      const stdout = truncateOutput(
+        decodeOutput(stdoutChunks, options.encoding),
+        'stdout',
+      );
+      const stderr = truncateOutput(
+        decodeOutput(stderrChunks, options.encoding),
+        'stderr',
+      );
+
+      resolve({
+        exited: true,
+        returncode: code ?? 1,
+        stdout: stdout.text,
+        stderr: stderr.text,
+        stdoutTruncated: stdout.truncated,
+        stderrTruncated: stderr.truncated,
+      });
+    });
+  });
+}
+
 
 async function resolveExecutionPaths(
   input: RunWithPythonInput,
@@ -453,6 +659,8 @@ export async function runWithPython(
     ? 'utf-8'
     : '';
   const timeoutSeconds = toTimeoutSeconds(resolvedInput.timeout_seconds);
+  // S6-1 方向6：suspend 挂起模式开关（默认 false=现状等价；true 仅监控类长任务）
+  const suspend = normalizeOptionalBoolean(resolvedInput.suspend);
 
   // 主进程配置就绪检查守卫
   const settings = configManager.getSettings();
@@ -672,6 +880,123 @@ export async function runWithPython(
   }
 
   const executionScriptPath = scriptPath;
+
+  // S6-2 方向6挂起模式（A6-1/A6-2/A6-3）：suspend=true 时监控类长任务挂起支持。
+  // 分支位于普通模式 try/finally 之前：挂起成功路径提前 return 天然跳过 finally 清理
+  // （tmp 脚本与 __pycache__ 保留，scriptPath 已暴露，由调用方在任务结束前清理）。
+  if (suspend) {
+    try {
+      const suspended = await runSuspendedSpawnCommand(
+        pythonCommand,
+        [executionScriptPath],
+        {
+          cwd: runDir,
+          encoding: resolvedRuntimeEncoding,
+        },
+        context.signal,
+      );
+
+      // 启动期内秒退（200ms 内 exit）：走普通模式既有结果路径（不返回已死 pid），并执行清理（进程已死，非挂起成功）
+      if (suspended.exited) {
+        const success = suspended.returncode === 0;
+        const truncationMessage = buildTruncationMessage(suspended);
+        const resultMessage = success
+          ? 'Python 脚本执行完成'
+          : `Python 脚本执行失败，退出码 ${suspended.returncode}`;
+
+        const exitedResult = buildToolResult({
+          success,
+          code: success ? ERR_OK : ERR_PROCESS_EXITED_NON_ZERO,
+          message: truncationMessage
+            ? `${resultMessage}\n${truncationMessage}`
+            : resultMessage,
+          data: buildExecutedToolResultData({
+            returncode: suspended.returncode,
+            stdout: suspended.stdout,
+            stderr: suspended.stderr,
+            execId,
+            responseId,
+          }),
+        });
+
+        if (!persistScript) {
+          await safeRemoveFile(scriptPath);
+        }
+        await safeRemovePycache(runDir);
+
+        ioPrint('\nPython output:\n', JSON.stringify(exitedResult), '\n');
+        return exitedResult;
+      }
+
+      // 启动期后进程仍活：挂起成功，返回 pid/platform/scriptPath（timeout_seconds 忽略、finally 清理跳过）
+      const truncationMessage = buildTruncationMessage(suspended);
+      // 【待用户定稿：P-7】挂起清理提示文案（参照 run-exe.ts 挂起 message 句式：含 PID/平台，另附脚本路径与树杀指引）
+      const suspendMessage = `\n当前进程(PID: ${suspended.pid})已挂起，脚本路径: ${scriptPath}，当前任务结束前请务必清理（可用 run_exe 执行 taskkill /PID ${suspended.pid} /T /F），当前平台: ${suspended.platform}`;
+      const finalMessage = truncationMessage
+        ? `${suspendMessage}\n${truncationMessage}`
+        : suspendMessage;
+
+      const suspendedResult = buildToolResult({
+        success: true,
+        code: ERR_OK,
+        message: finalMessage,
+        data: {
+          ...buildExecutedToolResultData({
+            returncode: 0,
+            stdout: suspended.stdout,
+            stderr: suspended.stderr,
+            execId,
+            responseId,
+          }),
+          pid: suspended.pid,
+          platform: suspended.platform,
+          scriptPath,
+        },
+      });
+
+      ioPrint('\nPython output:\n', JSON.stringify(suspendedResult), '\n');
+      return suspendedResult;
+    } catch (error) {
+      // 启动期内 abort → 已 kill：ABORTED / returncode 130（协议对齐 run-exe.ts 挂起 abort 路径）
+      if (error instanceof Error && error.message === 'ABORTED') {
+        const abortedResult = buildToolResult({
+          success: false,
+          code: 'ABORTED',
+          message: 'Python 挂起执行已取消',
+          data: buildExecutedToolResultData({
+            returncode: 130,
+            stdout: '',
+            stderr: 'ABORTED',
+            execId,
+            responseId,
+          }),
+        });
+
+        if (!persistScript) {
+          await safeRemoveFile(scriptPath);
+        }
+        await safeRemovePycache(runDir);
+
+        ioPrint('\nPython output:\n', JSON.stringify(abortedResult), '\n');
+        return abortedResult;
+      }
+
+      // 启动失败（spawn error 等）：走既有异常路径并清理（进程未存活/未挂起成功）
+      const errorResult = buildToolResult({
+        success: false,
+        code: ERR_EXECUTION_ERROR,
+        message: `Python 脚本执行异常: ${error instanceof Error ? error.message : String(error)}`,
+      });
+
+      if (!persistScript) {
+        await safeRemoveFile(scriptPath);
+      }
+      await safeRemovePycache(runDir);
+
+      ioPrint('\nPython output:\n', JSON.stringify(errorResult), '\n');
+      return errorResult;
+    }
+  }
 
   // local模式：跳过server wrapper逻辑，直接执行脚本
 

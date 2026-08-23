@@ -21,6 +21,7 @@ import {
 import { ChatMessageContent } from './ChatMessageContent';
 import type { ToolSummary } from './ChatMessageContent';
 import type { ChatMessage, ToolSnapshot } from '../hooks/useChat';
+import { latestToolProgressText } from '../lib/executor-thinking';
 
 // ============================================================
 // ★ 修复主/子智能体消息混淆：toolSnapshots → 虚拟 ChatMessage 转换 + 时间线合并
@@ -92,6 +93,7 @@ function toolSnapshotsToChatMessages(
       content: result,
       // ★ 项6：虚拟消息附带完整思考链（来源 ToolSnapshot.thinking），供完成态 Think 渲染
       thinking: s.thinking || '',
+      progress: latestToolProgressText(s.lastContent || ''),
       toolCall: {
         ...(firstToolCall ?? {}),
         callId,

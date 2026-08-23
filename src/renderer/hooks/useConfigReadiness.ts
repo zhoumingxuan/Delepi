@@ -2,28 +2,16 @@
  * useConfigReadiness — 配置就绪检查 Hook
  *
  * 功能：
- * - 接收 config / configLoading / pythonStatus
+ * - 接收 config / configLoading
  * - 返回 canCheck（configLoading 时为 false）和 check() 函数
  * - check() 依次检查：
  *   1. 大模型配置 3 项：baseUrl / apiKey / modelName 均非空
- *   2. Python 环境：useBuiltinPython → pythonStatus.state === 'READY'
- *                   否则 → customPythonPath 非空
+ *   2. Python 环境：customPythonPath 非空（自定义模式）
  * - 返回 ConfigReadinessResult { isReady, missingItems }
  */
 
 import { useCallback, useMemo } from 'react';
 import type { AppSettings, ConfigMissingItem, ConfigReadinessResult } from '@shared/types/config';
-
-// ---------------------------------------------------------------------------
-// 本地类型（对齐 main/types/python.d.ts，渲染进程不直接导入 main 类型）
-// ---------------------------------------------------------------------------
-
-type PythonStatus = {
-  state: 'DETECTING' | 'DOWNLOADING' | 'EXTRACTING' | 'READY' | 'FAILED';
-  progress?: number;
-  error?: string;
-  pythonPath?: string;
-};
 
 // ---------------------------------------------------------------------------
 // Hook 参数
@@ -32,7 +20,6 @@ type PythonStatus = {
 export interface UseConfigReadinessParams {
   config: AppSettings | null;
   configLoading: boolean;
-  pythonStatus: PythonStatus | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -42,7 +29,6 @@ export interface UseConfigReadinessParams {
 export function useConfigReadiness({
   config,
   configLoading,
-  pythonStatus,
 }: UseConfigReadinessParams) {
   /** 加载中不可检查，避免使用未就绪的配置数据 */
   const canCheck = true;
@@ -82,19 +68,7 @@ export function useConfigReadiness({
     // --- 2. Python 环境检查 ---
     const useBuiltin = config?.useBuiltinPython ?? true;
 
-    if (useBuiltin) {
-      // 内置模式：检查 pythonStatus.state === 'READY'
-      if (!pythonStatus || pythonStatus.state !== 'READY') {
-        missingItems.push({
-          type: 'python_config',
-          label: 'Python 环境',
-          targetTab: 'python',
-          detail: pythonStatus?.error
-            ? [`内置 Python 环境未就绪：${pythonStatus.error}`]
-            : ['内置 Python 环境未就绪，请等待初始化完成'],
-        });
-      }
-    } else {
+    if (!useBuiltin) {
       // 自定义模式：检查 customPythonPath 是否非空
       if (!config?.customPythonPath?.trim()) {
         missingItems.push({
@@ -110,7 +84,7 @@ export function useConfigReadiness({
       isReady: missingItems.length === 0,
       missingItems,
     };
-  }, [config, pythonStatus]);
+  }, [config]);
 
   return { check, canCheck };
 }

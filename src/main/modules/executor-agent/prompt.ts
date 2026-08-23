@@ -60,6 +60,11 @@ function buildInspectImageDescription(): string {
     ].join('\n');
 }
 
+/**
+ * 内置执行者工具集（编译期注册源；S5-1 方向5：内容锁定不动，动态工具不在此登记）。
+ * 动态工具运行时注册入口：executor-registry.registerExecutorTool（dyn-tool-loader 扫描 userData/dyn-tools 后写入），
+ * 声明/名单/执行查找统一从 executor-registry.getMergedExecutorTools()（内置∪动态）派生。
+ */
 export const EXECUTOR_TOOLS = {
     run_exe: {
         config: {
@@ -123,6 +128,13 @@ export const EXECUTOR_TOOLS = {
                 timeout_seconds: {
                     type: 'number',
                     description: '可选。执行超时时间，单位秒，默认 180。',
+                },
+                suspend: {
+                    type: 'boolean',
+                    // 【待用户定稿：P-6】suspend 描述文案（参照 run_exe suspend 条款句式，限定监控类长任务）
+                    description:
+                        '可选。执行完成之后是否挂起此进程，默认 false。仅监控类长任务使用；挂起后返回 pid 与 scriptPath，建议显式传入 save_file_path 固定脚本路径，须在任务结束前清理（可用 run_exe 执行 taskkill /PID <pid> /T /F 树杀清理）。',
+                    default: false,
                 },
                 run_dir: {
                     type: 'string',

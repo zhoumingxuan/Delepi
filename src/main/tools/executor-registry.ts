@@ -11,7 +11,7 @@ import { configManager } from '../modules/config/config-manager';
 
 type ToolSchema = Record<string, unknown>;
 
-type ExecutorToolRegistryItem = {
+export type ExecutorToolRegistryItem = {
   config: {
     name: string;
     displayName?: string;
@@ -25,24 +25,103 @@ type ExecutorToolRegistryItem = {
 };
 
 /**
- * 工具注册表：直接基于 EXECUTOR_TOOLS 派生
- * 不维护任何本地执行函数映射
+ * 动态工具表：运行时注册（S5-2 开放 register/unregister API；S5-3 dyn-tool-loader
+ * 扫描 userData/dyn-tools/<tool_name>/{manifest.json,main.py} 后写入）。
+ * 空表时合并视图与改造前静态派生结果逐字节等价（S5-1 等价性硬约束）。
  */
-export const executorToolRegistry: Record<string, ExecutorToolRegistryItem> =
-  Object.fromEntries(
-    Object.entries(EXECUTOR_TOOLS).map(([name, tool]) => [
-      name,
-      {
-        config: {
-          name: tool.config.name,
-          displayName: tool.config.displayName,
-          buildDescription: tool.config.buildDescription,
-        },
-        parameters: (tool.parameters as ToolSchema) ?? {},
-        execute: tool.execute,
+const dynamicTools = new Map<string, ExecutorToolRegistryItem>();
+
+/**
+ * 合并视图：内置 EXECUTOR_TOOLS（编译期，内容锁定）∪ 动态注册表（运行时）。
+ * 内置项逐字段派生（与原静态 Object.fromEntries 派生同构）；动态项整体接管。
+ * 声明（getExecutorOpenAITools）、可用名单（getDefaultEnabledExecutorToolNames）、
+ * 执行查找（executeToolCall）统一从本视图派生；纯派生无副作用，每次调用重建。
+ */
+export function getMergedExecutorTools(): Record<string, ExecutorToolRegistryItem> {
+  const merged: Record<string, ExecutorToolRegistryItem> = {};
+  for (const [name, tool] of Object.entries(EXECUTOR_TOOLS)) {
+    merged[name] = {
+      config: {
+        name: tool.config.name,
+        displayName: tool.config.displayName,
+        buildDescription: tool.config.buildDescription,
       },
-    ]),
-  );
+      parameters: (tool.parameters as ToolSchema) ?? {},
+      execute: tool.execute,
+    };
+  }
+  for (const [name, item] of dynamicTools) {
+    merged[name] = item;
+  }
+  return merged;
+}
+
+/**
+ * 工具注册表（函数式派生，替代原静态导出——S5-1 方向5改造）。
+ * 不维护任何本地执行函数映射；动态注册/注销后下次调用即生效，无需刷新缓存。
+ */
+export function getExecutorToolRegistry(): Record<string, ExecutorToolRegistryItem> {
+  return getMergedExecutorTools();
+}
+
+// ============================================================
+// 动态注册 API（S5-2 方向5：内置3工具锁定，重名内置拒绝注册）
+// ============================================================
+
+export type RegisterExecutorToolResult = {
+  success: boolean;
+  error?: string;
+};
+
+/**
+ * 注册动态工具：内置∪动态合并视图即时生效（声明/名单/执行查找下次取值即含新工具）。
+ * 拒绝规则：名称空/格式非法、与内置 EXECUTOR_TOOLS 重名（内置3工具锁定）、与已注册动态重名。
+ */
+export function registerExecutorTool(item: ExecutorToolRegistryItem): RegisterExecutorToolResult {
+  const name = typeof item?.config?.name === 'string' ? item.config.name.trim() : '';
+  if (!name) {
+    return { success: false, error: '动态工具注册失败：config.name 为空' };
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+    return { success: false, error: `动态工具注册失败：${name} 名称仅允许字母/数字/下划线/中划线` };
+  }
+  if (Boolean(EXECUTOR_TOOLS[name as keyof typeof EXECUTOR_TOOLS])) {
+    return { success: false, error: `动态工具注册失败：${name} 与内置工具重名，内置工具不可被覆盖（内置3工具锁定）` };
+  }
+  if (dynamicTools.has(name)) {
+    return { success: false, error: `动态工具注册失败：${name} 已注册（重名动态工具），请先注销` };
+  }
+  dynamicTools.set(name, item);
+  return { success: true };
+}
+
+/** 注销动态工具；注销后合并视图即时排除。返回是否实际移除。 */
+export function unregisterExecutorTool(name: string): boolean {
+  return dynamicTools.delete(name);
+}
+
+/** 当前已注册动态工具名列表（按注册顺序）。 */
+export function getDynamicExecutorToolNames(): string[] {
+  return [...dynamicTools.keys()];
+}
+
+/**
+ * 动态工具展示元数据（S5-4 进度名三级回退 manifest.progressName→displayName→name 的数据源）。
+ * 内置工具返回 null（调用方回退内置 EXECUTOR_TOOL_PROGRESS_NAMES 映射，行为与现状逐字节一致）。
+ */
+export function getDynamicExecutorToolMeta(name: string): {
+  progressName?: string;
+  displayName?: string;
+} | null {
+  const item = dynamicTools.get(name);
+  if (!item) {
+    return null;
+  }
+  return {
+    progressName: (item as { progressName?: string }).progressName,
+    displayName: item.config.displayName,
+  };
+}
 
 function parseToolArguments(rawArguments: string): Record<string, unknown> {
   let parsedArguments: unknown;
@@ -63,7 +142,7 @@ function parseToolArguments(rawArguments: string): Record<string, unknown> {
 }
 
 export function getDefaultEnabledExecutorToolNames(): string[] {
-  return Object.values(executorToolRegistry).map((item) => item.config.name);
+  return Object.values(getExecutorToolRegistry()).map((item) => item.config.name);
 }
 
 export function resolveExecutorToolNames(requestedNames?: string[]): string[] {
@@ -71,8 +150,9 @@ export function resolveExecutorToolNames(requestedNames?: string[]): string[] {
     return getDefaultEnabledExecutorToolNames();
   }
 
+  const registry = getExecutorToolRegistry();
   const requestedExecutorTools = requestedNames.filter(
-    (name) => Boolean(executorToolRegistry[name]),
+    (name) => Boolean(registry[name]),
   );
 
   if (requestedExecutorTools.length) {
@@ -90,8 +170,9 @@ export function getExecutorOpenAITools(requestedNames?: string[]): Array<{
     parameters: ToolSchema;
   };
 }> {
+  const registry = getExecutorToolRegistry();
   return resolveExecutorToolNames(requestedNames).flatMap((toolName) => {
-    const tool = executorToolRegistry[toolName];
+    const tool = registry[toolName];
 
     if (!tool) {
       return [];
@@ -109,7 +190,7 @@ export function getExecutorOpenAITools(requestedNames?: string[]): Array<{
 }
 
 function getAvailableExecutorToolNamesText(): string {
-  return Object.values(executorToolRegistry)
+  return Object.values(getExecutorToolRegistry())
     .map((item) => item.config.name)
     .join(', ');
 }
@@ -131,7 +212,7 @@ export async function executeToolCall(
     }, toolCallId);
   }
 
-  const tool = executorToolRegistry[normalizedToolName];
+  const tool = getExecutorToolRegistry()[normalizedToolName];
 
   if (!tool) {
     return buildSimpleToolResult({

@@ -34,6 +34,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolCallInfo } from '../components/ToolCallCard';
 import type { AssistantMessageSegment } from '../lib/message-filter';
+import { latestToolProgressText } from '../lib/executor-thinking';
 import { IPC_CHAT, IPC_CONV } from '@shared/ipc-channels';
 import type { ChatAttachment, StreamMessage } from '@shared/types/chat';
 
@@ -46,6 +47,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant' | 'tool';
   content: string;
   thinking?: string;
+  /** executor 进度段文本（由 lastContent 切分而来）：完成态工具调用块渲染用 */
+  progress?: string;
   /**
    * ★ P6 历史消息附件回显：user 消息携带的附件元数据列表
    * - 来源 1：本地乐观插入时由 attachments: SendAttachment[] 直接填入（从 useFileUpload.pendingFiles）
@@ -99,6 +102,8 @@ export interface ConversationListItem {
   isRunning: boolean;
   createdAt: string;
   updatedAt: string;
+  /** 方向3：会话标签（conv:list 聚合返回；可选保证既有消费方向后兼容） */
+  tags?: string[];
 }
 
 /**
@@ -241,10 +246,11 @@ interface ErrorPayload {
   errorType: string;
 }
 
-/** 对话标题生成完成（仅首轮触发） */
+/** 对话标题事件（方向3：首轮生成 source=generated / 自定义重命名 source=manual） */
 interface TitlePayload {
   conversationId: string;
   title: string;
+  source?: 'generated' | 'manual';
 }
 
 interface ConversationUpdatedPayload {
@@ -794,6 +800,8 @@ export function useChat(options?: UseChatOptions) {
    *   渲染期同步模式对齐 messageApiRef，避免闭包过期
    */
   const conversationsRef = useRef<ConversationListItem[]>(conversations);
+  /** 方向3：已被自定义标题(manual)更新过的会话集合——用于丢弃晚到的 generated 标题事件 */
+  const manualRenamedConversationIdsRef = useRef<Set<string>>(new Set());
   conversationsRef.current = conversations;
 
   // ============================================================
@@ -909,6 +917,76 @@ export function useChat(options?: UseChatOptions) {
       console.error('[useChat] 删除对话失败:', err);
     }
   }, []);
+
+  // ============================================================
+  // 方向3：重命名 + 标签（乐观更新 + IPC；electron.d.ts 类型墙用局部断言，方向4同款）
+  // ============================================================
+
+  /** conv 组扩展 API（preload 已暴露，electron.d.ts 声明文件在白名单外未同步） */
+  const convExtApi = (window.electronAPI?.conversations ?? {}) as Partial<{
+    rename: (params: { id: string; title: string }) =>
+      Promise<(ConversationListItem & { tags?: string[] }) | null>;
+    removeTag: (params: { id: string; tag: string }) =>
+      Promise<(ConversationListItem & { tags?: string[] }) | null>;
+  }>;
+
+  /** 重命名对话：乐观更新标题 + manual 标志（立即丢弃后到的 generated），失败回滚为重拉列表 */
+  const renameConversation = useCallback(
+    async (id: string, title: string): Promise<boolean> => {
+      const trimmed = title.trim();
+      if (!trimmed || !convExtApi.rename) {
+        return false;
+      }
+      manualRenamedConversationIdsRef.current.add(id);
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, title: trimmed } : c)),
+      );
+      try {
+        const updated = await convExtApi.rename({ id, title: trimmed });
+        if (updated) {
+          setConversations((prev) =>
+            prev.map((c) => (c.id === id ? { ...c, title: updated.title, tags: updated.tags ?? c.tags } : c)),
+          );
+        }
+        return true;
+      } catch (err) {
+        console.error('[useChat] 重命名对话失败:', err);
+        manualRenamedConversationIdsRef.current.delete(id);
+        await loadConversations();
+        return false;
+      }
+    },
+    [loadConversations],
+  );
+
+  /** 移除标签：乐观移除，失败回滚为重拉列表 */
+  const removeConversationTag = useCallback(
+    async (id: string, tag: string): Promise<boolean> => {
+      const trimmed = tag.trim();
+      if (!trimmed || !convExtApi.removeTag) {
+        return false;
+      }
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.id === id ? { ...c, tags: (c.tags ?? []).filter((t) => t !== trimmed) } : c,
+        ),
+      );
+      try {
+        const updated = await convExtApi.removeTag({ id, tag: trimmed });
+        if (updated) {
+          setConversations((prev) =>
+            prev.map((c) => (c.id === id ? { ...c, tags: updated.tags ?? c.tags } : c)),
+          );
+        }
+        return true;
+      } catch (err) {
+        console.error('[useChat] 移除标签失败:', err);
+        await loadConversations();
+        return false;
+      }
+    },
+    [loadConversations],
+  );
 
   // ============================================================
   // Phase 3 P1 + P3 适配层：会话发送状态 helpers
@@ -1652,11 +1730,20 @@ export function useChat(options?: UseChatOptions) {
     });
     cleanups.push(unsubError);
 
-    // chat:title → 对话标题生成完成（首轮触发）
+    // chat:title → 对话标题事件（首轮生成 source=generated / 自定义重命名 source=manual）
     // 对齐 E:\ai_fr conversation.updated 事件：实时更新对话列表中的标题
+    // ★ 方向3 A3-4：manual 无条件更新并建立 manual 标志；generated 到达时若该会话
+    //   已被 manual 更新过则丢弃（自定义标题最终生效，晚到生成标题不覆盖）
     const unsubTitle = window.electronAPI.on(IPC_CHAT.TITLE, (payload: unknown) => {
       const data = payload as TitlePayload;
       if (!data?.conversationId || !data?.title) return;
+
+      if (data.source === 'manual') {
+        manualRenamedConversationIdsRef.current.add(data.conversationId);
+      } else if (manualRenamedConversationIdsRef.current.has(data.conversationId)) {
+        // 晚到的生成标题：该会话已被自定义更新过 → 丢弃
+        return;
+      }
 
       setConversations((prev) => {
         const idx = prev.findIndex((c) => c.id === data.conversationId);
@@ -1667,7 +1754,8 @@ export function useChat(options?: UseChatOptions) {
         next[idx] = {
           ...next[idx],
           title: data.title,
-          updatedAt: new Date().toISOString(),
+          // generated 入库会刷新 updated_at（现状行为保持）；manual 重命名不动列表排序（A3-5）
+          ...(data.source === 'generated' ? { updatedAt: new Date().toISOString() } : {}),
         };
         return next;
       });
@@ -1743,8 +1831,15 @@ export function useChat(options?: UseChatOptions) {
                 source: data.source ?? existing?.source ?? 'executor',
                 // ★ 修复主/子智能体消息混淆：委派任务名称（按 taskName 聚合）
                 taskName: data.taskName || existing?.taskName || '',
-                // 最新 thinking/tool-progress 累积文本（供 UI 渲染）
-                lastContent: data.content,
+                // 最新 thinking/tool-progress 文本（供 UI 渲染）
+                // S1-3 增量适配：executor:thinking 推送频次从整轮变为增量 delta（协议字段不变），
+                //   此处从「整轮覆盖」改为「增量累积拼接」——splitLoadingToolContent 按 \n+ 切分
+                //   逐段分类的输入本就是累积全文（executor-thinking.ts 既有设计），跨轮拼接
+                //   与 snapshot.json thinking 全量累积（S1-5 存储全量）保持一致
+                lastContent:
+                  existing?.lastContent && (data.type !== 'thinking' || existing.lastType !== 'thinking')
+                    ? `${existing.lastContent}\n${data.content ?? ''}`
+                    : (existing?.lastContent ?? '') + (data.content ?? ''),
                 // 最新推送类型（区分 thinking vs tool-progress）
                 lastType: data.type,
                 // 子智能体工具真实 callId（修复 callId 语义错位，可选）
@@ -2049,17 +2144,28 @@ export function useChat(options?: UseChatOptions) {
         if (!data || !data.message || data.message.role !== 'tool') return;
         if (data.conversationId !== conversationIdRef.current) return;
         const toolCallId = data.message.toolCall?.callId;
+        // 真实 tool 消息 payload 不含 thinking（主进程不落库）：删快照前把快照 thinking+进度段
+        // 合并透传进真实消息（仅渲染端内存态，不入库），完成态两块保留可回看
+        let mergedMessage = data.message;
         if (toolCallId) {
           completedToolCallIdsRef.current.add(toolCallId);
           // ★ S4（M6）：字典键已统一为委派 callId，直接按键删除（原按 snapshot.callId 全表扫描匹配）
           setToolSnapshots((prev) => {
+            const snapshot = prev[toolCallId];
+            if (snapshot) {
+              mergedMessage = {
+                ...data.message,
+                thinking: data.message.thinking ?? snapshot.thinking ?? '',
+                progress: latestToolProgressText(snapshot.lastContent || ''),
+              };
+            }
             if (!(toolCallId in prev)) return prev;
             const next = { ...prev };
             delete next[toolCallId];
             return next;
           });
         }
-        setMessages((prev) => upsertMessageById(prev, data.message));
+        setMessages((prev) => upsertMessageById(prev, mergedMessage));
       },
     );
     cleanups.push(unsubToolMessageCreated);
@@ -2256,6 +2362,9 @@ export function useChat(options?: UseChatOptions) {
     createConversation,
     deleteConversation,
     switchConversation,
+    /** 方向3：重命名 / 标签管理（乐观更新 + conv:rename / conv:tag-* IPC） */
+    renameConversation,
+    removeConversationTag,
     /** Phase 3 P0-3：子智能体执行中间快照，按 taskId 索引 */
     toolSnapshots,
     /** Phase 3 P1 + P3：守卫 + 状态相关 */

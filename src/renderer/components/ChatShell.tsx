@@ -28,7 +28,6 @@ import { ChatHeader } from './ChatHeader';
 import { ConfigDrawer } from './ConfigDrawer';
 import { Sidebar } from './Sidebar';
 import { SenderBox } from './SenderBox';
-import { PythonStatusBar } from './PythonStatusBar';
 import { useChat } from '../hooks/useChat';
 import { useFileUpload } from '../hooks/useFileUpload';
 import { useSettings } from '../hooks/useSettings';
@@ -95,26 +94,6 @@ const [configDrawerActiveTab, setConfigDrawerActiveTab] = useState<'model' | 'py
 const [showConfigCheckModal, setShowConfigCheckModal] = useState(false);
 const [configCheckMissingItems, setConfigCheckMissingItems] = useState<ConfigMissingItem[]>([]);
 
-// ── IPC 订阅：Python 状态 ──
-type PythonStatus = {
-  state: 'DETECTING' | 'DOWNLOADING' | 'EXTRACTING' | 'READY' | 'FAILED';
-  progress?: number;
-  error?: string;
-  pythonPath?: string;
-};
-
-const [pythonStatus, setPythonStatus] = useState<PythonStatus | null>(null);
-
-useEffect(() => {
-  const api = window.electronAPI?.python;
-  if (!api) return;
-
-  api.getStatus().then(setPythonStatus).catch(() => {});
-  const unsubStatus = api.onStatusChanged(setPythonStatus);
-
-  return unsubStatus;
-}, []);
-
 // ★ 方案A：同步最新会话 ID 到 ref（上传等待期间检测会话是否被切换，见 handleSend）
 useEffect(() => {
   latestConversationIdRef.current = conversationId;
@@ -123,7 +102,6 @@ useEffect(() => {
 const { check, canCheck } = useConfigReadiness({
   config,
   configLoading,
-  pythonStatus,
 });
 
   const messageListRef = useRef<HTMLDivElement | null>(null);
@@ -487,7 +465,6 @@ const { check, canCheck } = useConfigReadiness({
             onAddFiles={addPendingFiles}
             onRemoveFile={removePendingFile}
           />
-          <PythonStatusBar hideWhenPanelOpen={settingsOpen} />
         </Flex>
       </div>
 

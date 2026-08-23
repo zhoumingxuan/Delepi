@@ -25,13 +25,16 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   visionLlmBaseUrl: '',
   visionLlmModel: '',
   visionEnabled: true,
+
+  // 模型档案（多槽位）
+  modelProfiles: [],
+  activeProfileId: '',
+
+  // 自定义技能标签（方向2；键白名单硬要求：必须与 AppSettings 同步，否则 reload 静默丢弃）
+  customSkillTags: [],
   useBuiltinPython: true,
   customPythonPath: '',
 
-  // pip 依赖管理
-  pipPackageLevel: 'recommended',
-  pipMirrorUrl: 'https://pypi.org/simple/',
-  pipAutoBootstrap: true,
 };
 
 /** 单次最多上传文件数 */

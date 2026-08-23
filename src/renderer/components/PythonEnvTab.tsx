@@ -3,13 +3,11 @@
  *
  * 功能：
  * - Radio 二选一：内置 Python（推荐）/ 自定义 Python 环境
- * - 7 种状态条件渲染
- * - IPC 订阅 python:status-changed 实时更新内置 Python 状态
  * - 配置读写通过 useSettings hook（config.useBuiltinPython + saveConfig）
  * - 自定义环境支持浏览选择 Python 解释器
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import {
   Button,
   Divider,
@@ -29,20 +27,12 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { useSettings } from '../hooks/useSettings';
-import PythonDepsPanel from './PythonDepsPanel';
 
 const { Title, Text } = Typography;
 
 // ---------------------------------------------------------------------------
 // 本地类型（对齐 main/types/python.d.ts）
 // ---------------------------------------------------------------------------
-
-type PythonStatus = {
-  state: 'DETECTING' | 'DOWNLOADING' | 'EXTRACTING' | 'INSTALLING_PIP' | 'INSTALLING_DEPS' | 'READY' | 'FAILED';
-  progress?: number;
-  error?: string;
-  pythonPath?: string;
-};
 
 type SystemPythonInfo = {
   found: boolean;
@@ -70,23 +60,6 @@ export function PythonEnvTab() {
         clearTimeout(pathDebounceRef.current);
       }
     };
-  }, []);
-
-  // ---- 内置 Python 状态（IPC 驱动） ----
-  const [builtinStatus, setBuiltinStatus] = useState<PythonStatus | null>(null);
-
-
-  // ===== IPC 订阅：内置 Python 状态 =====
-  useEffect(() => {
-    const api = window.electronAPI?.python;
-    if (!api) return;
-
-    // 初始查询
-    api.getStatus().then(setBuiltinStatus).catch(() => {});
-
-    // 订阅状态变更
-    const unsubscribe = api.onStatusChanged(setBuiltinStatus);
-    return unsubscribe;
   }, []);
 
   // ===== 下载内置 Python =====
@@ -133,13 +106,6 @@ export function PythonEnvTab() {
 
   // ===== 状态判定 =====
   const useBuiltin = config.useBuiltinPython;
-  const builtinReady = builtinStatus?.state === 'READY';
-  const builtinIsDownloading = builtinStatus?.state === 'DOWNLOADING';
-  const builtinIsDetecting = builtinStatus?.state === 'DETECTING';
-  const builtinIsExtracting = builtinStatus?.state === 'EXTRACTING';
-  const builtinProgress = builtinStatus?.progress;
-  const builtinFailed = builtinStatus?.state === 'FAILED';
-
 
   // ===== 公共样式 =====
   const monoFont = { fontFamily: token.fontFamilyCode ?? "'SF Mono','Cascadia Code',Consolas,monospace" };
@@ -213,110 +179,7 @@ export function PythonEnvTab() {
     };
 
     if (useBuiltin) {
-      // ---- 内置 Python ----
-
-      // A: 内置就绪
-      if (builtinReady) {
-        return (
-          <div style={containerStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-              <CheckCircleOutlined style={{ ...iconStyle, color: token.colorSuccess }} />
-              <Text style={{ fontSize: 14, fontWeight: 500, color: token.colorText }}>
-                已就绪
-              </Text>
-            </div>
-            {builtinStatus?.pythonPath && (
-              <Text
-                copyable
-                style={{
-                  fontSize: 12,
-                  fontFamily: monoFont.fontFamily,
-                  color: token.colorTextTertiary,
-                  wordBreak: 'break-all',
-                }}
-              >
-                {builtinStatus.pythonPath}
-              </Text>
-            )}
-          </div>
-        );
-      }
-
-      // B: 内置未就绪 / 下载中 / 失败
-      if (builtinIsDownloading && typeof builtinProgress === 'number') {
-        return (
-          <div style={containerStyle}>
-            <Progress percent={builtinProgress} size="small" style={{ marginBottom: 8 }} />
-            <Text style={{ fontSize: 12, color: token.colorTextSecondary }}>
-              正在下载... {builtinProgress}%
-            </Text>
-          </div>
-        );
-      }
-
-      // C: 检测中
-      if (builtinIsDetecting) {
-        return (
-          <div style={containerStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <LoadingOutlined style={{ ...iconStyle, color: token.colorPrimary }} />
-              <Text style={{ fontSize: 14, fontWeight: 500, color: token.colorText }}>
-                正在检测内置 Python...
-              </Text>
-            </div>
-          </div>
-        );
-      }
-
-      // D: 安装中（解压）
-      if (builtinIsExtracting) {
-        return (
-          <div style={containerStyle}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <LoadingOutlined style={{ ...iconStyle, color: token.colorPrimary }} />
-              <Text style={{ fontSize: 14, fontWeight: 500, color: token.colorText }}>
-                正在安装 Python...
-              </Text>
-            </div>
-          </div>
-        );
-      }
-
-      // 未下载 / 失败
-      // 当 useBuiltin 为 true 时，失败/未就绪状态由 PythonDepsPanel 统一处理
-      // （PythonDepsPanel 提供更完整的错误展示和"安装"按钮）
-      // 仅在 PythonDepsPanel 不会被渲染时才在此处展示
-      if (useBuiltin) {
-        return null;
-      }
-      return (
-        <div style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          gap: 8,
-          marginTop: 16,
-          padding: '12px 16px',
-          borderLeft: `3px solid ${token.colorError}`,
-          backgroundColor: token.colorErrorBg,
-          borderRadius: token.borderRadius,
-        }}>
-          <WarningOutlined style={{ fontSize: 16, color: token.colorError, marginTop: 2, flexShrink: 0 }} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{ fontSize: 14, fontWeight: 500, color: token.colorText, lineHeight: '22px' }}>
-              {builtinStatus === null
-                ? '尚未检测内置 Python 状态'
-                : builtinFailed
-                  ? `内置 Python 准备失败`
-                  : '内置 Python 尚未就绪'}
-            </Text>
-            {builtinFailed && builtinStatus?.error && (
-              <Text style={{ fontSize: 12, color: token.colorTextSecondary, marginTop: 4, display: 'block' }}>
-                {builtinStatus.error}
-              </Text>
-            )}
-          </div>
-        </div>
-      );
+      return null;
     }
 
     // ---- 自定义 Python ----
@@ -370,7 +233,6 @@ export function PythonEnvTab() {
 
       {renderRadio()}
       {renderStatusPanel()}
-      {useBuiltin && <PythonDepsPanel pythonReady={builtinReady} pythonStatus={builtinStatus} />}
     </div>
   );
 }

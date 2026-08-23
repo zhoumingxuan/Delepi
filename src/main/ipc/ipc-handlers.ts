@@ -11,7 +11,7 @@ import { ipcMain, BrowserWindow, dialog, shell } from 'electron';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DEPS, IPC_DIALOG } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 import type {
   ChatSendFileInput,
@@ -32,14 +32,35 @@ import type {
   FileUploadResult,
 } from '../types/ipc';
 import type { AppSettings } from '../types/config';
-import type { ConfigGetResult } from '@shared/types/config';
+import type { ConfigGetResult, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import type { StreamMessage } from '@shared/types/chat';
-import type { DepsInstallParams, DepsExportResult, DepsImportResult } from '@shared/types/deps';
 import { eventBus } from '../modules/event-bus/event-bus';
 import { getRunningAssistantMessage } from '../modules/main-agent/running-assistant-message-map';
-import { runMainAgent } from '../modules/main-agent/main-agent';
+import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
+import { refreshMainTools } from '../modules/main-agent/prompt';
+import {
+  EXECUTOR_WORKFLOW_TEMPLATES,
+  TASK_TAG_WORKFLOW_TEMPLATE_ID,
+  deleteBuiltinOverride,
+  isValidCustomSkillSlug,
+  listCustomSkillTagMeta,
+  readBuiltinTemplateContent,
+  readCustomSkillTemplateContent,
+  removeCustomSkillTemplateDir,
+  validateCustomSkillTagInput,
+  writeBuiltinOverride,
+  writeCustomSkillTemplate,
+} from '../modules/executor-agent/executor-workflow-templates';
+import { truncateConversationTitle } from '../modules/main-agent/title-generation';
 import { configManager } from '../modules/config/config-manager';
-import { pythonManager, depsManager, type PythonStatus, type SystemPythonInfo } from '../modules/python';
+import {
+  loadDynamicTools,
+  reloadDynamicTools,
+  listDynamicTools,
+  type DynToolsLoadResult,
+  type DynToolInfo,
+} from '../tools/dyn-tool-loader';
+import { pythonManager, type SystemPythonInfo } from '../modules/python';
 import {
   createConversation as createConversationRecord,
   deleteConversation as deleteConversationRecord,
@@ -47,6 +68,9 @@ import {
   getConversationById,
   listConversations,
   listRendererMessages,
+  listTags,
+  removeTag,
+  renameConversationTitle,
   saveSetting,
   setConversationRunning,
 } from '../db';
@@ -68,6 +92,11 @@ import {
   ASSISTANT_MESSAGE_DONE_EVENT,
   TOOL_MESSAGE_CREATED_EVENT,
   TOOL_BATCH_COMPLETED_EVENT,
+  MAX_CONVERSATION_TITLE_LENGTH,
+  BUILTIN_TASK_TAGS,
+  TASK_TAG_SET,
+  CUSTOM_TASK_TAG_LIMIT,
+  CUSTOM_TEMPLATE_MAX_LENGTH,
 } from '../constants';
 import { MAX_UPLOAD_COUNT } from '@shared/constants';
 import {
@@ -244,6 +273,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     cleanup();
   }
   eventBusCleanups = [];
+  // 方向2：启动链中 configManager.reload() 先于本函数执行（index.ts），此处刷新一次
+  // MAIN_TOOLS 使主智能体 skills enum 含已持久化的启用自定义标签（live binding，main-agent 零改动）。
+  refreshMainTools();
+  // 方向5：启动扫描注册动态工具（userData/dyn-tools/<tool_name>/{manifest.json,main.py}）。
+  // 异步 fire-and-forget：单目录校验失败仅告警不阻塞启动（A5-2 启动扫描语义；
+  // 重载入口=tools:dyn-reload，运行期任意时刻可手动触发补扫）。
+  void loadDynamicTools().catch((error: unknown) => {
+    console.warn('[ipc-handlers] 动态工具启动扫描失败（不阻塞启动）：', error);
+  });
   // ================================================================
   // 聊天处理器
   // ================================================================
@@ -365,74 +403,172 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // main-agent:chunk → IPC chat:chunk
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_CHUNK_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.CHUNK, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.CHUNK, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // main-agent:thinking → IPC chat:thinking
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_THINKING_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.THINKING, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.THINKING, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // main-agent:tool-call → IPC chat:tool-call
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_TOOL_CALL_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.TOOL_CALL, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.TOOL_CALL, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // main-agent:tool-result → IPC chat:tool-result
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_TOOL_RESULT_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.TOOL_RESULT, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.TOOL_RESULT, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // main-agent:done → IPC chat:done
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_DONE_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.DONE, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.DONE, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // main-agent:title → IPC chat:title（首轮标题生成完成后推送）
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_TITLE_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.TITLE, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.TITLE, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // main-agent:error → IPC chat:error
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_ERROR_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.ERROR, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.ERROR, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // ★ P0-E3：main-agent:aborted → IPC chat:aborted
   // 对齐 E:\ai_fr chat.aborted 事件，前端 useChat 的 unsubAborted 监听器负责归一化 abort 状态
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_ABORTED_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.ABORTED, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.ABORTED, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // ★ P6 历史消息附件回显：user.message.created → IPC chat:user-message-created
   //   main-agent.ts 在 insertMessage(user) 后 emit,前端 useChat 收到后替换本地乐观 user 消息
   //   payload 含 conversationId + message{id, role, content, attachments, createdAt}
   eventBusCleanups.push(eventBus.on(USER_MESSAGE_CREATED_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.USER_MESSAGE_CREATED, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.USER_MESSAGE_CREATED, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   eventBusCleanups.push(eventBus.on(ASSISTANT_MESSAGE_STARTED_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.ASSISTANT_STARTED, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.ASSISTANT_STARTED, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   eventBusCleanups.push(eventBus.on(ASSISTANT_MESSAGE_DONE_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.ASSISTANT_DONE, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.ASSISTANT_DONE, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   eventBusCleanups.push(eventBus.on(TOOL_MESSAGE_CREATED_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.TOOL_MESSAGE_CREATED, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.TOOL_MESSAGE_CREATED, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // ★ S3（M4）：tool.batch.completed → IPC tool.batch.completed
   //   main-agent.ts 批次收口块在全中止判定之前 emit（含全中止批次），
   //   前端 useChat 按 isError 收口 running 快照（对齐 ai_fr route.ts:973-977 → chat-shell.tsx:2093-2099）
   eventBusCleanups.push(eventBus.on(TOOL_BATCH_COMPLETED_EVENT, (payload) => {
-    mainWindow.webContents.send(IPC_CHAT.TOOL_BATCH_COMPLETED, payload);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_CHAT.TOOL_BATCH_COMPLETED, payload);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // executor:thinking → IPC executor:thinking（执行子智能体思考过程和工具调用进度）
   eventBusCleanups.push(eventBus.on('executor:thinking', (data) => {
-    mainWindow.webContents.send(IPC_EXECUTOR.THINKING, data);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_EXECUTOR.THINKING, data);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // ★ 修复主/子智能体消息混淆：executor:tool-progress → IPC executor:tool-progress
@@ -440,11 +576,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   //   前端 useChat.ts 订阅后按 taskId/taskName 聚合到 toolSnapshots 状态
   //   payload 含 source='executor' / taskName / 子智能体工具真实 callId
   eventBusCleanups.push(eventBus.on('executor:tool-progress', (data) => {
-    mainWindow.webContents.send(IPC_EXECUTOR.TOOL_PROGRESS, data);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_EXECUTOR.TOOL_PROGRESS, data);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   eventBusCleanups.push(eventBus.on('executor:snapshot', (data) => {
-    mainWindow.webContents.send(IPC_EXECUTOR.SNAPSHOT, data);
+    if (mainWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      mainWindow.webContents.send(IPC_EXECUTOR.SNAPSHOT, data);
+    } catch {
+      // renderer frame 已销毁时 send 会抛错，静默吞掉
+    }
   }));
 
   // ================================================================
@@ -476,13 +626,304 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(IPC_CONFIG.RELOAD, async (): Promise<void> => {
     configManager.reload();
+    // 方向2：reload 可能恢复/变更 customSkillTags，同步刷新主智能体 skills enum
+    refreshMainTools();
+  });
+
+  // ================================================================
+  // 模型档案处理器（多槽位 + 一键切换 + 兼容未来新模型：档案值始终自由文本快照）
+  // ================================================================
+
+  type ProfileListResult = { profiles: ModelProfile[]; activeProfileId: string };
+  type ProfileSaveParams = { name: string };
+  type ProfileDeleteParams = { id: string };
+  type ProfileSwitchParams = { id: string };
+  type ProfileSwitchResult = { activeProfileId: string; profileName: string };
+
+  /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + executorThinkingLevel；visionEnabled 总开关不入档） */
+  const PROFILE_CONFIG_KEYS = [
+    'mainModelBaseUrl',
+    'mainModelApiKey',
+    'mainModelName',
+    'mainModelMultimodal',
+    'executorModelBaseUrl',
+    'executorModelApiKey',
+    'executorModelName',
+    'executorThinkingLevel',
+    'visionLlmBaseUrl',
+    'visionLlmApiKey',
+    'visionLlmModel',
+  ] as const;
+
+  ipcMain.handle(IPC_CONFIG.PROFILES_LIST, async (): Promise<ProfileListResult> => {
+    const settings = configManager.getSettings();
+    return { profiles: settings.modelProfiles, activeProfileId: settings.activeProfileId };
+  });
+
+  ipcMain.handle(IPC_CONFIG.PROFILES_SAVE, async (_event, params: ProfileSaveParams): Promise<ProfileListResult> => {
+    const name = typeof params?.name === 'string' ? params.name.trim() : '';
+    if (!name) {
+      throw new Error('档案名称不能为空');
+    }
+    // 另存为：以主进程当前生效配置（九键+开关/档位）为权威快照源；同名档案覆盖并保留原 id
+    const settings = configManager.getSettings();
+    const profiles = [...settings.modelProfiles];
+    const existingIndex = profiles.findIndex((item) => item.name === name);
+    const profile: ModelProfile = {
+      id: existingIndex >= 0 ? profiles[existingIndex].id : uuidv4(),
+      name,
+      mainModelBaseUrl: settings.mainModelBaseUrl,
+      mainModelApiKey: settings.mainModelApiKey,
+      mainModelName: settings.mainModelName,
+      mainModelMultimodal: settings.mainModelMultimodal,
+      executorModelBaseUrl: settings.executorModelBaseUrl,
+      executorModelApiKey: settings.executorModelApiKey,
+      executorModelName: settings.executorModelName,
+      executorThinkingLevel: settings.executorThinkingLevel,
+      visionLlmBaseUrl: settings.visionLlmBaseUrl,
+      visionLlmApiKey: settings.visionLlmApiKey,
+      visionLlmModel: settings.visionLlmModel,
+    };
+    if (existingIndex >= 0) {
+      profiles[existingIndex] = profile;
+    } else {
+      profiles.push(profile);
+    }
+    saveSetting('modelProfiles', profiles);
+    configManager.setSetting('modelProfiles', profiles);
+    return { profiles, activeProfileId: settings.activeProfileId };
+  });
+
+  ipcMain.handle(IPC_CONFIG.PROFILES_DELETE, async (_event, params: ProfileDeleteParams): Promise<ProfileListResult> => {
+    const settings = configManager.getSettings();
+    const profiles = settings.modelProfiles.filter((item) => item.id !== params.id);
+    let activeProfileId = settings.activeProfileId;
+    if (activeProfileId === params.id) {
+      // 删除当前激活档案：仅清空 activeProfileId，九键保持现状（当前生效配置不变）
+      activeProfileId = '';
+      saveSetting('activeProfileId', activeProfileId);
+      configManager.setSetting('activeProfileId', activeProfileId);
+    }
+    saveSetting('modelProfiles', profiles);
+    configManager.setSetting('modelProfiles', profiles);
+    return { profiles, activeProfileId };
+  });
+
+  ipcMain.handle(IPC_CONFIG.PROFILES_SWITCH, async (_event, params: ProfileSwitchParams): Promise<ProfileSwitchResult> => {
+    const settings = configManager.getSettings();
+    const profile = settings.modelProfiles.find((item) => item.id === params.id);
+    if (!profile) {
+      throw new Error('档案不存在或已被删除');
+    }
+    // 切换流程：逐键「saveSetting 落库 + setSetting 即时生效」（对齐既有 config:save 模式）；
+    // 任一键失败：汇总错误返回且不回滚已写键（settings INSERT OR REPLACE 幂等，重试切换即自愈）；
+    // 全部成功后再写 activeProfileId。
+    const errors: string[] = [];
+    for (const key of PROFILE_CONFIG_KEYS) {
+      try {
+        const value = profile[key];
+        saveSetting(key, value);
+        configManager.setSetting(key, value);
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : String(error);
+        errors.push(`${key}: ${msg}`);
+      }
+    }
+    if (errors.length > 0) {
+      throw new Error(`切换档案「${profile.name}」部分失败（${PROFILE_CONFIG_KEYS.length - errors.length}/${PROFILE_CONFIG_KEYS.length} 键已写入，未回滚；重试切换可自愈）：${errors.join('；')}`);
+    }
+    saveSetting('activeProfileId', profile.id);
+    configManager.setSetting('activeProfileId', profile.id);
+    return { activeProfileId: profile.id, profileName: profile.name };
+  });
+
+  // ================================================================
+  // 自定义技能处理器（方向2：skills 三通道；内置8标签只读锁定，自定义标签/模板管理）
+  // ================================================================
+
+  type SkillBuiltinItem = { name: string; title: string; description: string; fileName: string };
+  type SkillsListResult = {
+    builtin: SkillBuiltinItem[];
+    custom: CustomSkillTag[];
+    limit: number;
+    templateMaxLength: number;
+  };
+  type SkillSaveParams = {
+    originalName?: string;
+    name: string;
+    title: string;
+    description?: string;
+    enabled?: boolean;
+    templateContent: string;
+  };
+  type SkillsMutationResult = { custom: CustomSkillTag[] };
+  type SkillDeleteParams = { name: string };
+
+  ipcMain.handle(IPC_SKILLS.LIST, async (): Promise<SkillsListResult> => {
+    // 内置8标签只读展示（从内置注册表组装，不含自定义来源）
+    const builtin: SkillBuiltinItem[] = BUILTIN_TASK_TAGS.map((name) => {
+      const template = EXECUTOR_WORKFLOW_TEMPLATES[TASK_TAG_WORKFLOW_TEMPLATE_ID[name]];
+      return { name, title: template.title, description: template.description, fileName: template.fileName };
+    });
+    return {
+      builtin,
+      custom: listCustomSkillTagMeta(),
+      limit: CUSTOM_TASK_TAG_LIMIT,
+      templateMaxLength: CUSTOM_TEMPLATE_MAX_LENGTH,
+    };
+  });
+
+  ipcMain.handle(IPC_SKILLS.SAVE, async (_event, params: SkillSaveParams): Promise<SkillsMutationResult> => {
+    const originalName = typeof params?.originalName === 'string' && params.originalName.trim()
+      ? params.originalName.trim()
+      : '';
+    const name = typeof params?.name === 'string' ? params.name.trim() : '';
+    const title = typeof params?.title === 'string' ? params.title.trim() : '';
+    const description = typeof params?.description === 'string' ? params.description.trim() : '';
+    const enabled = params?.enabled !== false;
+    // templateContent 缺省 = 保持现有模板文件不变（编辑元数据/启停场景；新建时必填由 validate 保证）
+    const templateContent = typeof params?.templateContent === 'string' ? params.templateContent : null;
+
+    const existing = listCustomSkillTagMeta();
+    const current = originalName ? existing.find((item) => item.name === originalName) : undefined;
+    if (originalName && !current) {
+      throw new Error(`待编辑的自定义技能标签不存在: ${originalName}`);
+    }
+    // 校验（编辑场景排除自身；内置重名/数量上限/模板长度等硬约束在 validateCustomSkillTagInput 内）
+    const others = existing.filter((item) => item !== current);
+    const issues = validateCustomSkillTagInput(
+      { name, title, description, enabled, templateContent },
+      others,
+      { isCreate: !current },
+    );
+    if (issues.length > 0) {
+      throw new Error(issues.join('；'));
+    }
+
+    // slug：新建生成（短随机后缀规避中文名目录风险）；编辑锁定原 slug（模板目录不漂移）
+    const slug = current ? current.slug : `skill-${uuidv4().replace(/-/g, '').slice(0, 8)}`;
+    if (!isValidCustomSkillSlug(slug)) {
+      throw new Error(`自定义技能模板目录 slug 非法: ${slug}`);
+    }
+
+    if (templateContent !== null) {
+      await writeCustomSkillTemplate(slug, templateContent);
+    }
+
+    const entry: CustomSkillTag = { name, slug, title, description, enabled };
+    const next = current
+      ? existing.map((item) => (item === current ? entry : item))
+      : [...existing, entry];
+    saveSetting('customSkillTags', next);
+    configManager.setSetting('customSkillTags', next);
+    // enum 运行时刷新（ES live binding；放行链在每次委派时从 configManager 读取，无需另行刷新）
+    refreshMainTools();
+    return { custom: next };
+  });
+
+  ipcMain.handle(IPC_SKILLS.DELETE, async (_event, params: SkillDeleteParams): Promise<SkillsMutationResult> => {
+    const name = typeof params?.name === 'string' ? params.name.trim() : '';
+    if (TASK_TAG_SET.has(name)) {
+      throw new Error('内置技能标签只读锁定，不可删除');
+    }
+    const existing = listCustomSkillTagMeta();
+    const target = existing.find((item) => item.name === name);
+    if (!target) {
+      throw new Error(`自定义技能标签不存在: ${name}`);
+    }
+    await removeCustomSkillTemplateDir(target.slug);
+    const next = existing.filter((item) => item.name !== name);
+    saveSetting('customSkillTags', next);
+    configManager.setSetting('customSkillTags', next);
+    refreshMainTools();
+    return { custom: next };
+  });
+
+  ipcMain.handle(
+    IPC_SKILLS.READ_TEMPLATE,
+    async (_event, params: { source?: string; key?: string }): Promise<{ success: boolean; content?: string; error?: string }> => {
+      const source = typeof params?.source === 'string' ? params.source : '';
+      const key = typeof params?.key === 'string' ? params.key.trim() : '';
+      if (source === 'builtin') {
+        // 内置分支：fileName 必须命中内置模板白名单（防路径穿越；fileName 含同构子目录）
+        const allowedFileNames = new Set(Object.values(EXECUTOR_WORKFLOW_TEMPLATES).map((template) => template.fileName));
+        if (!allowedFileNames.has(key)) {
+          return { success: false, error: `内置模板文件名不在白名单内: ${key}` };
+        }
+        try {
+          // 覆写优先：userData/builtin-skill-overrides/<fileName> 存在则读覆写，否则读内置目录
+          return { success: true, content: await readBuiltinTemplateContent(key) };
+        } catch (error) {
+          return { success: false, error: `读取内置模板内容失败: ${error instanceof Error ? error.message : String(error)}` };
+        }
+      }
+      if (source === 'custom') {
+        // 自定义分支：key 须 slug 形态（[a-z0-9-] 且非空，防路径穿越）；文件不存在返回空串（从未写过模板的自定义技能回显空）
+        if (!isValidCustomSkillSlug(key)) {
+          return { success: false, error: `自定义技能模板 slug 非法: ${key}` };
+        }
+        try {
+          return { success: true, content: await readCustomSkillTemplateContent(key) };
+        } catch (error) {
+          const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
+            ? (error as NodeJS.ErrnoException).code
+            : '';
+          if (errCode === 'ENOENT') {
+            return { success: true, content: '' };
+          }
+          return { success: false, error: `读取自定义模板内容失败: ${error instanceof Error ? error.message : String(error)}` };
+        }
+      }
+      return { success: false, error: `未知的模板来源: ${source}` };
+    },
+  );
+
+  ipcMain.handle(
+    IPC_SKILLS.SAVE_BUILTIN_OVERRIDE,
+    async (_event, params: { fileName?: string; content?: string | null }): Promise<{ success: boolean; error?: string }> => {
+      const fileName = typeof params?.fileName === 'string' ? params.fileName.trim() : '';
+      // fileName 白名单校验（防路径穿越；仅允许内置8模板的既定 fileName）
+      const allowedFileNames = new Set(Object.values(EXECUTOR_WORKFLOW_TEMPLATES).map((template) => template.fileName));
+      if (!allowedFileNames.has(fileName)) {
+        return { success: false, error: `内置模板文件名不在白名单内: ${fileName}` };
+      }
+      try {
+        if (params?.content === null) {
+          // content=null：删除覆写文件（恢复默认语义；覆写不存在则 no-op）
+          await deleteBuiltinOverride(fileName);
+        } else {
+          const content = typeof params?.content === 'string' ? params.content : '';
+          if (!content.trim()) {
+            return { success: false, error: '模板内容不能为空' };
+          }
+          await writeBuiltinOverride(fileName, content);
+        }
+        return { success: true };
+      } catch (error) {
+        return { success: false, error: `保存内置模板覆写失败: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    },
+  );
+
+  // ================================================================
+  // 动态工具处理器（方向5：tools:dyn-reload / tools:dyn-list 两通道；内置3工具锁定）
+  // ================================================================
+
+  ipcMain.handle(IPC_TOOLS.DYN_RELOAD, async (): Promise<DynToolsLoadResult> => {
+    // 手动重载：先注销全部动态注册，再重扫 dyn-tools 目录（幂等；失败目录告警并进 failed 列表）
+    return reloadDynamicTools();
+  });
+
+  ipcMain.handle(IPC_TOOLS.DYN_LIST, async (): Promise<{ tools: DynToolInfo[] }> => {
+    return { tools: listDynamicTools() };
   });
 
   // ================================================================
   // 对话管理处理器
   // ================================================================
 
-  ipcMain.handle(IPC_CONV.LIST, async (): Promise<ConversationListItem[]> => {
+  // ★ 方向3：listConversations 已聚合 conversation_tags（既有五字段不动，叠加 tags 字段）
+  ipcMain.handle(IPC_CONV.LIST, async (): Promise<Array<ConversationListItem & { tags: string[] }>> => {
     return listConversations();
   });
 
@@ -501,6 +942,67 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     await removeConversationUploadDir(id).catch(() => undefined);
     await removeConversationOutputFiles(id).catch(() => undefined);
   });
+
+  // ================================================================
+  // 方向3：对话重命名 + 标签（自定义标题安全关闭 / conversation_tags）
+  // ================================================================
+
+  type ConvRenameParams = { id: string; title: string };
+  type ConvTagParams = { id: string; tag: string };
+  type ConvWithTags = ConversationListItem & { tags: string[] };
+
+  /**
+   * conv:rename — 自定义标题写入（安全关闭在途标题生成三保险的第一环）
+   * ① abortTitleGeneration：独立句柄取消在途标题生成（不影响会话运行）
+   * ② renameConversationTitle：写库（不更新 updated_at、不改 is_running —— 规划 A3-5）
+   * ③ emitConversationUpdated + chat:title(source=manual)：前端无条件更新并建立 manual 标志
+   */
+  ipcMain.handle(IPC_CONV.RENAME, async (_event, params: ConvRenameParams): Promise<ConvWithTags | null> => {
+    if (!params?.id || typeof params.title !== 'string') {
+      throw new Error('重命名参数无效');
+    }
+    const trimmedTitle = params.title.trim();
+    if (!trimmedTitle) {
+      throw new Error('标题不能为空');
+    }
+    const finalTitle = truncateConversationTitle(trimmedTitle, MAX_CONVERSATION_TITLE_LENGTH);
+
+    // ① 安全关闭在途标题生成（titleAbortRegistry 独立取消）
+    abortTitleGeneration(params.id);
+    // ② 写入自定义标题
+    renameConversationTitle(params.id, finalTitle);
+    // ③ 推送列表态 + manual 标题事件（前端据此无条件更新并丢弃晚到的 generated）
+    const conversation = getConversationById(params.id);
+    if (!conversation) {
+      return null;
+    }
+    const payload: ConvWithTags = { ...conversation, tags: listTags(params.id) };
+    emitConversationUpdated(mainWindow, payload);
+    const titlePayload = {
+      conversationId: params.id,
+      title: finalTitle,
+      source: 'manual' as const,
+    };
+    eventBus.emit(MAIN_AGENT_TITLE_EVENT, titlePayload);
+    return payload;
+  });
+
+  /** conv:tag-remove — 移除标签 */
+  ipcMain.handle(IPC_CONV.TAG_REMOVE, async (_event, params: ConvTagParams): Promise<ConvWithTags | null> => {
+    const tag = (params?.tag ?? '').trim();
+    if (!params?.id || !tag) {
+      throw new Error('标签参数无效');
+    }
+    removeTag(params.id, tag);
+    const conversation = getConversationById(params.id);
+    if (!conversation) {
+      return null;
+    }
+    const payload: ConvWithTags = { ...conversation, tags: listTags(params.id) };
+    emitConversationUpdated(mainWindow, payload);
+    return payload;
+  });
+
   ipcMain.handle(GET_LAST_ACTIVE_CONVERSATION, async () => lastActiveConversationId);
 
 type SnapshotFile = {
@@ -868,13 +1370,6 @@ async function loadSnapshotMessages(
   // ================================================================
   // Python 环境处理器
   // ================================================================
-  ipcMain.handle(IPC_PYTHON.GET_STATUS, async (): Promise<PythonStatus> => {
-    return pythonManager.getStatus();
-  });
-
-  ipcMain.handle(IPC_PYTHON.DETECT_SYSTEM, async (): Promise<SystemPythonInfo> => {
-    return await pythonManager.detectSystemPython();
-  });
 
   ipcMain.handle(IPC_PYTHON.SELECT_CUSTOM, async (): Promise<SystemPythonInfo> => {
     return await pythonManager.selectCustomPythonPath();
@@ -882,124 +1377,6 @@ async function loadSnapshotMessages(
 
   ipcMain.handle(IPC_PYTHON.DOWNLOAD, async (): Promise<void> => {
     await pythonManager.downloadBuiltinPython();
-  });
-
-  ipcMain.handle(IPC_PYTHON.CANCEL, async (): Promise<{ success: boolean }> => {
-    pythonManager.cancel();
-    return { success: true };
-  });
-
-  // ================================================================
-  // 依赖管理处理器
-  // ================================================================
-  ipcMain.handle(IPC_DEPS.INSTALL, async (_event, params: DepsInstallParams) => {
-    try {
-      const packages = await depsManager.installPackages(params);
-      return { success: true, packages };
-    } catch (error: any) {
-      return { success: false, error: error?.message ?? String(error) };
-    }
-  });
-
-  ipcMain.handle(IPC_DEPS.CANCEL, async () => {
-    try {
-      await depsManager.cancelInstall();
-      return { success: true };
-    } catch (error: any) {
-      return { success: false, error: error?.message ?? String(error) };
-    }
-  });
-
-  ipcMain.handle(IPC_DEPS.EXPORT, async (_event, destPath?: string) => {
-    try {
-      const result = await depsManager.exportBundle(destPath);
-      return result;
-    } catch (error: any) {
-      return { success: false, error: error?.message ?? String(error) };
-    }
-  });
-
-  ipcMain.handle(IPC_DEPS.IMPORT, async (_event, bundlePath: string) => {
-    try {
-      const result = await depsManager.importBundle(bundlePath);
-      return result;
-    } catch (error: any) {
-      return { success: false, error: error?.message ?? String(error) };
-    }
-  });
-    ipcMain.handle(IPC_DEPS.GET_INSTALLED, async () => {
-    try {
-      const packages = depsManager.getInstalledPackages();
-      return { success: true, packages };
-    } catch (error: any) {
-      return { success: false, error: error?.message ?? String(error) };
-    }
-  });
-
-  ipcMain.handle(IPC_DEPS.SELECT_EXPORT_PATH, async () => {
-    try {
-      const win = BrowserWindow.getAllWindows()[0];
-      if (!win || win.isDestroyed()) {
-        return { success: false, error: '无可用窗口' };
-      }
-      const result = await dialog.showSaveDialog(win, {
-        title: '导出依赖包',
-        defaultPath: 'deps-bundle.zip',
-        filters: [
-          { name: 'ZIP 文件', extensions: ['zip'] },
-          { name: '所有文件', extensions: ['*'] },
-        ],
-      });
-      if (result.canceled || !result.filePath) {
-        return { success: true, filePath: null };
-      }
-      return { success: true, filePath: result.filePath };
-    } catch (error: any) {
-      return { success: false, error: error?.message ?? String(error) };
-    }
-  });
-
-  ipcMain.handle(IPC_DEPS.GET_PACKAGES, async () => {
-    try {
-      const packages = depsManager.getInstalledPackages();
-      if (!packages || packages.length === 0) {
-        return [];
-      }
-
-      const pythonPath = pythonManager.getPythonPath();
-      const result: { name: string; version: string; size: number }[] = [];
-      for (const pkg of packages) {
-        let size = -1;
-        try {
-          size = await (depsManager as any)._getPackageSize(pythonPath, pkg.name);
-        } catch {
-          // size remains -1
-        }
-        result.push({
-          name: pkg.name,
-          version: pkg.version ?? '',
-          size,
-        });
-      }
-      return result;
-    } catch {
-      return [];
-    }
-  });
-
-  ipcMain.handle(IPC_DEPS.REFRESH, async () => {
-    try {
-      const changed = await depsManager.refreshInstalledPackages();
-      return { changed };
-    } catch (error: any) {
-      return { changed: false, error: error?.message ?? String(error) };
-    }
-  });
-
-
-  // 解析导入文件（.txt / .zip），返回解析出的依赖包列表
-  ipcMain.handle(IPC_DEPS.PARSE_IMPORT_FILE, async (_event, filePath: string) => {
-    return depsManager.parseImportFile(filePath);
   });
 
   // 文件选择对话框

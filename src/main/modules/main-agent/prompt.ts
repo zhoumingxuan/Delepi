@@ -3,7 +3,9 @@ import {
   EXECUTOR_DELIVERY_TYPES,
   TASK_TAGS,
   TASK_TYPE_VALUES,
+  getAllTaskTags,
 } from '../../constants';
+import { configManager } from '../config/config-manager';
 import { COMMON_WORKFLOW_PROMPT } from './workflow-prompt';
 
 type ToolSchema = Record<string, unknown>;
@@ -96,12 +98,14 @@ function buildDelegateToolParameters(): ToolSchema {
       },
       skills: {
         type: 'array',
-        description: '任务需要使用的且最适配的技能标签集合；任何任务类型都可以使用任何技能标签',
+        // P-1【待用户定稿】：默认文案在既有语义上补充「技能标签含内置与自定义两类，按最适配选用」
+        description: '任务需要使用的且最适配的技能标签集合；技能标签含内置与自定义两类，按最适配选用；任何任务类型都可以使用任何技能标签',
         minItems: 1,
         maxItems: 3,
         items: {
           type: 'string',
-          enum: TASK_TAGS,
+          // 方向2 A2-2 第一关：enum 运行时从合并层构造（内置∪启用自定义；单一定义源 getAllTaskTags）
+          enum: getAllTaskTags(configManager.getSettings().customSkillTags),
         },
       },
     },
@@ -120,7 +124,7 @@ function buildDelegateToolParameters(): ToolSchema {
 }
 
 function buildDelegateExecutorDescription(): string {
-
+  // P-2【待用户定稿】：第 8 条为自定义技能选用规则默认文案（规划建议要点），待用户定稿后可调整措辞
   return `
 ** 仅用于在符合【触发任务规则】的情况下，详细制定可独立执行的任务，委派并返回结果**
 ** 【没有明确要求】或【未获取明确不可执行的证据】之前，你可以委派一切任务，没有任何限制条件**
@@ -128,21 +132,36 @@ function buildDelegateExecutorDescription(): string {
 # 注意事项
  1. **绝对严格注意：禁止预判"有无工具/能否执行"；任何情形都不得拒绝委派；即使【历史记忆】中有实证证明无法执行，也必须考虑【最新状态】存在变化，因此【绝不可拒绝委派】任务**。
  2. 重点关注【触发任务规则】的前置条件，以免在不符合前置条件的情况下触发任务。
- 3. 若先做【统筹规划】再按规划逐步执行，则务必先【编写用例】再做【验收验证】；其他情况依据已【执行规模】评估，若执行规模高，则必须是【编写用例】和【验收验证】两个任务，若执行规模不高，则允许合并为一个【验收验证】任务。
- 4. 任务类型为【研究探索】时禁止使用【问题诊断】技能，任务类型【诊断问题】必须用【问题诊断】技能。
- 5. 交付物描述会影响任务完成质量和内容详细程度，描述的越详细越好，不得为空。
- 6. 交付物类型为【文件链接】或者【图片】，则最优先使用交付包含的URL而不是Path。
- 7. **必须注意**：设置任何【任务参数】的完整性都务必确保【开箱即用】。
+ 3. 任务类型为【研究探索】时禁止使用【问题诊断】技能，任务类型【诊断问题】必须用【问题诊断】技能。
+ 4. 交付物描述会影响任务完成质量和内容详细程度，描述的越详细越好，不得为空。
+ 5. 交付物类型为【文件链接】或者【图片】，则最优先使用交付包含的URL而不是Path。
+ 6. **必须注意**：设置任何【任务参数】的完整性都务必确保【开箱即用】。
+ 7. 自定义技能按其模板定义的适用范围选用，无特殊规则时按最适配原则。
 `;
 }
 
-export const MAIN_TOOLS = [
-  {
-    type: 'function' as const,
-    function: {
-      name: MAIN_DELEGATE_TOOL_NAME,
-      description: buildDelegateExecutorDescription(),
-      parameters: buildDelegateToolParameters(),
+/** 主智能体工具声明构建函数（每次构建均从合并层取 skills enum，保证运行时含启用自定义标签） */
+export function buildMainTools() {
+  return [
+    {
+      type: 'function' as const,
+      function: {
+        name: MAIN_DELEGATE_TOOL_NAME,
+        description: buildDelegateExecutorDescription(),
+        parameters: buildDelegateToolParameters(),
+      },
     },
-  },
-];
+  ];
+}
+
+/**
+ * 主智能体工具声明（方向2 A2-2 第一关：改运行时构建）。
+ * 消费点 main-agent.ts 每轮 streamChat 读取该导入绑定，故以 export let + refreshMainTools()
+ * 实现 live-binding 刷新（消费点零改动；自定义技能保存/删除/配置 reload 后调用刷新）。
+ */
+export let MAIN_TOOLS = buildMainTools();
+
+/** 刷新 MAIN_TOOLS（ES 模块 live binding，消费点自动取新值） */
+export function refreshMainTools(): void {
+  MAIN_TOOLS = buildMainTools();
+}

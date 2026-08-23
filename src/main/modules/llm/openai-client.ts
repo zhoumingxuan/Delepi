@@ -42,6 +42,13 @@ export interface StreamChatOptions {
   onChunk?: (chunk: StreamChunk) => void;
   /** 思考内容回调 */
   onThinking?: (thinking: string) => void;
+  /**
+   * 思考意图（S1-1 方向1流式化新增，可选）：
+   * - 不传（undefined）：零思考参数（主智能体——请求体不组装任何思考键，行为与改造前逐字节一致）
+   * - { reasoningEffort: 'low' | 'high' | 'max' }：执行子智能体（档位读 AppSettings.executorThinkingLevel）
+   * 翻译收口与 nonStreamChatOnce 一致：buildThinkingParams（intent 未传时返回空对象，展开后请求体零思考键）
+   */
+  thinking?: ThinkingIntent;
 }
 
 /**
@@ -214,7 +221,10 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
     stream: true as const,
     messages: options.messages,
     tools: options.tools?.length ? options.tools : undefined,
-    // 思考参数由调用点意图决定：唯一流式调用点（主智能体）为零思考参数，此处不组装任何思考键
+    // 思考参数由调用点意图决定（S1-1）：未传 thinking 时不组装任何思考键（buildThinkingParams
+    // 对 undefined 返回空对象，展开后请求体与改造前逐字节一致——主智能体既有调用零回归）；
+    // 传 thinking 时经统一翻译收口展开 enable_thinking / reasoning_effort（与 nonStreamChatOnce 同构）
+    ...buildThinkingParams(options.thinking),
     parallel_tool_calls: true,
     reasoning_split: true,
   };
