@@ -1241,7 +1241,7 @@ export async function runDelegatedTask(
       // S1-3 增量推送：reasoning delta 到达即推送（token 级轮内可见）。
       // 既有两条推送分支语义迁移到流式路径：
       //   - 分支2「reasoning 非空才推」→ delta 到达即推理非空的流式形态，逐 delta 推送 type='thinking'；
-      //   - 分支1「reasoning 为空但 content 非空 → content 兜底充当 thinking」→ 保持轮末一次性整轮推送（见下方兜底块）。
+      //   - 分支1「reasoning 为空但 content 非空 → content 兜底充当 thinking」→ 已移除：思考流仅推送真实 reasoning，content 不再冒充 thinking。
       onThinking: (delta) => {
         options.onThinking?.(delta, { type: 'thinking' });
       },
@@ -1256,11 +1256,6 @@ export async function runDelegatedTask(
       typeof assistantMessage.content === 'string'
         ? assistantMessage.content.trim()
         : '';
-    // S1-3 轮末兜底（原分支1语义保持整轮推送）：reasoning 为空但 content 非空时，以整轮 content 充当 thinking。
-    //   流式期间无 reasoning delta（服务端未拆分/未推理）时不会发生增量推送，此兜底与原行为逐字节一致。
-    if (assistantContent && !thinking) {
-      options.onThinking?.(assistantContent, { type: 'thinking' });
-    }
 
     // 无工具调用 → 解析最终输出
     if (toolCalls.length === 0) {
