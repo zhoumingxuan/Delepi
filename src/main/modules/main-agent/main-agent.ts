@@ -14,7 +14,7 @@
 
 import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { streamChat, type ModelConfig } from '../llm/openai-client';
 import { isModelApiAbortError } from '../llm/model-retry';
@@ -62,6 +62,7 @@ import {
   getRunningAssistantMessage,
   deleteRunningAssistantMessage,
 } from './running-assistant-message-map';
+import { setTaskSnapshot, clearSnapshotSession } from './snapshot-session-map';
 import {
   MAX_CONVERSATION_TITLE_LENGTH,
   ERR_ABORTED,
@@ -380,6 +381,9 @@ function loadHistoryMessages(
 }
 
 async function resetConversationTasksDir(conversationId: string): Promise<void> {
+  // tasks_snapshot 内存集合重置时机与 tasks 目录完全相同（轮末唯一调用点）；
+  //   文件清理失败可吞错，内存清理必须无条件执行（改造后读侧唯一数据源）
+  clearSnapshotSession(conversationId);
   try {
     const tasksDir = path.join(resolveConversationDir(conversationId), 'tasks');
     await rm(tasksDir, { recursive: true, force: true });
@@ -915,8 +919,6 @@ export async function runMainAgent(
         // S1-5 思考全量累积（跨轮，仅 thinking 分支的 delta 追加；进度文本不混入）：
         //   作为 sendToolSnapshot 的 thinking/result 入参 → snapshot.json thinking 字段存储全量
         let executorThinkingAccumulated = '';
-        // snapshot.json 串行覆盖式写入队列
-        let snapshotWriteQueue: Promise<void> = Promise.resolve();
 
         const resolveSnapshotTaskStatus = (
           result: string | undefined,
@@ -926,41 +928,6 @@ export async function runMainAgent(
           if (finishedAt) return 'finished';
           if (typeof result === 'string' && result.trim()) return 'running';
           return 'init';
-        };
-
-        const writeSnapshot = async (payload: {
-          thinking: string;
-          toolCall: { toolCallId: string; name: string; arguments: string };
-          createdAt: string;
-          status: 'init' | 'running' | 'finished';
-          finishedAt?: string;
-          snapshot: StreamMessage;
-        }) => {
-          if (!finalOutputDir) return;
-          snapshotWriteQueue = snapshotWriteQueue
-            .then(() =>
-              writeFile(
-                path.join(finalOutputDir, 'snapshot.json'),
-                JSON.stringify({
-                  thinking: payload.thinking,
-                  toolCall: payload.toolCall,
-                  createdAt: payload.createdAt,
-                  status: payload.status,
-                  ...(payload.finishedAt ? { finishedAt: payload.finishedAt } : {}),
-                  snapshot: payload.snapshot,
-                }),
-                'utf-8',
-              ),
-            )
-            .catch((error: unknown) => {
-              // ★ BUG-3：快照落盘失败不再静默吞错——结构化日志（conversationId/toolCallId/error）
-              //   保持 fire-and-forget 语义不变：仅记录，不重试、不改变推送协议
-              console.error('[main-agent] writeSnapshot failed', {
-                conversationId,
-                toolCallId: payload.toolCall.toolCallId,
-                error,
-              });
-            });
         };
 
         /**
@@ -1044,8 +1011,9 @@ export async function runMainAgent(
             status: frontendStatus,
             message: snapshotMessage,
           });
-          // snapshot.json 串行覆盖式写入（固定文件名，三态 init/running/finished）
-          void writeSnapshot({
+          // 快照内存写入（tasks_snapshot 集合同键覆盖式更新，三态 init/running/finished；
+          //   重置时机与 tasks 目录重置完全相同，进程重启内存自动清空，无文件 IO）
+          setTaskSnapshot(conversationId, toolCall.id, {
             thinking: latestThinking,
             toolCall: snapshotToolCall,
             createdAt: toolStartedAt,

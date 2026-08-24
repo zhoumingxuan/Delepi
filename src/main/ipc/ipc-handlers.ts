@@ -33,9 +33,9 @@ import type {
 } from '../types/ipc';
 import type { AppSettings } from '../types/config';
 import type { ConfigGetResult, ModelProfile, CustomSkillTag } from '@shared/types/config';
-import type { StreamMessage } from '@shared/types/chat';
 import { eventBus } from '../modules/event-bus/event-bus';
 import { getRunningAssistantMessage } from '../modules/main-agent/running-assistant-message-map';
+import { getSnapshotMessages, clearSnapshotSession } from '../modules/main-agent/snapshot-session-map';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
 import { refreshMainTools } from '../modules/main-agent/prompt';
 import {
@@ -936,6 +936,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     //   - 先删 SQLite 记录(deleteConversationRecord)
     //   - 再删磁盘文件(removeConversationUploadDir + removeConversationOutputFiles)
     deleteConversationRecord(id);
+    // 快照内存 session 随会话删除同步清理（文件侧随会话目录整体删除）
+    clearSnapshotSession(id);
     if (lastActiveConversationId === id) {
       lastActiveConversationId = null;
     }
@@ -1005,101 +1007,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(GET_LAST_ACTIVE_CONVERSATION, async () => lastActiveConversationId);
 
-type SnapshotFile = {
-  thinking: string;
-  toolCall: { toolCallId: string; name: string; arguments: string };
-  createdAt: string;
-  status: 'init' | 'running' | 'finished';
-  finishedAt?: string;
-  snapshot: StreamMessage;
-};
-
-function isSnapshotMessage(value: unknown): value is StreamMessage {
-  if (!value || typeof value !== 'object') {
-    return false;
-  }
-
-  const message = value as Partial<StreamMessage>;
-
-  return (
-    typeof message.id === 'string' &&
-    typeof message.conversationId === 'string' &&
-    message.role === 'tool' &&
-    !!message.payload &&
-    typeof message.payload === 'object'
-  );
-}
-
-/**
- * 旧三字段快照兼容：无 snapshot 字段的旧文件构造最小 StreamMessage
- * 返回 null 表示无法构造（跳过）
- */
-function tryBuildLegacySnapshotMessage(
-  data: Partial<SnapshotFile>,
-  conversationId: string,
-): StreamMessage | null {
-  if (!data.toolCall || typeof data.toolCall.toolCallId !== 'string') {
-    return null;
-  }
-  const derivedStatus: 'init' | 'running' | 'finished' = data.finishedAt
-    ? 'finished'
-    : data.thinking && data.thinking.trim()
-      ? 'running'
-      : 'init';
-  return {
-    id: `snapshot-${data.toolCall.toolCallId}`,
-    conversationId,
-    role: 'tool',
-    payload: {
-      toolCallId: data.toolCall.toolCallId,
-      name: data.toolCall.name,
-      arguments: data.toolCall.arguments,
-      result: '',
-      thinking: data.thinking ?? '',
-      startedAt: data.createdAt,
-      ...(data.finishedAt ? { finishedAt: data.finishedAt } : {}),
-    },
-    status: derivedStatus === 'finished' ? 'success' : 'loading',
-    createdAt: data.createdAt,
-  };
-}
-
-async function loadSnapshotMessages(
-  conversationId: string,
-  existingToolCallIds: Set<string>,
-): Promise<Array<{ toolCallId: string; message: StreamMessage }>> {
-  try {
-    const tasksDir = path.join(resolveConversationDir(conversationId), 'tasks');
-    const entries = await readdir(tasksDir, { withFileTypes: true });
-    const result: Array<{ toolCallId: string; message: StreamMessage }> = [];
-
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      try {
-        const raw = await readFile(
-          path.join(tasksDir, entry.name, 'snapshot.json'),
-          'utf-8',
-        );
-        const data = JSON.parse(raw) as Partial<SnapshotFile>;
-        if (isSnapshotMessage(data.snapshot)) {
-          // 去重键=快照内容中的 toolCallId（新目录名=toolCall.id；旧 taskId 命名目录靠内容提取兼容，对齐 ai_fr :103-108）
-          const snapshotToolCallId = data.snapshot.payload.toolCallId;
-          if (snapshotToolCallId && existingToolCallIds.has(snapshotToolCallId)) continue;
-          result.push({ toolCallId: snapshotToolCallId || entry.name, message: data.snapshot });
-        } else {
-          // 旧三字段兼容（见规划书第 5 章）：构造最小快照消息，不再以假任务形态合并
-          const legacy = tryBuildLegacySnapshotMessage(data, conversationId);
-          if (legacy) {
-            if (existingToolCallIds.has(legacy.payload.toolCallId)) continue;
-            result.push({ toolCallId: legacy.payload.toolCallId, message: legacy });
-          }
-        }
-      } catch { /* 损坏跳过 */ }
-    }
-    return result;
-  } catch { return []; }
-}
-
   /**
    * conv:get-messages — 获取对话的历史消息列表
    * 读取 messages 表，按 seq 升序排列，反序列化 payload_json 为 ChatMessage 数组
@@ -1118,7 +1025,7 @@ async function loadSnapshotMessages(
     }
 
     // ★ S4（M5）恢复单源收敛（对齐 ai_fr [id]/route.ts:100-118）：
-    //   已完成委派任务结果由 messages（tool 角色 payload 自足）承载，过渡态由 snapshot.json 承载，
+    //   已完成委派任务结果由 messages（tool 角色 payload 自足）承载，过渡态由会话内存快照承载，
     //   去重键=已持久化 tool 消息的 callId（=快照 payload.toolCallId）。
     const existingToolCallIds = new Set(
       list
@@ -1126,10 +1033,10 @@ async function loadSnapshotMessages(
         .map((message) => message.toolCall?.callId)
         .filter((v): v is string => typeof v === 'string' && !!v),
     );
-    // 仅当会话运行中（is_running=true）才加载快照消息；is_running=false 时永不读取 tasks/*/snapshot.json
+    // 仅当会话运行中（is_running=true）才加载快照消息；is_running=false 时永不读取会话内存快照
     const conversation = getConversationById(conversationId);
     const snapshotMessages = conversation?.isRunning
-      ? await loadSnapshotMessages(conversationId, existingToolCallIds)
+      ? getSnapshotMessages(conversationId, existingToolCallIds)
       : [];
 
     return {
