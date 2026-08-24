@@ -18,6 +18,7 @@ import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { streamChat, type ModelConfig } from '../llm/openai-client';
 import { isModelApiAbortError } from '../llm/model-retry';
+import { configManager } from '../config/config-manager';
 import {
   buildMainAgentTextContent,
   buildMainAgentUserContent,
@@ -648,7 +649,7 @@ export async function runMainAgent(
       messages: turnMessages,
       tools: MAIN_TOOLS,
       signal: options.signal,
-      thinking: { reasoningEffort: 'high' },
+      thinking: { reasoningEffort: configManager.getSettings().mainThinkingLevel },
       onChunk: (chunk) => {
         // 流式快照推送到 EventBus → IPC → 前端
         // ★ P0 修复：chunk 事件只推送文本 content delta，

@@ -776,6 +776,88 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                           }
                         />
                       </Form.Item>
+
+                      <Form.Item
+                        label={
+                          <span
+                            style={{
+                              color: token.colorTextSecondary,
+                              fontSize: 13,
+                            }}
+                          >
+                            思考程度
+                          </span>
+                        }
+                        name="mainThinkingLevel"
+                      >
+                        <Radio.Group
+                          onChange={(e) =>
+                            onSave("mainThinkingLevel", e.target.value)
+                          }
+                          style={{ display: "flex", gap: 16 }}
+                        >
+                          <Radio value="low">
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 500,
+                                color: token.colorText,
+                              }}
+                            >
+                              低
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 12,
+                                color: token.colorTextSecondary,
+                                marginLeft: 8,
+                              }}
+                            >
+                              更快响应
+                            </span>
+                          </Radio>
+                          <Radio value="high">
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 500,
+                                color: token.colorText,
+                              }}
+                            >
+                              高
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 12,
+                                color: token.colorTextSecondary,
+                                marginLeft: 8,
+                              }}
+                            >
+                              均衡推理（默认）
+                            </span>
+                          </Radio>
+                          <Radio value="max">
+                            <span
+                              style={{
+                                fontSize: 13,
+                                fontWeight: 500,
+                                color: token.colorText,
+                              }}
+                            >
+                              最大
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 12,
+                                color: token.colorTextSecondary,
+                                marginLeft: 8,
+                              }}
+                            >
+                              深度推理
+                            </span>
+                          </Radio>
+                        </Radio.Group>
+                      </Form.Item>
                     </div>
 
                     {/* 子智能体配置 */}

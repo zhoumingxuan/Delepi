@@ -19,6 +19,7 @@ export interface ModelProfile {
   mainModelApiKey: string;
   mainModelName: string;
   mainModelMultimodal: boolean;
+  mainThinkingLevel: 'low' | 'high' | 'max';
   // 执行子智能体模型
   executorModelBaseUrl: string;
   executorModelApiKey: string;
@@ -55,6 +56,8 @@ export interface AppSettings {
   mainModelName: string;
   /** 主模型是否启用多模态协议（默认 true） */
   mainModelMultimodal: boolean;
+  /** 主智能体思考程度（默认 'high'；档位对齐 openai-client ThinkingIntent 的 'low'|'high'|'max'，不含 medium） */
+  mainThinkingLevel: 'low' | 'high' | 'max';
 
   // 执行子智能体模型
   executorModelBaseUrl: string;

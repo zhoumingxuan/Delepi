@@ -44,7 +44,7 @@ export interface StreamChatOptions {
   onThinking?: (thinking: string) => void;
   /**
    * 思考意图（S1-1 方向1流式化新增，可选）：
-   * - 不传（undefined）：零思考参数（主智能体——请求体不组装任何思考键，行为与改造前逐字节一致）
+   * - 不传（undefined）：零思考参数（请求体不组装任何思考键）
    * - { reasoningEffort: 'low' | 'high' | 'max' }：执行子智能体（档位读 AppSettings.executorThinkingLevel）
    * 翻译收口与 nonStreamChatOnce 一致：buildThinkingParams（intent 未传时返回空对象，展开后请求体零思考键）
    */
@@ -58,7 +58,7 @@ export interface StreamChatOptions {
 
 /**
  * 调用点思考意图（唯一思考意图通道；子智能体档位已配置化，其余调用点按机制基准硬编码）：
- * - 不传（undefined）：零思考参数（主智能体——请求不携带任何思考键）
+ * - 不传（undefined）：零思考参数（请求不携带任何思考键）
  * - { reasoningEffort: 'low' | 'high' | 'max' }：子智能体（档位读 AppSettings.executorThinkingLevel，默认 'max'）；{ reasoningEffort: 'low' }：标题生成
  * - { enableThinking: true, reasoningEffort: 'low' }：上下文压缩·glm*（glm 判定在调用点）
  * - { enableThinking: false }：上下文压缩·非 glm*、图片识别

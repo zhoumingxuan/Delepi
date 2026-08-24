@@ -14,6 +14,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   mainModelApiKey: '',
   mainModelName: '',
   mainModelMultimodal: true,
+  mainThinkingLevel: 'high',
 
   executorModelBaseUrl: '',
   executorModelApiKey: '',

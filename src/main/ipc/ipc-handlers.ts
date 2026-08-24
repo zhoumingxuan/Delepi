@@ -640,12 +640,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   type ProfileSwitchParams = { id: string };
   type ProfileSwitchResult = { activeProfileId: string; profileName: string };
 
-  /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + executorThinkingLevel；visionEnabled 总开关不入档） */
+  /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + mainThinkingLevel + executorThinkingLevel；visionEnabled 总开关不入档） */
   const PROFILE_CONFIG_KEYS = [
     'mainModelBaseUrl',
     'mainModelApiKey',
     'mainModelName',
     'mainModelMultimodal',
+    'mainThinkingLevel',
     'executorModelBaseUrl',
     'executorModelApiKey',
     'executorModelName',
@@ -676,6 +677,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       mainModelApiKey: settings.mainModelApiKey,
       mainModelName: settings.mainModelName,
       mainModelMultimodal: settings.mainModelMultimodal,
+      mainThinkingLevel: settings.mainThinkingLevel,
       executorModelBaseUrl: settings.executorModelBaseUrl,
       executorModelApiKey: settings.executorModelApiKey,
       executorModelName: settings.executorModelName,
@@ -722,6 +724,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     for (const key of PROFILE_CONFIG_KEYS) {
       try {
         const value = profile[key];
+        // 兜底：存量档案缺 mainThinkingLevel 时 value=undefined（stringifyJson(undefined)=undefined 经 better-sqlite3 绑定 NULL，触发 value_json NOT NULL 约束抛错）；
+        // 跳过 undefined 键，保持当前生效档位不动（对齐 visionEnabled 不入档语义）
+        if (value === undefined) continue;
         saveSetting(key, value);
         configManager.setSetting(key, value);
       } catch (error) {
