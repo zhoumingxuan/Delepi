@@ -14,6 +14,8 @@ import type { BubbleItemType } from '@ant-design/x';
 import { Button, Flex, Spin, theme } from 'antd';
 import {
   DownOutlined,
+  FolderOpenOutlined,
+  PaperClipOutlined,
   RobotOutlined,
   ToolOutlined,
   UserOutlined,
@@ -499,11 +501,12 @@ export function ChatArea({
             </div>
           ) : showEmpty ? (
             emptyState ?? (
-              <Flex
-                align="center"
-                justify="center"
-                style={{ minHeight: '100%' }}
-              >
+            <Flex
+              vertical
+              align="center"
+              justify="center"
+              style={{ minHeight: '100%' }}
+            >
                 <Welcome
                   variant="borderless"
                   title="欢迎使用 Delepi"
@@ -520,6 +523,113 @@ export function ChatArea({
                     },
                   }}
                 />
+                <div
+                  style={{
+                    display: 'flex',
+                    flexWrap: 'wrap',
+                    justifyContent: 'center',
+                    gap: 12,
+                    maxWidth: 640,
+                    marginTop: 24,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 10,
+                      width: 300,
+                      padding: '12px 16px',
+                      background: token.colorBgElevated,
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                      borderRadius: token.borderRadiusLG,
+                      textAlign: 'left',
+                    }}
+                  >
+                    <FolderOpenOutlined
+                      style={{
+                        fontSize: token.fontSizeLG,
+                        color: token.colorPrimary,
+                        marginTop: 3,
+                      }}
+                    />
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: token.fontSize,
+                          lineHeight: '22px',
+                          fontWeight: 600,
+                          color: token.colorText,
+                        }}
+                      >
+                        本地路径直读
+                      </span>
+                      <span
+                        style={{
+                          fontSize: token.fontSizeSM,
+                          lineHeight: '20px',
+                          color: token.colorTextSecondary,
+                        }}
+                      >
+                        在对话中提供本机文件的绝对路径，即可直接读取并执行，无需上传
+                      </span>
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'flex-start',
+                      gap: 10,
+                      width: 300,
+                      padding: '12px 16px',
+                      background: token.colorBgElevated,
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                      borderRadius: token.borderRadiusLG,
+                      textAlign: 'left',
+                    }}
+                  >
+                    <PaperClipOutlined
+                      style={{
+                        fontSize: token.fontSizeLG,
+                        color: token.colorPrimary,
+                        marginTop: 3,
+                      }}
+                    />
+                    <div
+                      style={{
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: 2,
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontSize: token.fontSize,
+                          lineHeight: '22px',
+                          fontWeight: 600,
+                          color: token.colorText,
+                        }}
+                      >
+                        截图与文件上传
+                      </span>
+                      <span
+                        style={{
+                          fontSize: token.fontSizeSM,
+                          lineHeight: '20px',
+                          color: token.colorTextSecondary,
+                        }}
+                      >
+                        支持拖拽、粘贴或点击附件按钮上传，单次至多 10 个文件
+                      </span>
+                    </div>
+                  </div>
+                </div>
               </Flex>
             )
           ) : (
