@@ -110,3 +110,22 @@ textarea {
 .chat-area-wrapper > div > div:last-child {
   background: transparent !important;
 }
+
+/* ─── P07: content-visibility 静态兜底——历史消息气泡离屏跳过渲染 ───
+ * 定位链（2026-08-24 实读 BubbleList.js/Bubble.js/use-x-provider-context.js）：
+ *   Bubble.List 根 > .{prefixCls}-list-scroll-box > .{prefixCls}-list-scroll-content > 每消息 Bubble 根(.{prefixCls})
+ *   prefixCls 由 antd ConfigProvider 决定（defaultPrefixCls='ant'，App.tsx 未自定义 prefixCls）
+ *   → 实际类名 .ant-bubble-list-scroll-content；直接子元素即每条消息气泡根节点。
+ *   若未来引入自定义 prefixCls，需同步本选择器前缀。
+ * :not(:last-child) 排除流式目标消息（永远在最后）——流式项高度持续变化，
+ *   对其估高必然偏差并引起滚动条跳动；历史项高度稳定，auto 记忆后无跳动。 */
+@supports (content-visibility: auto) {
+  .chat-message-list .ant-bubble-list-scroll-content > :not(:last-child) {
+    content-visibility: auto;
+    /* 估值策略：auto 前缀 = Chromium 记忆该元素最后一次实际渲染尺寸，离屏期间用记忆值参与
+     * 布局/滚动条计算；160px 仅为"从未渲染过"时的初值估高（普通单段消息气泡典型高度量级，
+     * 可调参数：首屏快滚仍见跳动时按 120/200/300 档位对比 DevTools 滚动条稳定性）。
+     * 滚动条跳动因此只可能发生在首次快速滚动经过从未渲染项时，稳态无跳动。 */
+    contain-intrinsic-size: auto 160px;
+  }
+}

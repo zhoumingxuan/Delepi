@@ -34,7 +34,8 @@ import type { ChatMessage } from '../hooks/useChat';
 import type { ChatAttachment } from '@shared/types/chat';
 import { isImageContentType } from '@shared/utils/image-type';
 import type { AssistantMessageSegment } from '../lib/message-filter';
-import { latestToolProgressText, splitLoadingToolContent } from '../lib/executor-thinking';
+// ★ P04: 切分函数改用增量缓存版（cacheKey=callId 级），输出与全量版逐字一致；原全量函数保留导出（零回归底线）
+import { latestToolProgressTextCached, splitLoadingToolContentCached } from '../lib/executor-thinking';
 import { isEmptyAssistantBubble } from '../lib/message-filter';
 import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
 
@@ -184,11 +185,12 @@ function renderToolResultContent(
   return value;
 }
 
-function renderLoadingToolContent(value: string, thinkingOverride?: string) {
-  const { thinking: thinkingFromResult } = splitLoadingToolContent(value);
+// ★ P04: 追加第三参 cacheKey（必传，流标识级缓存键），切分改走增量缓存（根因 R4）
+function renderLoadingToolContent(value: string, thinkingOverride: string | undefined, cacheKey: string) {
+  const { thinking: thinkingFromResult } = splitLoadingToolContentCached(cacheKey, value);
   // ★ 项9：对齐 ai_fr renderLoadingToolContent(value, thinkingOverride?)——优先使用显式 thinking
   const thinking = thinkingOverride?.trim() || thinkingFromResult;
-  const progressContent = latestToolProgressText(value) || (thinking ? '' : '执行中');
+  const progressContent = latestToolProgressTextCached(cacheKey, value) || (thinking ? '' : '执行中');
 
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -358,7 +360,7 @@ function renderToolResultSegment(
         includeStructuredFilePreview: options?.includeStructuredFilePreview,
       });
   const renderedContent = loading ? (
-    renderLoadingToolContent(content, thinkingText)
+    renderLoadingToolContent(content, thinkingText, toolCall.callId)
   ) : (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       {thinkingText ? (

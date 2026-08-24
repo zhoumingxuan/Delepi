@@ -49,6 +49,11 @@ export interface StreamChatOptions {
    * 翻译收口与 nonStreamChatOnce 一致：buildThinkingParams（intent 未传时返回空对象，展开后请求体零思考键）
    */
   thinking?: ThinkingIntent;
+  /**
+   * ★ M12 重试回调重置协议（可选）：底层 runModelApiWithRetry 即将重放 streamChatOnce 前触发
+   *   （retryCount += 1 之后、sleepBeforeRetry 之前），消费者据此复位已累积的增量态
+   */
+  onStreamRetry?: () => void;
 }
 
 /**
@@ -288,10 +293,19 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
             continue;
           }
 
-          const index =
+          // ★ M20 tool_calls 碎片合并加固·三级索引解析：
+          //   显式 index > 按 chunk.id 匹配既有条目 > 追加新条目
+          //   （修复无 index 的同 id 续片以 toolCalls.length 为下标被拆成多条独立 tool_call）
+          let index =
             'index' in chunk && typeof chunk.index === 'number'
               ? chunk.index
-              : toolCalls.length;
+              : -1;
+          if (index < 0 && typeof chunk.id === 'string' && chunk.id) {
+            index = toolCalls.findIndex((toolCallEntry) => toolCallEntry.id === chunk.id);
+          }
+          if (index < 0) {
+            index = toolCalls.length;
+          }
 
           const current: StreamToolCall = toolCalls[index] ?? {
             id: randomUUID(),
@@ -400,6 +414,8 @@ export async function streamChat(
 ): Promise<StreamChatResult> {
   return runModelApiWithRetry(() => streamChatOnce(options), {
     signal: options.signal,
+    // ★ M12：重试边界回调接线（onRetry → onStreamRetry 透传给调用方）
+    onRetry: () => options.onStreamRetry?.(),
   });
 }
 

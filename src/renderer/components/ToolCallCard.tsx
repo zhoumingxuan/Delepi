@@ -15,7 +15,8 @@ import { Flex, Typography } from 'antd';
 import { memo } from 'react';
 import { RichMarkdown } from './RichMarkdown';
 import { ThinkingBlock } from './ThinkingBlock';
-import { splitLoadingToolContent } from '../lib/executor-thinking';
+// ★ P04: 切分函数改用增量缓存版（cacheKey=callId 级），输出与全量版逐字一致；原全量函数保留导出（零回归底线）
+import { splitLoadingToolContentCached } from '../lib/executor-thinking';
 import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
 
 
@@ -57,7 +58,8 @@ export interface ToolCallInfo {
  * - result 非空：拆分 thinking / progress，渲染两个 ThinkingBlock
  * - result 为空：显示"执行中..."占位
  */
-function LoadingToolContent({ result }: { result: string }) {
+// ★ P04: 追加 cacheKey（流标识级缓存键），切分改走增量缓存（根因 R4）
+function LoadingToolContent({ result, cacheKey }: { result: string; cacheKey: string }) {
   if (!result || !result.trim()) {
     return (
       <Typography.Text type="secondary" style={{ fontSize: 13 }}>
@@ -66,7 +68,7 @@ function LoadingToolContent({ result }: { result: string }) {
     );
   }
 
-  const { thinking, progress } = splitLoadingToolContent(result);
+  const { thinking, progress } = splitLoadingToolContentCached(cacheKey, result);
 
   if (!progress) {
     // 无进度文本：按单一思考块渲染
@@ -120,7 +122,7 @@ export const ToolCallCard = memo(function ToolCallCard({
             {
               key: toolCall.callId,
               title: titleContent,
-              content: <LoadingToolContent result={result} />,
+              content: <LoadingToolContent result={result} cacheKey={toolCall.callId} />,
               status: 'loading',
             },
           ]}

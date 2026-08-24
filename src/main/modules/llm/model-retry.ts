@@ -178,6 +178,11 @@ export async function runModelApiWithRetry<T>(
   operation: () => Promise<T>,
   options?: {
     signal?: AbortSignal;
+    /**
+     * ★ M12 重试回调重置协议（可选）：retryCount += 1 之后、sleepBeforeRetry 之前调用——
+     *   消费者先复位已累积的增量态，sleep 后才收到新 attempt 增量（协议顺序保证）
+     */
+    onRetry?: (retryCount: number) => void;
   },
 ): Promise<T> {
   let retryCount = 0;
@@ -206,6 +211,8 @@ export async function runModelApiWithRetry<T>(
         }
 
         retryCount += 1;
+        // ★ M12：重试边界回调——消费者先复位（矫正事件同点发出），再 sleep 重放
+        options?.onRetry?.(retryCount);
         await sleepBeforeRetry(retryDelayMs, options?.signal);
         continue;
       }

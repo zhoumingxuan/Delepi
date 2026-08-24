@@ -36,7 +36,7 @@ import {
 } from '../../utils/executor-tool-progress';
 import { ensureErrorMessage } from '../../utils';
 import type { AssistantRuntimeConfig } from '../executor-agent/assistant-config';
-import { eventBus } from '../event-bus/event-bus';
+import { eventBus, type ExecutorAgentEvents } from '../event-bus/event-bus';
 import {
   getConversationById,
   getNextMessageSeq,
@@ -628,11 +628,23 @@ export async function runMainAgent(
     if (options.signal?.aborted) {
       throw new Error(ERR_ABORTED);
     }
+    // ★ M13 重试复位基线捕获（按轮捕获：每次 streamChat 调用前）——轮内重试复位到本轮起点，
+    //   跨轮累积保留（fullContent/fullThinking 取自最终 attempt 的 streamResult，DB 落库本就无重复，
+    //   本协议仅修运行态与渲染态）；segments 深拷贝防引用共享
+    const baselineRunning = getRunningAssistantMessage(conversationId);
+    const retryBaseline = {
+      content: baselineRunning?.content ?? '',
+      thinking: baselineRunning?.thinking ?? '',
+      segments: Array.isArray(baselineRunning?.segments)
+        ? baselineRunning.segments.map((segment) => ({ ...segment }))
+        : [],
+    };
     const streamResult = await streamChat({
       modelConfig: options.modelConfig,
       messages: turnMessages,
       tools: MAIN_TOOLS,
       signal: options.signal,
+      thinking: { reasoningEffort: 'high' },
       onChunk: (chunk) => {
         // 流式快照推送到 EventBus → IPC → 前端
         // ★ P0 修复：chunk 事件只推送文本 content delta，
@@ -714,6 +726,33 @@ export async function runMainAgent(
             delta: thinking,
           });
         }
+      },
+      // ★ M13 重试复位：model-retry 层重试边界回调（M12 onRetry → onStreamRetry）——
+      //   复位 running 消息到本轮基线，并发两条矫正事件截断渲染端双份累积：
+      //   ① chunk 全量覆盖（reset 标记，沿既有"扩展字段经 as 透传"先例，不改 event-bus.ts 本体）
+      //   ② thinking/segments 全量覆盖（复用既有全量载荷通道）
+      onStreamRetry: () => {
+        updateRunningAssistantMessage(conversationId, {
+          content: retryBaseline.content,
+          thinking: retryBaseline.thinking,
+          segments: retryBaseline.segments,
+          forceNewReasoningSegment: false,
+        });
+        // 矫正事件①：MAIN_AGENT_CHUNK_EVENT { delta:'', content:基线全量, reset:true }
+        eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
+          conversationId,
+          delta: '',
+          content: retryBaseline.content,
+          isThinking: false,
+          reset: true,
+        } as { conversationId: string; delta: string; content: string; isThinking: boolean; finishReason?: string | null });
+        // 矫正事件②：MAIN_AGENT_THINKING_EVENT { delta:'', thinking:基线全量, segments:基线 }
+        eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
+          conversationId,
+          delta: '',
+          thinking: retryBaseline.thinking,
+          segments: retryBaseline.segments,
+        });
       },
     });
     fullContent = streamResult.content;
@@ -1032,6 +1071,8 @@ export async function runMainAgent(
               arguments: toolCall.function.arguments,
               result: failureResultText,
               isError: true,
+              // ★ M09 持久层补链：payload 补 thinking（executorThinkingHistory 完整思考链，前缀去重语义现成）
+              thinking: executorThinkingHistory.join('\n\n') || undefined,
               startedAt: toolStartedAt,
               finishedAt: toolFinishedAt,
             },
@@ -1105,6 +1146,15 @@ export async function runMainAgent(
             // 已完成任务数组直接传下去（不做转换）：completedTasks.length>0 时传全量数组，否则 undefined
             // 与网站版 stream/route.ts L796-801 行为一致
             completedTasks: completedTasks.length > 0 ? completedTasks : undefined,
+            // ★ M14 委派任务重试复位：底层 streamChat 重试边界触发（M12 协议），
+            //   四个累积器复位到任务起点基线（前缀去重逻辑跨 attempt 失效，
+            //   attempt-1 已累积增量必须显式清空，否则渲染端 lastContent 双份累积）
+            onStreamRetry: () => {
+              executorThinkingClassifyBuffer = '';
+              executorThinkingAccumulated = '';
+              latestThinking = '';
+              executorThinkingHistory.length = 0;
+            },
             onThinking: (text, info) => {
               // 透传子智能体 thinking / 工具进度 → EventBus → IPC → 前端
               // 对齐 ai_fr route.ts onThinking 分流：进度文本仅推送 result 不更新 thinking；
@@ -1138,7 +1188,10 @@ export async function runMainAgent(
                   executorCallId: typeof info?.executorCallId === 'string' ? info.executorCallId : undefined,
                   type: info?.type ?? 'tool-progress',
                   content: text,
-                });
+                  // ★ M14 幂等全量字段：classifyBuffer 追加后的全量（重试复位后自动收敛，
+                  //   渲染端优先 accumulated 整体覆盖）——沿类型墙 as 透传先例，不改 event-bus.ts
+                  accumulated: executorThinkingClassifyBuffer,
+                } as ExecutorAgentEvents['executor:thinking'] & { accumulated?: string });
               } else {
                 // 真实思考文本：thinkingText 第 5 参 → thinking + 快照
                 // S1-5 存储同步：快照 thinking/result 均传累积全文（存储全量不截断）——
@@ -1161,7 +1214,9 @@ export async function runMainAgent(
                   executorCallId: typeof info?.executorCallId === 'string' ? info.executorCallId : undefined,
                   type: info?.type ?? 'thinking',
                   content: text,
-                });
+                  // ★ M14 幂等全量字段：classifyBuffer 追加后的全量（同 tool-progress 分支）
+                  accumulated: executorThinkingClassifyBuffer,
+                } as ExecutorAgentEvents['executor:thinking'] & { accumulated?: string });
               }
             },
             // ★ 修复 callId 语义错位：onToolCall / onToolResult 接收子智能体工具的真实 callId
@@ -1241,7 +1296,7 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #7）：tool 消息不再即时落库，改为批次暂存（批次末 insertMessages 单事务配对落库）
-          //   payload 不含 thinking（executor 思考不落 sqlite，对齐 ai_fr）
+          //   ★ M09 持久层补链：payload 补 thinking（executorThinkingHistory 完整思考链，前缀去重语义现成）
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1250,6 +1305,7 @@ export async function runMainAgent(
               arguments: toolCall.function.arguments,
               result: toolResultContent,
               isError: !execResult.success,
+              thinking: executorThinkingHistory.join('\n\n') || undefined,
               startedAt: toolStartedAt,
               finishedAt: toolFinishedAt,
             },
@@ -1318,6 +1374,7 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #8）：失败 tool 消息批次暂存（批次末 insertMessages 配对落库）；事件移批次末 emit
+          //   ★ M09 持久层补链：payload 补 thinking（同正常/中止路径）
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1326,6 +1383,7 @@ export async function runMainAgent(
               arguments: toolCall.function.arguments,
               result: failureResultText,
               isError: true,
+              thinking: executorThinkingHistory.join('\n\n') || undefined,
               startedAt: toolStartedAt,
               finishedAt: toolFinishedAt,
             },
@@ -1389,9 +1447,12 @@ export async function runMainAgent(
 
     // ============================================================
     // ★ S2 批次收口（batch settle point，文档 #10）——对齐 ai_fr route.ts:954-1009 三段时序
-    //   本阶段顺序：tool.batch.completed 批次事件 emit → 全中止判定 throw → insertMessages 单事务
-    //   → seq 批次末统一采样 → TOOL_MESSAGE_CREATED 逐条 emit → deleteRunningAssistantMessage
-    //   （S3 已接线：批次事件先于全中止 throw 发送——对齐 ai_fr route.ts:973-977 → :979-981，含全中止批次）
+    //   ★ M17 修复机制I-缺口4：全中止批次先落库再 throw——本阶段顺序调整为
+    //   tool.batch.completed 批次事件 emit → insertMessages 单事务 → seq 批次末统一采样
+    //   → TOOL_MESSAGE_CREATED 逐条 emit → 全中止判定 throw → deleteRunningAssistantMessage
+    //   （原时序在 insertMessages 前 throw，中止批次 tool 消息永不落库、任务记录消失；
+    //     判定块整体后移至 emit 之后，条件与守卫原样保留，非全中止批次路径零变化）
+    //   （S3 已接线：批次事件先于全中止 throw 发送——对齐 ai_fr route.ts:973-977，含全中止批次）
     // ============================================================
 
     // ★ S3（M4）：批次整体完成事件 tool.batch.completed（对齐 ai_fr route.ts:973-977）
@@ -1400,11 +1461,6 @@ export async function runMainAgent(
       conversationId,
       toolCallIds: filteredToolCalls.map((toolCall) => toolCall.id),
     });
-
-    // 全中止判定先行（对齐 ai_fr :979-981）：批内全部 aborted → insertMessages 前零消息，直接中止
-    if (batchResults.length > 0 && batchResults.every((result) => result.status === 'aborted')) {
-      throw new Error(ERR_ABORTED);
-    }
 
     // 批次末单事务配对落库（对齐 ai_fr :983-997）：assistant 声明（复用 assistantMessageId）
     //   + 全部 tool 消息；seq 事务内一次取号连号、created_at 同值（S1 insertMessages 入口）
@@ -1429,6 +1485,8 @@ export async function runMainAgent(
         arguments: string;
         result: string;
         isError: boolean;
+        /** ★ M09：批次暂存 payload 补的 executor 完整思考链（可选） */
+        thinking?: string;
         startedAt: string;
         finishedAt: string;
       };
@@ -1438,6 +1496,11 @@ export async function runMainAgent(
           id: pairedMessage.id,
           role: 'tool',
           content: toolPayload.result,
+          // ★ M11 批次稳定次序键贯通：pairedMessages 元素含逐条 seq（insertMessages 返回），
+          //   事件载荷透传供前端 time 相同时的排序依据
+          seq: pairedMessage.seq,
+          // ★ M09 持久层补链：事件载荷补 thinking（payload 可选字段，旧数据无此字段时 undefined）
+          thinking: toolPayload.thinking ?? undefined,
           toolCall: {
             callId: toolPayload.toolCallId,
             name: toolPayload.name,
@@ -1454,6 +1517,13 @@ export async function runMainAgent(
           source: 'executor' as const,
         },
       });
+    }
+
+    // ★ M17 全中止判定后移（条件与守卫原样保留）：批内全部 aborted → 批次消息已单事务落库
+    //   并推送真实 tool 消息后，再中止本轮（throw 走 runMainAgent 既有 catch 的 signal.aborted
+    //   分支 → chat:aborted；渲染端时序=TOOL_MESSAGE_CREATED 终态消息 → chat:aborted 归一化，兼容）
+    if (batchResults.length > 0 && batchResults.every((result) => result.status === 'aborted')) {
+      throw new Error(ERR_ABORTED);
     }
 
     // running map 删除时位移至批次末（对齐 ai_fr :1004-1008；批次期间存活=中途重开会话可见 assistant 消息，H8）

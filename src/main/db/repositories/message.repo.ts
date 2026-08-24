@@ -201,6 +201,8 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
     return {
       id: message.id,
       role: message.role,
+      /** ★ M11 持久化稳定次序键贯通：listStoredMessages 已携带 seq，此处映射透传（原在此丢弃） */
+      seq: message.seq,
       content: message.role === 'user'
         ? buildUserPayloadDisplayText(payload)
         : typeof payload.content === 'string'
