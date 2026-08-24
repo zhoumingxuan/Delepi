@@ -23,7 +23,8 @@ import {
 import { ChatMessageContent } from './ChatMessageContent';
 import type { ToolSummary } from './ChatMessageContent';
 import type { ChatMessage, ToolSnapshot } from '../hooks/useChat';
-import { latestToolProgressText } from '../lib/executor-thinking';
+// ★ P04: latestToolProgressText 改用增量缓存版（cacheKey=`snap-${taskId}` 级），输出与全量版逐字一致
+import { latestToolProgressTextCached } from '../lib/executor-thinking';
 
 // ============================================================
 // ★ 修复主/子智能体消息混淆：toolSnapshots → 虚拟 ChatMessage 转换 + 时间线合并
@@ -95,7 +96,7 @@ function toolSnapshotsToChatMessages(
       content: result,
       // ★ 项6：虚拟消息附带完整思考链（来源 ToolSnapshot.thinking），供完成态 Think 渲染
       thinking: s.thinking || '',
-      progress: latestToolProgressText(s.lastContent || ''),
+      progress: latestToolProgressTextCached(`snap-${s.taskId}`, s.lastContent || ''),
       toolCall: {
         ...(firstToolCall ?? {}),
         callId,
@@ -158,11 +159,18 @@ export function mergeToolSnapshotsIntoTimeline(
     return messages;
   }
 
-  // 虚拟消息按时间排序（时间相同按 id 字典序）
+  // ★ M11 三级稳定排序：time → seq（持久化稳定次序键，同批 created_at 同值时排序依据）
+  //   → id 字典序（最终兜底：无 seq 的虚拟快照消息）
+  const seqOf = (message: ChatMessage): number =>
+    typeof message.seq === 'number' ? message.seq : Number.MAX_SAFE_INTEGER;
   const sortedSnapshots = [...snapshotMessages].sort((left, right) => {
     const timeCompare = parseTimelineTime(left.createdAt) - parseTimelineTime(right.createdAt);
     if (timeCompare !== 0) {
       return timeCompare;
+    }
+    const seqCompare = seqOf(left) - seqOf(right);
+    if (seqCompare !== 0) {
+      return seqCompare;
     }
     return left.id.localeCompare(right.id);
   });
@@ -275,18 +283,34 @@ export function ChatArea({
   const SCROLLABLE_THRESHOLD_PX = 8;
   const AT_BOTTOM_THRESHOLD_PX = 96;
 
+  // ★ P05 reflow 节流：布局属性读取（scrollHeight/clientHeight/scrollTop）经 rAF 对齐，
+  //   同一帧内多次 scroll 事件只读一次布局（滚动期强制同步布局次数合并至帧级）。
+  //   判定逻辑逐字保持（96px/8px 阈值原样），仅执行时机帧对齐；按钮显隐最多晚一帧，无感。
+  const scrollStateRafRef = useRef<number | null>(null);
   const updateScrollBottomState = useCallback(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    const canScroll = el.scrollHeight > el.clientHeight + SCROLLABLE_THRESHOLD_PX;
-    const isAtBottom =
-      el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_THRESHOLD_PX;
-    const next = canScroll && !isAtBottom;
-    stickRef.current = isAtBottom;
-    if (next !== showScrollToBottom) {
-      onShowScrollToBottomChange?.(next);
-    }
+    if (scrollStateRafRef.current !== null) return; // 同帧多次 scroll 事件只读一次布局
+    scrollStateRafRef.current = requestAnimationFrame(() => {
+      scrollStateRafRef.current = null;
+      const el = scrollRef.current;
+      if (!el) return;
+      const canScroll = el.scrollHeight > el.clientHeight + SCROLLABLE_THRESHOLD_PX;
+      const isAtBottom =
+        el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_THRESHOLD_PX;
+      const next = canScroll && !isAtBottom;
+      stickRef.current = isAtBottom;
+      if (next !== showScrollToBottom) {
+        onShowScrollToBottomChange?.(next);
+      }
+    });
   }, [scrollRef, showScrollToBottom, onShowScrollToBottomChange]);
+
+  // P05：卸载时取消挂起的布局读取帧（防卸载后回调读 ref）
+  useEffect(() => () => {
+    if (scrollStateRafRef.current !== null) {
+      cancelAnimationFrame(scrollStateRafRef.current);
+      scrollStateRafRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (mergedMessages.length > 0 && stickRef.current) {
@@ -427,7 +451,10 @@ export function ChatArea({
         ),
       },
     }),
-    [toolSummaries, conversationId, renderUserMessageFooter, toolSnapshots],
+    // ★ P03 roleConfig 依赖收敛：useMemo 体内仅引用 toolSummaries/conversationId/renderUserMessageFooter，
+    //   toolSnapshots 属多余依赖（其变化触发全部气泡外壳重渲=根因R3）；toolSnapshots 仍经 props 参与
+    //   mergedMessages（L266-274 投影链零改动），仅不再无谓重建 roleConfig
+    [toolSummaries, conversationId, renderUserMessageFooter],
   );
 
   // ★ 对齐参考项目 E:\ai_fr\components\chat-shell.tsx L2684-2738
@@ -476,7 +503,9 @@ export function ChatArea({
           padding: '24px 32px 16px',
         }}
       >
+        {/* ★ P07: 稳定类名作为 content-visibility 作用域锚（globals.css .chat-message-list） */}
         <div
+          className="chat-message-list"
           style={{
             width: '100%',
             maxWidth: 1100,

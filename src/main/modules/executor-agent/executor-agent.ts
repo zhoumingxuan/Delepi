@@ -915,7 +915,36 @@ function normalizeExecutorToolCalls(rawToolCalls: unknown[]): {
   const toolCalls: NormalizedExecutorToolCall[] = [];
   const prebuiltResults: Array<{ id: string; result: ToolResult }> = [];
 
-  rawToolCalls.forEach((rawToolCall, index) => {
+  // ★ M20 tool_calls 碎片合并加固：同 id 相邻条目合并（function.arguments 字符串拼接）预处理，
+  //   作为 nonStream/历史路径防御层（流式路径已由 openai-client 三级索引解析合并）
+  const mergedRawToolCalls: unknown[] = [];
+  for (const rawToolCall of rawToolCalls) {
+    const rawRecord = isRecord(rawToolCall) ? rawToolCall : {};
+    const rawId = typeof rawRecord.id === 'string' ? rawRecord.id.trim() : '';
+    const prevEntry = mergedRawToolCalls[mergedRawToolCalls.length - 1];
+    const prevRecord = isRecord(prevEntry) ? prevEntry : {};
+    const prevId = typeof prevRecord.id === 'string' ? prevRecord.id.trim() : '';
+    const prevFunction = isRecord(prevRecord.function) ? prevRecord.function : {};
+    const currentFunction = isRecord(rawRecord.function) ? rawRecord.function : {};
+    if (
+      rawId
+      && rawId === prevId
+      && typeof prevFunction.arguments === 'string'
+      && typeof currentFunction.arguments === 'string'
+    ) {
+      mergedRawToolCalls[mergedRawToolCalls.length - 1] = {
+        ...prevRecord,
+        function: {
+          ...prevFunction,
+          arguments: prevFunction.arguments + currentFunction.arguments,
+        },
+      };
+    } else {
+      mergedRawToolCalls.push(rawToolCall);
+    }
+  }
+
+  mergedRawToolCalls.forEach((rawToolCall, index) => {
     const rawRecord = isRecord(rawToolCall) ? rawToolCall : {};
     const rawFunction = isRecord(rawRecord.function) ? rawRecord.function : {};
     const rawId = typeof rawRecord.id === 'string' ? rawRecord.id.trim() : '';
@@ -999,6 +1028,8 @@ async function completeExecutorTurn(options: {
   signal?: AbortSignal;
   /** S1-2/A1-2 流式思考增量回调：每收到一个 reasoning delta 触发一次（delta 粒度推送） */
   onThinking?: (delta: string) => void;
+  /** ★ M14 重试回调重置协议（可选）：透传给 streamChat.onStreamRetry */
+  onStreamRetry?: () => void;
 }): Promise<OpenAI.Chat.ChatCompletionMessage> {
   const streamResult = await streamChat({
     modelConfig: {
@@ -1014,6 +1045,8 @@ async function completeExecutorTurn(options: {
     thinking: { reasoningEffort: configManager.getSettings().executorThinkingLevel },
     // A1-1/A1-3 增量推送源：reasoning delta 逐个透传给上层（轮内 token 级可见）
     onThinking: options.onThinking,
+    // ★ M14 重试回调重置协议：透传（M12 onRetry → onStreamRetry）
+    onStreamRetry: options.onStreamRetry,
   });
 
   // A1-2 聚合收口：把聚合后的 reasoning 以 reasoning_content 挂回 assistantMessage
@@ -1055,6 +1088,11 @@ export type RunDelegatedTaskOptions = {
   signal?: AbortSignal;
   /** 思考回调 */
   onThinking?: (text: string, info?: { type: 'thinking' | 'tool-progress'; executorCallId?: string }) => void;
+  /**
+   * ★ M14 重试回调重置协议（可选）：底层 streamChat 重试边界触发（M12 onRetry → onStreamRetry），
+   *   main-agent 委派闭包据此复位思考累积器到任务起点基线
+   */
+  onStreamRetry?: () => void;
   /**
    * 注意：onThinking / onToolCall / onToolResult 三回调均会触发
    * persistExecutorIntermediate（见 main-agent.ts）。
@@ -1245,6 +1283,8 @@ export async function runDelegatedTask(
       onThinking: (delta) => {
         options.onThinking?.(delta, { type: 'thinking' });
       },
+      // ★ M14：重试复位回调透传（runDelegatedTask 调用方注入）
+      onStreamRetry: options.onStreamRetry,
     });
 
     const {

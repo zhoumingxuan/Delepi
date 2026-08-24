@@ -18,6 +18,7 @@ import {
 } from '@ant-design/icons';
 import Latex from '@ant-design/x-markdown/plugins/Latex';
 import type { ComponentProps } from '@ant-design/x-markdown';
+import type { XMarkdownProps } from '@ant-design/x-markdown';
 import type {
   CSSProperties,
   MouseEvent,
@@ -466,10 +467,30 @@ function BlockquoteRenderer({
   );
 }
 
+/**
+ * ★ P01 XMarkdown streaming 配置类型：StreamingOption 未从 @ant-design/x-markdown 包根导出
+ *   （实读 es/index.d.ts 导出清单：ComponentProps/StreamCacheTokenType/StreamStatus/Token/Tokens/XMarkdownProps），
+ *   直接具名导入 StreamingOption 会 tsc 失败——改由根导出的 XMarkdownProps 推导。
+ */
+export type MarkdownStreamingOption = NonNullable<XMarkdownProps['streaming']>;
+
+/**
+ * ★ P01 模块级冻结常量：hasNextChunk 是唯一功能开关（XMarkdown 内部 useStreaming 的
+ *   增量缓存开关 enableCache）；enableAnimation/tail/animationConfig 保持默认(false)——
+ *   不开动画以免反向增加渲染开销（fadeDuration 默认 200ms 每段都跑）。
+ *   常量模块级冻结 = 引用天然稳定（XMarkdown 内部 Renderer 依赖 streaming 引用，见 index.js L75-79）。
+ */
+export const STREAMING_ACTIVE: MarkdownStreamingOption = { hasNextChunk: true };
+/** loading→false 切换时传入：hasNextChunk=false 触发 XMarkdown 刷新全部缓存并完成渲染(flush)，终态渲染与现状逐字一致 */
+export const STREAMING_FLUSHED: MarkdownStreamingOption = { hasNextChunk: false };
+
 export const RichMarkdown = memo(function RichMarkdown({
   content,
+  streaming,
 }: {
   content: string;
+  /** P01: XMarkdown 流式渲染配置；不传（undefined）时 XMarkdown 行为与改造前完全一致 */
+  streaming?: MarkdownStreamingOption;
 }) {
   return (
     <XMarkdown
@@ -478,6 +499,7 @@ export const RichMarkdown = memo(function RichMarkdown({
       config={markdownConfig}
       openLinksInNewTab
       dompurifyConfig={{ ALLOWED_URI_REGEXP }}
+      streaming={streaming}
       components={{
         pre: PreWrapper,
         code: CodeRenderer,

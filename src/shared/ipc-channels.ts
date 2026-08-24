@@ -36,12 +36,10 @@ export const IPC_CHAT = {
    * Assistant 消息三态事件（主→渲染）
    * Phase 3 P1-2 适配层：
    * - STARTED: 初始化 assistant message（status='loading'）
-   * - SNAPSHOT: 累积思考 / 工具进度，按 id upsert
    * - DONE: 标记 status='success' 或 'error'
    * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
    */
   ASSISTANT_STARTED: 'chat:assistant-started',
-  ASSISTANT_SNAPSHOT: 'chat:assistant-snapshot',
   ASSISTANT_DONE: 'chat:assistant-done',
   /** Tool 消息创建事件（主→渲染），对齐 ai_fr tool.message.created */
   TOOL_MESSAGE_CREATED: 'tool.message.created',

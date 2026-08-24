@@ -55,6 +55,8 @@ export interface RendererChatMessage {
   id: string;
   role: MessageRole;
   content: string;
+  /** ★ M11 持久化稳定次序键（messages.seq，同批 created_at 同值时排序依据） */
+  seq?: number;
   thinking?: string;
   // ★ F5 新增：Assistant 消息分段结构（与 ai_fr AssistantMessageSegment 对齐）
   //   持久化在 messages.payload_json.segments 中，由 insertMessage（F3）写入，
