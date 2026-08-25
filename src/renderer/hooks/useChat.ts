@@ -1625,7 +1625,8 @@ export function useChat(options?: UseChatOptions) {
             segments: data.segments.map((segment) => ({ ...segment })),  // 深拷贝避免引用共享
             status: 'loading',
           };
-          return next;
+          entry.messages = next;
+          return;
         }
 
         // 兜底：仅用 delta 重建（向后兼容旧后端 / 历史未升级用户）
