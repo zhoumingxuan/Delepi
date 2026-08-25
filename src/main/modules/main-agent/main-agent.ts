@@ -66,6 +66,7 @@ import {
 import { setTaskSnapshot, clearSnapshotSession } from './snapshot-session-map';
 import {
   MAX_CONVERSATION_TITLE_LENGTH,
+  DELEGATE_ARGUMENTS_RETRY_LIMIT,
   ERR_ABORTED,
   MAIN_AGENT_CHUNK_EVENT,
   MAIN_AGENT_THINKING_EVENT,
@@ -448,6 +449,33 @@ function buildDelegatedTaskFailureResult(
   };
 }
 
+/**
+ * 委派参数兜底解析：直解失败时截取最开头 "{" 到最末尾 "}" 子串重试解析。
+ * @returns 合法（或兜底成功）的干净 arguments 字符串；无法解析时返回 null
+ */
+function sanitizeDelegateArguments(raw: string | undefined): string | null {
+  if (!raw || !raw.trim()) {
+    return null;
+  }
+  try {
+    JSON.parse(raw);
+    return raw;
+  } catch {
+    const start = raw.indexOf('{');
+    const end = raw.lastIndexOf('}');
+    if (start < 0 || end <= start) {
+      return null;
+    }
+    const slice = raw.slice(start, end + 1);
+    try {
+      JSON.parse(slice);
+      return slice;
+    } catch {
+      return null;
+    }
+  }
+}
+
 // ============================================================
 // 核心：runMainAgent - 流式对话主循环
 // ============================================================
@@ -627,6 +655,10 @@ export async function runMainAgent(
     })();
   };
 
+  // ★ 委派参数校验重试计数（当轮重生成）：校验失败自增、通过清零；
+  //   每次 runMainAgent 调用（新对话轮次）自然从 0 开始，禁止跨轮次累积
+  let delegateArgsRetryCount = 0;
+
   try {
     while (true) {
 
@@ -780,6 +812,66 @@ export async function runMainAgent(
           arguments: tc.function.arguments,
         },
       }));
+    // ★ 委派参数校验门禁（五层入库门禁唯一咽喉点）：
+    //   delegate_executor 条目统一 sanitizeDelegateArguments（直解 → 首/尾{}截取重试）；
+    //   非 null 回写干净 arguments（A 内存 / B 运行态 / C SQLite / D IPC / E executor_messages.json 五层均记录干净版）；
+    //   任一 null → 整轮拒绝（不构建、不 push、不 emit、不落库），当轮重生成重试
+    let hasInvalidDelegateArguments = false;
+    for (const toolCall of filteredToolCalls) {
+      if (toolCall.function.name !== 'delegate_executor') {
+        continue;
+      }
+      const sanitizedArguments = sanitizeDelegateArguments(toolCall.function.arguments);
+      if (sanitizedArguments === null) {
+        hasInvalidDelegateArguments = true;
+        break;
+      }
+      toolCall.function.arguments = sanitizedArguments;
+    }
+    if (hasInvalidDelegateArguments) {
+      // 中止检查（对齐 633-635 既有检查，必须早于 sleep 与 continue）：已中止走既有中止逻辑
+      if (options.signal?.aborted) {
+        throw new Error(ERR_ABORTED);
+      }
+      // 超限兜底：走既有 MAIN_AGENT_ERROR_EVENT（1364-1368 模式）报错终止本轮，禁止任何入库
+      if (delegateArgsRetryCount >= DELEGATE_ARGUMENTS_RETRY_LIMIT) {
+        const delegateArgsLimitError =
+          'delegate_executor 参数校验失败超过重试上限，本轮已终止，请重发消息。';
+        eventBus.emit(MAIN_AGENT_ERROR_EVENT, {
+          conversationId,
+          error: delegateArgsLimitError,
+          errorType: 'DELEGATE_ARGUMENTS_RETRY_EXCEEDED',
+        });
+        throw new Error(delegateArgsLimitError);
+      }
+      delegateArgsRetryCount += 1;
+      // 复位（严格参照 739-761 onStreamRetry 复位模式 + retryBaseline 基线处理）：
+      //   running 消息回退到本轮基线 + 两条矫正事件全量覆盖，截断渲染端累积
+      updateRunningAssistantMessage(conversationId, {
+        content: retryBaseline.content,
+        thinking: retryBaseline.thinking,
+        segments: retryBaseline.segments,
+        forceNewReasoningSegment: false,
+      });
+      eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
+        conversationId,
+        delta: '',
+        content: retryBaseline.content,
+        isThinking: false,
+        reset: true,
+      } as { conversationId: string; delta: string; content: string; isThinking: boolean; finishReason?: string | null });
+      eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
+        conversationId,
+        delta: '',
+        thinking: retryBaseline.thinking,
+        segments: retryBaseline.segments,
+      });
+      // 延迟 1s（对齐 model-retry MODEL_API_BAD_REQUEST_RETRY_DELAY_MS 工程惯例）后整轮重生成
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      continue;
+    }
+    // 校验全部通过：重试计数清零（禁止跨轮次累积）
+    delegateArgsRetryCount = 0;
     const assistantMsgForHistory: OpenAI.Chat.ChatCompletionMessageParam = {
       role: 'assistant',
       content: streamResult.content || null,

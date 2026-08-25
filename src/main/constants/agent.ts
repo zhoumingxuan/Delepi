@@ -57,6 +57,9 @@ export function resolveExecutorToolProgressDisplayName(
 /** 最终输出修复最大尝试次数 */
 export const MAX_EXECUTOR_FINAL_OUTPUT_REPAIR_ATTEMPTS = 3;
 
+/** 委派参数校验失败重试上限（主智能体当轮重生成，超限走 MAIN_AGENT_ERROR_EVENT 终止） */
+export const DELEGATE_ARGUMENTS_RETRY_LIMIT = 3;
+
 /** 修复提示中输出截断长度 */
 export const EXECUTOR_OUTPUT_TRUNCATE_LENGTH = 8192;
 

@@ -281,9 +281,23 @@ function buildDelegateExecutorInputIssueMessage(issues: string[]): string {
 }
 
 function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecutorInputResult {
-  const rawParsed = rawArguments
-    ? (JSON.parse(rawArguments) as unknown)
-    : {};
+  let rawParsed: unknown;
+  try {
+    rawParsed = rawArguments
+      ? (JSON.parse(rawArguments) as unknown)
+      : {};
+  } catch (error) {
+    // 纵深防御：rawArguments 非合法 JSON 时不再抛出 SyntaxError，
+    // 改走与下方七项校验失败一致的 {input: null, issues} 失败返回形态，
+    // 使调用点（runDelegatedTask）之后的逻辑自然进入既有 INVALID_INPUT 失败路径
+    if (error instanceof SyntaxError) {
+      return {
+        input: null,
+        issues: ['rawArguments 不是合法 JSON'],
+      };
+    }
+    throw error;
+  }
 
   if (!isRecord(rawParsed)) {
     return {
