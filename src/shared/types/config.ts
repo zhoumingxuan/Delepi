@@ -19,12 +19,12 @@ export interface ModelProfile {
   mainModelApiKey: string;
   mainModelName: string;
   mainModelMultimodal: boolean;
-  mainThinkingLevel: 'low' | 'high' | 'max';
+  mainThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   // 执行子智能体模型
   executorModelBaseUrl: string;
   executorModelApiKey: string;
   executorModelName: string;
-  executorThinkingLevel: 'low' | 'high' | 'max';
+  executorThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
   // 视觉模型
   visionLlmBaseUrl: string;
   visionLlmApiKey: string;
@@ -56,15 +56,15 @@ export interface AppSettings {
   mainModelName: string;
   /** 主模型是否启用多模态协议（默认 true） */
   mainModelMultimodal: boolean;
-  /** 主智能体思考程度（默认 'high'；档位对齐 openai-client ThinkingIntent 的 'low'|'high'|'max'，不含 medium） */
-  mainThinkingLevel: 'low' | 'high' | 'max';
+  /** 主智能体思考程度/推理档位（默认 'high'；''=不设置=请求体不带 reasoning_effort，服务端走默认档位；可选 minimal/low/medium/high/xhigh/max） */
+  mainThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
   // 执行子智能体模型
   executorModelBaseUrl: string;
   executorModelApiKey: string;
   executorModelName: string;
-  /** 执行子智能体思考程度（默认 'max'；档位对齐 openai-client ThinkingIntent 的 'low'|'high'|'max'，不含 medium） */
-  executorThinkingLevel: 'low' | 'high' | 'max';
+  /** 执行子智能体思考程度/推理档位（默认 'max'；''=不设置=请求体不带 reasoning_effort，服务端走默认档位；可选 minimal/low/medium/high/xhigh/max） */
+  executorThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
   // 视觉模型
   visionLlmApiKey: string;

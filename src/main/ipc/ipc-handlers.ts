@@ -693,7 +693,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
     saveSetting('modelProfiles', profiles);
     configManager.setSetting('modelProfiles', profiles);
-    return { profiles, activeProfileId: settings.activeProfileId };
+    // 首次保存自动激活：仅当前无激活方案（activeProfileId===''）时补写激活键，防止同名覆盖既有
+    // 非激活方案时错切激活标记；返回实际激活 id——空时补写后即新档案 id，非空保持原值
+    let activeProfileId = settings.activeProfileId;
+    if (activeProfileId === '') {
+      activeProfileId = profile.id;
+      saveSetting('activeProfileId', activeProfileId);
+      configManager.setSetting('activeProfileId', activeProfileId);
+    }
+    return { profiles, activeProfileId };
   });
 
   ipcMain.handle(IPC_CONFIG.PROFILES_DELETE, async (_event, params: ProfileDeleteParams): Promise<ProfileListResult> => {

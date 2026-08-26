@@ -45,7 +45,7 @@ export interface StreamChatOptions {
   /**
    * 思考意图（S1-1 方向1流式化新增，可选）：
    * - 不传（undefined）：零思考参数（请求体不组装任何思考键）
-   * - { reasoningEffort: 'low' | 'high' | 'max' }：执行子智能体（档位读 AppSettings.executorThinkingLevel）
+   * - { reasoningEffort: string }：主/子智能体（档位分别读 AppSettings.mainThinkingLevel / executorThinkingLevel，空串=不设置）
    * 翻译收口与 nonStreamChatOnce 一致：buildThinkingParams（intent 未传时返回空对象，展开后请求体零思考键）
    */
   thinking?: ThinkingIntent;
@@ -57,17 +57,17 @@ export interface StreamChatOptions {
 }
 
 /**
- * 调用点思考意图（唯一思考意图通道；子智能体档位已配置化，其余调用点按机制基准硬编码）：
- * - 不传（undefined）：零思考参数（请求不携带任何思考键）
- * - { reasoningEffort: 'low' | 'high' | 'max' }：子智能体（档位读 AppSettings.executorThinkingLevel，默认 'max'）；{ reasoningEffort: 'low' }：标题生成
- * - { enableThinking: true, reasoningEffort: 'low' }：上下文压缩·glm*（glm 判定在调用点）
- * - { enableThinking: false }：上下文压缩·非 glm*、图片识别
- * 翻译收口：本文件 buildThinkingParams（enableThinking→enable_thinking，reasoningEffort→reasoning_effort）
+ * 调用点思考意图（唯一思考意图通道）：reasoningEffort 放宽为 string，空串合法（= 不发送 reasoning_effort）。
+ * - 不传（undefined）：零思考参数（请求不携带任何思考键）——标题生成等辅助调用点
+ * - { reasoningEffort: string }：主/子智能体（档位分别读 AppSettings.mainThinkingLevel / executorThinkingLevel，空串=不设置）
+ * - { enableThinking: true }：上下文压缩/图片识别·glm*（glm 判定在调用点）
+ * - { enableThinking: false }：上下文压缩/图片识别·非 glm*
+ * 翻译收口：本文件 buildThinkingParams（enableThinking→enable_thinking；reasoningEffort 非空→reasoning_effort，空串/未传彻底不写）
  */
 export type ThinkingIntent =
-  | { reasoningEffort: 'low' | 'high' | 'max' }
-  | { enableThinking: true; reasoningEffort: 'low' }
-  | { enableThinking: false; reasoningEffort?: never };
+  | { reasoningEffort: string }
+  | { enableThinking: true }
+  | { enableThinking: false };
 
 export interface NonStreamChatOptions {
   /** 模型配置 */
@@ -153,26 +153,35 @@ function getOpenAIClient(modelConfig: ModelConfig): OpenAI {
 /**
  * 思考意图 → 请求思考参数的统一翻译器（唯一收口，不感知模型名）。
  * 输出仅可能包含 enable_thinking / reasoning_effort；intent 未传时输出空对象（请求零思考键）。
+ * reasoning_effort 仅来自 intent.reasoningEffort（主/子智能体档位由调用点分别读取
+ * AppSettings.mainThinkingLevel / executorThinkingLevel 后传入）：空串/未传 = 彻底不写该键
+ * （请求体不出现 reasoning_effort 字段，由服务端走默认档位）；非空 = 写入该档位。
+ * 辅助调用点（标题生成/上下文压缩/图片识别）不传 reasoningEffort，请求不带 reasoning_effort。
  */
 function buildThinkingParams(intent?: ThinkingIntent): {
   enable_thinking?: boolean;
-  reasoning_effort?: 'low' | 'high' | 'max';
+  reasoning_effort?: 'minimal' | 'low' | 'medium' | 'high' | 'max';
 } {
   const params: {
     enable_thinking?: boolean;
-    reasoning_effort?: 'low' | 'high' | 'max';
+    reasoning_effort?: 'minimal' | 'low' | 'medium' | 'high' | 'max';
   } = {};
 
   if (!intent) {
     return params;
   }
 
-  if ('enableThinking' in intent) {
-    params.enable_thinking = intent.enableThinking;
+  // intent 通道：reasoningEffort 非空串才写 reasoning_effort（空串/未传彻底不写，请求体不出现该键）
+  if (
+    'reasoningEffort' in intent &&
+    intent.reasoningEffort !== '' &&
+    intent.reasoningEffort !== undefined
+  ) {
+    params.reasoning_effort = intent.reasoningEffort as 'minimal' | 'low' | 'medium' | 'high' | 'max';
   }
 
-  if ('reasoningEffort' in intent) {
-    params.reasoning_effort = intent.reasoningEffort;
+  if ('enableThinking' in intent) {
+    params.enable_thinking = intent.enableThinking;
   }
 
   return params;
@@ -440,7 +449,7 @@ async function nonStreamChatOnce(
     parallel_tool_calls: true,
   } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
     enable_thinking?: boolean;
-    reasoning_effort?: 'low' | 'high' | 'max';
+    reasoning_effort?: 'minimal' | 'low' | 'medium' | 'high' | 'max';
     reasoning_split?: boolean;
   };
 

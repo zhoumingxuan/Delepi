@@ -23,7 +23,6 @@ import {
   Input,
   Modal,
   Popconfirm,
-  Radio,
   Select,
   Switch,
   Tabs,
@@ -117,6 +116,51 @@ const MODEL_PROVIDER_PRESETS: Array<{ provider: string; baseUrl: string; models:
   { provider: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', models: ['z-ai/glm-5.3', 'moonshotai/kimi-k3', 'minimax/minimax-m3', 'openai/gpt-5.5', 'openai/gpt-4o', 'deepseek/deepseek-chat'] },
   { provider: '硅基流动 SiliconFlow', baseUrl: 'https://api.siliconflow.cn/v1', models: ['deepseek-ai/DeepSeek-R1', 'Qwen/Qwen3-Omni-30B-A3B-Instruct', 'deepseek-ai/DeepSeek-V3', 'Qwen/Qwen2.5-72B-Instruct'] },
   { provider: 'Ollama 本地', baseUrl: 'http://localhost:11434/v1', models: ['qwen3.5', 'gemma4', 'qwen3', 'llama3', 'gemma3'] },
+];
+
+/** reasoning_effort 档位选项（主/子思考程度共用；空串=不设置=请求体不携带 reasoning_effort 字段，服务端走默认档位）；
+ *  minimal/medium/high/xhigh 为特殊档位（仅有部分模型支持，选项内以灰色小字直接可见，不依赖 hover），''/low/max 为通用档位不加提示 */
+const REASONING_EFFORT_OPTIONS: Array<{ value: string; label: string | ReactElement }> = [
+  { value: '', label: '不设置（默认）' },
+  {
+    value: 'minimal',
+    label: (
+      <span>
+        minimal{' '}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          仅有部分模型支持
+        </Typography.Text>
+      </span>
+    ),
+  },
+  { value: 'low', label: 'low' },
+  {
+    value: 'medium',
+    label: (
+      <span>
+        medium{' '}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          仅有部分模型支持
+        </Typography.Text>
+      </span>
+    ),
+  },
+  {
+    value: 'high',
+    label: 'high',
+  },
+  {
+    value: 'xhigh',
+    label: (
+      <span>
+        xhigh{' '}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          仅有部分模型支持
+        </Typography.Text>
+      </span>
+    ),
+  },
+  { value: 'max', label: 'max' },
 ];
 
 interface ConfigDrawerProps {
@@ -279,6 +323,8 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     try {
       const result = await profilesApi.saveProfile({ name });
       setProfiles(result?.profiles ?? []);
+      // 保存成功即置选中：主进程返回实际激活 id（首次保存已被自动激活），Select 立即显示方案名
+      setActiveProfileId(result?.activeProfileId ?? activeProfileId);
       setProfileNameModalOpen(false);
       setProfileNameInput('');
       antdMessage.success(`已保存方案「${name}」`);
@@ -287,7 +333,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     } finally {
       setProfileActionLoading(false);
     }
-  }, [profilesApi, profileNameInput, antdMessage]);
+  }, [profilesApi, profileNameInput, activeProfileId, antdMessage]);
 
   /** 删除方案：删除当前激活方案时仅解除激活标记，当前生效配置保持不变 */
   const handleDeleteProfile = useCallback(
@@ -785,78 +831,18 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                               fontSize: 13,
                             }}
                           >
-                            思考程度
+                            思考程度（推理档位）
                           </span>
                         }
                         name="mainThinkingLevel"
                       >
-                        <Radio.Group
-                          onChange={(e) =>
-                            onSave("mainThinkingLevel", e.target.value)
+                        <Select
+                          options={REASONING_EFFORT_OPTIONS}
+                          onChange={(value) =>
+                            onSave("mainThinkingLevel", value)
                           }
-                          style={{ display: "flex", gap: 16 }}
-                        >
-                          <Radio value="low">
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 500,
-                                color: token.colorText,
-                              }}
-                            >
-                              低
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: token.colorTextSecondary,
-                                marginLeft: 8,
-                              }}
-                            >
-                              更快响应
-                            </span>
-                          </Radio>
-                          <Radio value="high">
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 500,
-                                color: token.colorText,
-                              }}
-                            >
-                              高
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: token.colorTextSecondary,
-                                marginLeft: 8,
-                              }}
-                            >
-                              均衡推理（默认）
-                            </span>
-                          </Radio>
-                          <Radio value="max">
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 500,
-                                color: token.colorText,
-                              }}
-                            >
-                              最大
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: token.colorTextSecondary,
-                                marginLeft: 8,
-                              }}
-                            >
-                              深度推理
-                            </span>
-                          </Radio>
-                        </Radio.Group>
+                          style={{ maxWidth: 220 }}
+                        />
                       </Form.Item>
                     </div>
 
@@ -960,78 +946,18 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                               fontSize: 13,
                             }}
                           >
-                            思考程度
+                            思考程度（推理档位）
                           </span>
                         }
                         name="executorThinkingLevel"
                       >
-                        <Radio.Group
-                          onChange={(e) =>
-                            onSave("executorThinkingLevel", e.target.value)
+                        <Select
+                          options={REASONING_EFFORT_OPTIONS}
+                          onChange={(value) =>
+                            onSave("executorThinkingLevel", value)
                           }
-                          style={{ display: "flex", gap: 16 }}
-                        >
-                          <Radio value="low">
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 500,
-                                color: token.colorText,
-                              }}
-                            >
-                              低
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: token.colorTextSecondary,
-                                marginLeft: 8,
-                              }}
-                            >
-                              更快响应
-                            </span>
-                          </Radio>
-                          <Radio value="high">
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 500,
-                                color: token.colorText,
-                              }}
-                            >
-                              高
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: token.colorTextSecondary,
-                                marginLeft: 8,
-                              }}
-                            >
-                              均衡推理
-                            </span>
-                          </Radio>
-                          <Radio value="max">
-                            <span
-                              style={{
-                                fontSize: 13,
-                                fontWeight: 500,
-                                color: token.colorText,
-                              }}
-                            >
-                              最大
-                            </span>
-                            <span
-                              style={{
-                                fontSize: 12,
-                                color: token.colorTextSecondary,
-                                marginLeft: 8,
-                              }}
-                            >
-                              深度推理（默认）
-                            </span>
-                          </Radio>
-                        </Radio.Group>
+                          style={{ maxWidth: 220 }}
+                        />
                       </Form.Item>
                     </div>
 
@@ -1162,6 +1088,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       </Form.Item>
                     </div>
                   </Form>
+
                 </>
               ),
             },
