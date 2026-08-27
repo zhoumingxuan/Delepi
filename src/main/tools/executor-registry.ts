@@ -65,7 +65,7 @@ export function getExecutorToolRegistry(): Record<string, ExecutorToolRegistryIt
 }
 
 // ============================================================
-// 动态注册 API（S5-2 方向5：内置3工具锁定，重名内置拒绝注册）
+// 动态注册 API（S5-2 方向5：内置4工具锁定，重名内置拒绝注册）
 // ============================================================
 
 export type RegisterExecutorToolResult = {
@@ -75,7 +75,7 @@ export type RegisterExecutorToolResult = {
 
 /**
  * 注册动态工具：内置∪动态合并视图即时生效（声明/名单/执行查找下次取值即含新工具）。
- * 拒绝规则：名称空/格式非法、与内置 EXECUTOR_TOOLS 重名（内置3工具锁定）、与已注册动态重名。
+ * 拒绝规则：名称空/格式非法、与内置 EXECUTOR_TOOLS 重名（内置4工具锁定）、与已注册动态重名。
  */
 export function registerExecutorTool(item: ExecutorToolRegistryItem): RegisterExecutorToolResult {
   const name = typeof item?.config?.name === 'string' ? item.config.name.trim() : '';
@@ -86,7 +86,7 @@ export function registerExecutorTool(item: ExecutorToolRegistryItem): RegisterEx
     return { success: false, error: `动态工具注册失败：${name} 名称仅允许字母/数字/下划线/中划线` };
   }
   if (Boolean(EXECUTOR_TOOLS[name as keyof typeof EXECUTOR_TOOLS])) {
-    return { success: false, error: `动态工具注册失败：${name} 与内置工具重名，内置工具不可被覆盖（内置3工具锁定）` };
+    return { success: false, error: `动态工具注册失败：${name} 与内置工具重名，内置工具不可被覆盖（内置4工具锁定）` };
   }
   if (dynamicTools.has(name)) {
     return { success: false, error: `动态工具注册失败：${name} 已注册（重名动态工具），请先注销` };

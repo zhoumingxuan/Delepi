@@ -16,14 +16,13 @@ import { configManager } from '../modules/config/config-manager';
 import {
   buildExecutedToolResultData,
   buildToolResult,
+  truncateToolOutput,
   type ToolResult,
 } from './result';
 import {
   ioPrint,
-  truncateOutput,
 } from '../utils/index';
 import {
-  MAX_OUTPUT_LENGTH,
   DEFAULT_TIMEOUT_SECONDS,
   PYCACHE_DIR_NAME,
   ERR_INVALID_ARGUMENT,
@@ -55,8 +54,6 @@ type SpawnCommandResult = {
   returncode: number;
   stdout: string;
   stderr: string;
-  stdoutTruncated: boolean;
-  stderrTruncated: boolean;
   timedOut: boolean;
 };
 
@@ -170,20 +167,6 @@ async function safeRemovePycache(runDir: string): Promise<boolean> {
 function decodeOutput(chunks: Buffer[], encoding: string): string {
   const decoder = new TextDecoder(encoding);
   return decoder.decode(Buffer.concat(chunks));
-}
-
-function buildTruncationMessage(result: Pick<
-  SpawnCommandResult,
-  'stdoutTruncated' | 'stderrTruncated'
->): string {
-  const channels = [
-    result.stdoutTruncated ? 'stdout' : '',
-    result.stderrTruncated ? 'stderr' : '',
-  ];
-
-  return channels.length
-    ? `${channels.join('、')} 输出超过 ${MAX_OUTPUT_LENGTH} 字符，已截断。`
-    : '';
 }
 
 function toTimeoutSeconds(value: unknown): number {
@@ -400,21 +383,10 @@ async function runSpawnCommand(
         return;
       }
 
-      const stdout = truncateOutput(
-        decodeOutput(stdoutChunks, options.encoding),
-        'stdout',
-      );
-      const stderr = truncateOutput(
-        decodeOutput(stderrChunks, options.encoding),
-        'stderr',
-      );
-
       resolve({
         returncode: timedOut ? 124 : code ?? 1,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
+        stdout: decodeOutput(stdoutChunks, options.encoding),
+        stderr: decodeOutput(stderrChunks, options.encoding),
         timedOut,
       });
     });
@@ -422,7 +394,7 @@ async function runSpawnCommand(
 }
 
 /**
- * 方向6挂起模式启动期（毫秒）：与 run-exe.ts 挂起启动期 200ms 对齐（A6-1）。
+ * 方向6挂起模式启动期（毫秒）：与 run-shell.ts 挂起启动期 200ms 对齐（A6-1）。
  */
 const SUSPEND_STARTUP_DELAY_MS = 200;
 
@@ -432,16 +404,12 @@ type SuspendedSpawnResult =
       returncode: number;
       stdout: string;
       stderr: string;
-      stdoutTruncated: boolean;
-      stderrTruncated: boolean;
     }
   | {
       exited: false;
       returncode: null;
       stdout: string;
       stderr: string;
-      stdoutTruncated: boolean;
-      stderrTruncated: boolean;
       pid: number;
       platform: NodeJS.Platform;
     };
@@ -450,7 +418,7 @@ type SuspendedSpawnResult =
  * 挂起模式执行（A6-1/A6-2）：
  * - spawn 后不等 close：监听 stdout/stderr data 事件收集启动期输出；
  * - 不设超时定时器（timeout_seconds 语义=忽略）；
- * - 启动期（200ms）内 abort → kill 并以 ABORTED 结束（returncode 130 协议参照 run-exe.ts）；
+ * - 启动期（200ms）内 abort → kill 并以 ABORTED 结束（returncode 130 协议参照 run-shell.ts）；
  * - 启动期内进程已 exit（秒退/启动失败）→ 返回 exited=true（不返回已死 pid）；
  * - 启动期后进程仍活 → 挂起成功返回 pid；此后移除 abort 监听（启动期后不受会话 abort 影响），
  *   tmp 脚本与 __pycache__ 保留（由调用方经 scriptPath 在任务结束前清理）。
@@ -505,15 +473,6 @@ async function runSuspendedSpawnCommand(
         return;
       }
 
-      const stdout = truncateOutput(
-        decodeOutput(stdoutChunks, options.encoding),
-        'stdout',
-      );
-      const stderr = truncateOutput(
-        decodeOutput(stderrChunks, options.encoding),
-        'stderr',
-      );
-
       // 挂起成功：停止收集后续输出（流切换 flowing 丢弃，防父进程内存膨胀且不阻塞子进程写管道）
       collecting = false;
       child.stdout.removeAllListeners('data');
@@ -524,10 +483,8 @@ async function runSuspendedSpawnCommand(
       resolve({
         exited: false,
         returncode: null,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
+        stdout: decodeOutput(stdoutChunks, options.encoding),
+        stderr: decodeOutput(stderrChunks, options.encoding),
         pid,
         platform: process.platform,
       });
@@ -593,22 +550,11 @@ async function runSuspendedSpawnCommand(
       }
 
       // 启动期内秒退：不返回已死 pid，结果交由普通模式既有结果路径处理
-      const stdout = truncateOutput(
-        decodeOutput(stdoutChunks, options.encoding),
-        'stdout',
-      );
-      const stderr = truncateOutput(
-        decodeOutput(stderrChunks, options.encoding),
-        'stderr',
-      );
-
       resolve({
         exited: true,
         returncode: code ?? 1,
-        stdout: stdout.text,
-        stderr: stderr.text,
-        stdoutTruncated: stdout.truncated,
-        stderrTruncated: stderr.truncated,
+        stdout: decodeOutput(stdoutChunks, options.encoding),
+        stderr: decodeOutput(stderrChunks, options.encoding),
       });
     });
   });
@@ -839,15 +785,12 @@ export async function runWithPython(
 
       await safeRemovePycache(runDir);
 
-      const truncationMessage = buildTruncationMessage(compileResult);
       const compileMessage = `Python 编译失败: ${compileResult.stderr || compileResult.stdout || 'Python 编译失败'}`;
 
       return buildToolResult({
         success: false,
         code: ERR_COMPILE_ERROR,
-        message: truncationMessage
-          ? `${compileMessage}\n${truncationMessage}`
-          : compileMessage,
+        message: compileMessage,
       });
     }
   } catch (error) {
@@ -864,8 +807,8 @@ export async function runWithPython(
         message: 'Python 编译已取消',
         data: buildExecutedToolResultData({
           returncode: 130,
-          stdout: '',
-          stderr: 'ABORTED',
+          stdout: truncateToolOutput(''),
+          stderr: truncateToolOutput('ABORTED'),
           execId,
           responseId,
         }),
@@ -899,7 +842,6 @@ export async function runWithPython(
       // 启动期内秒退（200ms 内 exit）：走普通模式既有结果路径（不返回已死 pid），并执行清理（进程已死，非挂起成功）
       if (suspended.exited) {
         const success = suspended.returncode === 0;
-        const truncationMessage = buildTruncationMessage(suspended);
         const resultMessage = success
           ? 'Python 脚本执行完成'
           : `Python 脚本执行失败，退出码 ${suspended.returncode}`;
@@ -907,13 +849,11 @@ export async function runWithPython(
         const exitedResult = buildToolResult({
           success,
           code: success ? ERR_OK : ERR_PROCESS_EXITED_NON_ZERO,
-          message: truncationMessage
-            ? `${resultMessage}\n${truncationMessage}`
-            : resultMessage,
+          message: resultMessage,
           data: buildExecutedToolResultData({
             returncode: suspended.returncode,
-            stdout: suspended.stdout,
-            stderr: suspended.stderr,
+            stdout: truncateToolOutput(suspended.stdout),
+            stderr: truncateToolOutput(suspended.stderr),
             execId,
             responseId,
           }),
@@ -929,35 +869,27 @@ export async function runWithPython(
       }
 
       // 启动期后进程仍活：挂起成功，返回 pid/platform/scriptPath（timeout_seconds 忽略、finally 清理跳过）
-      const truncationMessage = buildTruncationMessage(suspended);
-      // 【待用户定稿：P-7】挂起清理提示文案（参照 run-exe.ts 挂起 message 句式：含 PID/平台，另附脚本路径与树杀指引）
-      const suspendMessage = `\n当前进程(PID: ${suspended.pid})已挂起，脚本路径: ${scriptPath}，当前任务结束前请务必清理（可用 run_exe 执行 taskkill /PID ${suspended.pid} /T /F），当前平台: ${suspended.platform}`;
-      const finalMessage = truncationMessage
-        ? `${suspendMessage}\n${truncationMessage}`
-        : suspendMessage;
+      // 【待用户定稿：P-7】挂起清理提示文案（参照 run-shell.ts 挂起 message 句式：含 PID/平台，另附脚本路径与树杀指引）
+      const suspendMessage = `\n当前进程(PID: ${suspended.pid})已挂起，脚本路径: ${scriptPath}，当前任务结束前请务必清理（可用 run_shell 执行 taskkill /PID ${suspended.pid} /T /F），当前平台: ${suspended.platform}`;
 
       const suspendedResult = buildToolResult({
         success: true,
         code: ERR_OK,
-        message: finalMessage,
-        data: {
-          ...buildExecutedToolResultData({
-            returncode: 0,
-            stdout: suspended.stdout,
-            stderr: suspended.stderr,
-            execId,
-            responseId,
-          }),
-          pid: suspended.pid,
-          platform: suspended.platform,
-          scriptPath,
-        },
+        message: suspendMessage,
+        data: buildExecutedToolResultData({
+          returncode: 0,
+          stdout: truncateToolOutput(suspended.stdout),
+          stderr: truncateToolOutput(suspended.stderr),
+          execId,
+          responseId,
+          extra: { pid: suspended.pid, platform: suspended.platform, scriptPath },
+        }),
       });
 
       ioPrint('\nPython output:\n', JSON.stringify(suspendedResult), '\n');
       return suspendedResult;
     } catch (error) {
-      // 启动期内 abort → 已 kill：ABORTED / returncode 130（协议对齐 run-exe.ts 挂起 abort 路径）
+      // 启动期内 abort → 已 kill：ABORTED / returncode 130（协议对齐 run-shell.ts 挂起 abort 路径）
       if (error instanceof Error && error.message === 'ABORTED') {
         const abortedResult = buildToolResult({
           success: false,
@@ -965,8 +897,8 @@ export async function runWithPython(
           message: 'Python 挂起执行已取消',
           data: buildExecutedToolResultData({
             returncode: 130,
-            stdout: '',
-            stderr: 'ABORTED',
+            stdout: truncateToolOutput(''),
+            stderr: truncateToolOutput('ABORTED'),
             execId,
             responseId,
           }),
@@ -1015,26 +947,22 @@ export async function runWithPython(
     );
 
     if (runResult.timedOut) {
-      const truncationMessage = buildTruncationMessage(runResult);
       const resultMessage = `Python 脚本执行超时: ${timeoutSeconds}s`;
 
       result = buildToolResult({
         success: false,
         code: ERR_TIMEOUT,
-        message: truncationMessage
-          ? `${resultMessage}\n${truncationMessage}`
-          : resultMessage,
+        message: resultMessage,
         data: buildExecutedToolResultData({
           returncode: 124,
-          stdout: runResult.stdout,
-          stderr: runResult.stderr,
+          stdout: truncateToolOutput(runResult.stdout),
+          stderr: truncateToolOutput(runResult.stderr),
           execId,
           responseId,
         }),
       });
     } else {
       const success = runResult.returncode === 0;
-      const truncationMessage = buildTruncationMessage(runResult);
       const resultMessage = success
         ? 'Python 脚本执行完成'
         : `Python 脚本执行失败，退出码 ${runResult.returncode}`;
@@ -1042,13 +970,11 @@ export async function runWithPython(
       result = buildToolResult({
         success,
         code: success ? ERR_OK : ERR_PROCESS_EXITED_NON_ZERO,
-        message: truncationMessage
-          ? `${resultMessage}\n${truncationMessage}`
-          : resultMessage,
+        message: resultMessage,
         data: buildExecutedToolResultData({
           returncode: runResult.returncode,
-          stdout: runResult.stdout,
-          stderr: runResult.stderr,
+          stdout: truncateToolOutput(runResult.stdout),
+          stderr: truncateToolOutput(runResult.stderr),
           execId,
           responseId,
         }),
@@ -1062,8 +988,8 @@ export async function runWithPython(
         message: 'Python 脚本执行已取消',
         data: buildExecutedToolResultData({
           returncode: 130,
-          stdout: '',
-          stderr: 'ABORTED',
+          stdout: truncateToolOutput(''),
+          stderr: truncateToolOutput('ABORTED'),
           execId,
           responseId,
         }),

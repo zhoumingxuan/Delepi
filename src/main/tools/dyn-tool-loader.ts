@@ -9,7 +9,7 @@
  * 超时：默认 DEFAULT_TIMEOUT_SECONDS=180 秒，manifest.timeoutSeconds 可覆盖（上限 3600）。
  * 加载：启动扫描（ipc-handlers.registerIpcHandlers 开头 fire-and-forget，失败告警不阻塞）
  *   + tools:dyn-reload IPC 手动重载（S5-4 四层通道）。
- * 内置3工具锁定：动态重名内置由 executor-registry.registerExecutorTool 拒绝。
+ * 内置4工具锁定：动态重名内置由 executor-registry.registerExecutorTool 拒绝。
  */
 
 import { randomUUID } from 'node:crypto';

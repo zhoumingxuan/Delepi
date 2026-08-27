@@ -1,4 +1,4 @@
-﻿﻿/**
+/**
  * 智能体相关常量
  * 归集自 executor-agent.ts、executor-structured-payload.ts、main-agent.ts、title-generation.ts
  */
@@ -29,8 +29,10 @@ export const EXECUTOR_WORKER_SKILLS_DIR = path.join(
 /** 工具进度名称映射 */
 export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
   inspect_image: '图片识别',
-  run_exe: '命令行执行',
   run_with_python: 'Python 脚本执行',
+  read_file: '文件读取',
+  run_shell: '命令行执行',
+  fs_search: '文件系统搜索',
 };
 
 /**

@@ -1185,7 +1185,7 @@ export async function runMainAgent(
 
           // 执行委派任务
           // finalOutputDir 通过 RunDelegatedTaskOptions 顶层字段传入；
-          // runDir 为 run_exe / run_with_python 未传 run_dir 时的默认目录。
+          // runDir 为 run_shell / run_with_python 未传 run_dir 时的默认目录。
           const execResult = await runDelegatedTask({
             assistantConfig: options.assistantConfig,
             rawArguments: toolCall.function.arguments,

@@ -1,6 +1,6 @@
 /**
  * 错误码常量
- * 归集自 executor-agent.ts、main-agent.ts、ipc-handlers.ts、run-exe.ts、run-with-python.ts、inspect-image.ts、result.ts
+ * 归集自 executor-agent.ts、main-agent.ts、ipc-handlers.ts、run-shell.ts、run-with-python.ts、inspect-image.ts、result.ts
  */
 
 // ============================================================
@@ -24,11 +24,10 @@ export const ERR_INVALID_ARGUMENT = 'INVALID_ARGUMENT';
 export const ERR_OK = 'OK';
 
 // ============================================================
-// run-exe 错误码
+// run_shell 错误码
 // ============================================================
 
 export const ERR_COMMAND_TOO_LONG = 'COMMAND_TOO_LONG';
-export const ERR_COMMAND_REJECTED = 'COMMAND_REJECTED';
 export const ERR_INVALID_WORK_DIR = 'INVALID_WORK_DIR';
 export const ERR_TIMEOUT = 'TIMEOUT';
 export const ERR_EXECUTION_ERROR = 'EXECUTION_ERROR';
@@ -54,6 +53,13 @@ export const ERR_IMAGE_RESIZE_FAILED = 'IMAGE_RESIZE_FAILED';
 export const ERR_PATH_NOT_FILE = 'PATH_NOT_FILE';
 export const ERR_FILE_NOT_FOUND = 'FILE_NOT_FOUND';
 export const ERR_FILE_READ_ERROR = 'FILE_READ_ERROR';
+
+// ============================================================
+// read-file 错误码
+// ============================================================
+
+export const ERR_NOT_TEXT_FILE = 'NOT_TEXT_FILE';
+export const ERR_UNSUPPORTED_ENCODING = 'UNSUPPORTED_ENCODING';
 
 // ============================================================
 // 乱码警告

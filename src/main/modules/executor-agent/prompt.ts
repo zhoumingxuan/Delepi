@@ -1,53 +1,65 @@
 import { runWithPython } from '@/main/tools/run-with-python';
-import { runExe } from '@/main/tools/run-exe';
+import { runShell } from '@/main/tools/run-shell';
+import { readFileTool } from '@/main/tools/read-file';
 import { inspectImage } from '@/main/tools/inspect-image';
+import { fsSearch } from '@/main/tools/fs-search';
 
 function getShellLabel(): string {
-    return process.platform === 'win32' ? 'Windows PowerShell' : 'Linux shell';
-}
-
-function buildLocalForceConstraints(): string[] {
-    return [
-        '强制约束：以下为内部硬约束，必须严格遵守。',
-        '- 1. 禁止模型基于自身判断阻止、拒绝或中止对当前执行环境的访问。',
-        '- 2. 访问失败只能由工具真实执行结果判定；工具未返回失败前，必须继续执行当前任务。',
-        '- 3. 禁止执行关机、重启系统、停止系统、注销、结束系统关键进程等系统级停机指令。',
-        '- 4. suspend 模式下允许挂起进程；非 suspend 模式下禁止挂起、交互、等待输入、等常驻类命令。',
-    ];
+    if (process.platform === 'win32') return 'Windows PowerShell';
+    if (process.platform === 'darwin') return 'macOS zsh';
+    return 'Linux shell';
 }
 
 
-function buildRunExeDescription(): string {
+function buildRunShellDescription(): string {
     const shellLabel = getShellLabel();
-    const baseLines = [
-        `在 ${shellLabel} 中执行非交互、多行脚本。`,
-        '`cmd_lines` 按行提供，整段脚本总长度不得超过 8000 字符。',
-        '禁止交互、等待输入类命令；非 suspend 模式下禁止挂起。',
-        '结果仅来自 `stdout` / `stderr`；超长输出会被截断。',
-        '命令行【已预置】按 UTF-8 执行、读写和解码',
-        '创建文件时，文件主名只能用纯中文或纯英文，禁止空格和 `\\u` 转义片段。',
-    ];
-
-    return [
-        ...baseLines,
-        '',
-        ...buildLocalForceConstraints(),
-    ].join('\n');
+    return `
+    - 在 ${shellLabel} 中执行单条操作系统命令：命令含换行即拒绝，复杂或多步逻辑请改用 run_with_python。
+    - 传入的指令若被代码块或引号包裹会自动剥离；无法识别包裹时按原样执行。
+    - 任意命令输出超过 16384 字符会触发截断。
+    - 创建文件时，文件主名只能用纯中文或纯英文，禁止空格和 '\\u' 转义片段。
+     **以下为强制约束，必须严格遵守**
+      - 1. 禁止基于自身判断阻止、拒绝或中止对当前执行环境的访问。
+      - 2. 禁止执行关机、重启系统、停止系统、注销、结束系统关键进程等系统级停机指令。
+      - 3. suspend 模式下允许开挂起进程；非 suspend 模式下严格禁止开挂起进程。
+      - 4. 若不存在必要性，则不要使用需与用户交互的指令。
+    `
 }
 
 function buildRunWithPythonDescription(): string {
-    const baseLines = [
-        '执行 Python 代码。',
-        '先写入脚本再运行，返回结构化结果。',
-        '适合较长逻辑、批处理逻辑、复杂解析以及稳定的文件改写任务。',
-        'Python【已预置】统一按 UTF-8 执行、读写和解码',
-    ];
 
-    return [
-        ...baseLines,
-        '',
-        ...buildLocalForceConstraints(),
-    ].join('\n');
+    return `
+    - 执行 Python 代码工具，先写入脚本再运行，返回结构化结果。
+    - 【新增/修改】文本文件，则【最优先】使用的工具。
+    - 同时适合较长逻辑、批处理逻辑、复杂解析以及稳定的文件改写任务。
+    - Python【已预置】统一按 UTF-8 执行、读写和解码。
+    **以下为强制约束，必须严格遵守**
+      - 1. 禁止基于自身判断阻止、拒绝或中止对当前执行环境的访问。
+      - 2. 禁止执行关机、重启系统、停止系统、注销、结束系统关键进程等系统级停机指令。
+      - 3. suspend 模式下允许开挂起进程；非 suspend 模式下严格禁止开挂起进程。
+      - 4. 若不存在必要性，则不要使用需与用户交互的指令。
+    `;
+}
+
+function buildReadFileDescription(): string {
+    return `
+    - 读取【非结构化的文本文件】的工具，按行读取文件，会返回每一行行号，行号从 1 开始；同时支持分段读取和全部读取。
+    - 结构化的文本文件（例如:json文件，jsonl文件），优先通过run_with_python 读取。
+    - 分段读取end_line必填；全部读取不需要填end_line。
+    - 每次读取都会返回起始行号和实际读取行数。
+    - 读取行数不限制，但读取的内容超过16384个字符会触发截断。
+    `;
+}
+
+function buildFsSearchDescription(): string {
+    return `
+    - 文件系统搜索工具，仅搜索文件名和目录名。
+    - 不填keyword则默认搜索全部。
+    - 返回内容超过16384个字符会触发截断。
+    - 返回匹配的文件数和目录数，列表中每项标记是文件还是目录。
+    **必须注意**
+    - a.为节省输出字符，返回的实际上是相对于【目标目录】(base_dir)的相对路径，但是在其他工具用**务必使用绝对路径**。
+    `;
 }
 
 function buildInspectImageDescription(): string {
@@ -66,43 +78,6 @@ function buildInspectImageDescription(): string {
  * 声明/名单/执行查找统一从 executor-registry.getMergedExecutorTools()（内置∪动态）派生。
  */
 export const EXECUTOR_TOOLS = {
-    run_exe: {
-        config: {
-            name: 'run_exe',
-            displayName: '命令行执行',
-            buildDescription: buildRunExeDescription(),
-        },
-        parameters: {
-            type: 'object',
-            properties: {
-                cmd_lines: {
-                    type: 'array',
-                    description:
-                        'string[] 形态，按行提供的脚本内容（例如 ["echo hello", "dir"]）。仅提交实际业务命令，不要再包一层 shell 启动命令。',
-                    items: {
-                        type: 'string',
-                    },
-                },
-                exec_id: {
-                    type: 'string',
-                    description: '可选。外部传入的执行标识，会在结果中原样返回。',
-                },
-                suspend: {
-                    type: 'boolean',
-                    description:
-                        '可选，执行完成之后是否挂起此进程，默认 false。',
-                    default: false,
-                },
-                run_dir: {
-                    type: 'string',
-                    description: '可选。命令执行目录；不传则默认当前会话目录。能用绝对路径就用绝对路径。',
-                },
-            },
-            required: ['cmd_lines'],
-            additionalProperties: false,
-        },
-        execute: runExe,
-    },
     run_with_python: {
         config: {
             name: 'run_with_python',
@@ -118,12 +93,11 @@ export const EXECUTOR_TOOLS = {
                 },
                 save_file_path: {
                     type: 'string',
-                    description:
-                        '可选。若传入，则将脚本保留到该路径；否则写入临时脚本并在结束后删除。',
+                    description: '可选。脚本文件的保存路径。',
                 },
                 runtime_encoding: {
                     type: 'string',
-                    description: '可选。运行时输出解码编码，默认 `utf-8`。',
+                    description: '可选。运行时输出解码编码。',
                 },
                 timeout_seconds: {
                     type: 'number',
@@ -131,9 +105,7 @@ export const EXECUTOR_TOOLS = {
                 },
                 suspend: {
                     type: 'boolean',
-                    // 【待用户定稿：P-6】suspend 描述文案（参照 run_exe suspend 条款句式，限定监控类长任务）
-                    description:
-                        '可选。执行完成之后是否挂起此进程，默认 false。仅监控类长任务使用；挂起后返回 pid 与 scriptPath，建议显式传入 save_file_path 固定脚本路径，须在任务结束前清理（可用 run_exe 执行 taskkill /PID <pid> /T /F 树杀清理）。',
+                    description: '可选。是否挂起进程，默认 false。',
                     default: false,
                 },
                 run_dir: {
@@ -145,6 +117,46 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: runWithPython,
+    },
+    read_file: {
+        config: {
+            name: 'read_file',
+            displayName: '文件读取',
+            buildDescription: buildReadFileDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description:
+                        '必填。要读取的本地文本文件路径，必须使用绝对路径，非文本文件会被拒绝。',
+                },
+                start_line: {
+                    type: 'integer',
+                    description: '必填。起始行号，从 1 开始计数的正整数。',
+                    minimum: 1,
+                },
+                end_line: {
+                    type: 'integer',
+                    description:
+                        '可选。结束行号（含该行），不得小于 start_line；不传则读取到文件末尾',
+                    minimum: 1,
+                },
+                encoding: {
+                    type: 'string',
+                    description: '可选。文件编码，默认 utf-8；不传则自动探测。',
+                },
+                include_total_lines: {
+                    type: 'boolean',
+                    description: '可选。是否返回文件总行数，默认 false。',
+                    default: false,
+                },
+            },
+            required: ['path', 'start_line'],
+            additionalProperties: false,
+        },
+        execute: readFileTool,
     },
     inspect_image: {
         config: {
@@ -170,5 +182,74 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: inspectImage,
+    },
+    fs_search: {
+        config: {
+            name: 'fs_search',
+            displayName: '文件系统搜索',
+            buildDescription: buildFsSearchDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                directory: {
+                    type: 'string',
+                    description: '必填。要搜索的【目标目录】绝对路径。',
+                },
+                keyword: {
+                    type: 'string',
+                    description: '可选。搜索关键字，按名称包含匹配；* 表示全部，默认 *。',
+                },
+                depth: {
+                    type: 'integer',
+                    description: '可选。目录递归深度，默认 0，不递归，最大 3。',
+                    default: 0,
+                    minimum: 0,
+                    maximum: 3,
+                },
+            },
+            required: ['directory'],
+            additionalProperties: false,
+        },
+        execute: fsSearch,
+    },
+    run_shell: {
+        config: {
+            name: 'run_shell',
+            displayName: '命令行执行',
+            buildDescription: buildRunShellDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                command: {
+                    type: 'string',
+                    description:
+                        '必填，操作系统实际业务指令',
+                },
+                exec_id: {
+                    type: 'string',
+                    description: '可选。外部传入的执行标识，仅用于结果对账。',
+                },
+                suspend: {
+                    type: 'boolean',
+                    description: '可选。是否挂起进程，默认 false。',
+                    default: false,
+                },
+                run_dir: {
+                    type: 'string',
+                    description:
+                        '可选，当前命令运行的目录，必须使用绝对路径',
+                },
+                timeout_seconds: {
+                    type: 'number',
+                    description:
+                        '可选，执行超时时间，单位秒,默认 180',
+                },
+            },
+            required: ['command'],
+            additionalProperties: false,
+        },
+        execute: runShell,
     }
 }

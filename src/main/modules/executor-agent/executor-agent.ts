@@ -1241,7 +1241,7 @@ export async function runDelegatedTask(
   // 视觉识别总开关关闭时从合并视图全集排除视觉类工具 inspect_image（声明层过滤；执行层拦截见
   // executor-registry.executeToolCall）。动态工具全部纳入本禁用名单机制（A5-4）——首期 requiresVision=true
   // 被拒绝注册，动态工具均为非视觉，视觉关闭时保留；空动态表时过滤结果与原硬编码
-  // ['run_exe', 'run_with_python'] 完全一致（S5-1 等价性约束）。
+  // 名单完全一致（S5-1 等价性约束）。
   const executorTools = getExecutorOpenAITools(
     configManager.getSettings().visionEnabled
       ? undefined
