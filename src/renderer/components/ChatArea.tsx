@@ -97,6 +97,9 @@ function toolSnapshotsToChatMessages(
       // ★ 项6：虚拟消息附带完整思考链（来源 ToolSnapshot.thinking），供完成态 Think 渲染
       thinking: s.thinking || '',
       progress: latestToolProgressTextCached(`snap-${s.taskId}`, s.lastContent || ''),
+      // ★ 子工具调用透传：完整 toolCalls 数组（delegate_executor 委派条目 + read_file/fs_search 等子工具调用），
+      //   供 ChatMessageContent tool 分支过滤 delegate_executor 后逐条渲染子工具调用
+      toolCalls: (s.toolCalls ?? []),
       toolCall: {
         ...(firstToolCall ?? {}),
         callId,

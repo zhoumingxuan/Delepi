@@ -30,7 +30,7 @@ function buildRunWithPythonDescription(): string {
 
     return `
     - 执行 Python 代码工具，先写入脚本再运行，返回结构化结果。
-    - 【新增/修改】文本文件，则【最优先】使用的工具。
+    - 【新增/修改】文本文件，检索文件【关键信息】，则【最优先】使用的工具。
     - 同时适合较长逻辑、批处理逻辑、复杂解析以及稳定的文件改写任务。
     - Python【已预置】统一按 UTF-8 执行、读写和解码。
     **以下为强制约束，必须严格遵守**
@@ -44,10 +44,12 @@ function buildRunWithPythonDescription(): string {
 function buildReadFileDescription(): string {
     return `
     - 读取【非结构化的文本文件】的工具，按行读取文件，会返回每一行行号，行号从 1 开始；同时支持分段读取和全部读取。
-    - 结构化的文本文件（例如:json文件，jsonl文件），优先通过run_with_python 读取。
-    - 分段读取end_line必填；全部读取不需要填end_line。
+    - **代码文件,MarkDown文件不算结构化文件，仅算有一定格式的文件**。
+    - 结构化的文本文件（例如:json文件，jsonl文件等），优先通过run_with_python 读取。
+    - 分段读取end_line必填；全部读取则不需要填end_line。
     - 每次读取都会返回起始行号和实际读取行数。
-    - 读取行数不限制，但读取的内容超过16384个字符会触发截断。
+    - 读取行数不限制，但读取的总体内容超过16384个字符会触发截断。
+    - 超过【32KB文件大小】的【非结构化的文本文件】禁全量读取，因为必然超过16384个字符。
     `;
 }
 
@@ -58,7 +60,7 @@ function buildFsSearchDescription(): string {
     - 返回内容超过16384个字符会触发截断。
     - 返回匹配的文件数和目录数，列表中每项标记是文件还是目录。
     **必须注意**
-    - a.为节省输出字符，返回的实际上是相对于【目标目录】(base_dir)的相对路径，但是在其他工具用**务必使用绝对路径**。
+    - a.为节省输出字符，搜索结果返回的实际上是相对于【目标目录】(soruce_dir)的相对路径，但是在其他工具用**务必使用绝对路径**。
     `;
 }
 
@@ -78,13 +80,83 @@ function buildInspectImageDescription(): string {
  * 声明/名单/执行查找统一从 executor-registry.getMergedExecutorTools()（内置∪动态）派生。
  */
 export const EXECUTOR_TOOLS = {
+    fs_search: {
+        config: {
+            name: 'fs_search',
+            displayName: '文件系统搜索',
+            buildDescription: buildFsSearchDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                directory: {
+                    type: 'string',
+                    description: '必填。要搜索的【目标目录】绝对路径。',
+                },
+                keyword: {
+                    type: 'string',
+                    description: '可选。搜索关键字，按名称包含匹配；* 表示全部，默认 *。',
+                },
+                depth: {
+                    type: 'integer',
+                    description: '可选。目录递归深度，默认 0，不递归，最大 3。',
+                    default: 0,
+                    minimum: 0,
+                    maximum: 3,
+                },
+            },
+            required: ['directory'],
+            additionalProperties: false,
+        },
+        execute: fsSearch,
+    },
+    read_file: {
+        config: {
+            name: 'read_file',
+            displayName: '文件读取',
+            buildDescription: buildReadFileDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description:
+                        '必填。要读取的本地【非结构化的文本文件】路径，必须使用绝对路径。',
+                },
+                start_line: {
+                    type: 'integer',
+                    description: '必填。起始行号，从 1 开始计数的正整数。',
+                    minimum: 1,
+                },
+                end_line: {
+                    type: 'integer',
+                    description:
+                        '可选。结束行号（含该行），不得小于 start_line；不传则读取到文件末尾',
+                    minimum: 1,
+                },
+                encoding: {
+                    type: 'string',
+                    description: '可选。文件编码，默认 utf-8',
+                },
+                include_total_lines: {
+                    type: 'boolean',
+                    description: '可选。是否返回文件总行数，默认 false。',
+                    default: false,
+                },
+            },
+            required: ['path', 'start_line'],
+            additionalProperties: false,
+        },
+        execute: readFileTool,
+    },
     run_with_python: {
         config: {
             name: 'run_with_python',
             displayName: 'Python 脚本执行',
             buildDescription: buildRunWithPythonDescription(),
         },
-        parameters:{
+        parameters: {
             type: 'object',
             properties: {
                 python_code: {
@@ -118,46 +190,6 @@ export const EXECUTOR_TOOLS = {
         },
         execute: runWithPython,
     },
-    read_file: {
-        config: {
-            name: 'read_file',
-            displayName: '文件读取',
-            buildDescription: buildReadFileDescription(),
-        },
-        parameters: {
-            type: 'object',
-            properties: {
-                path: {
-                    type: 'string',
-                    description:
-                        '必填。要读取的本地文本文件路径，必须使用绝对路径，非文本文件会被拒绝。',
-                },
-                start_line: {
-                    type: 'integer',
-                    description: '必填。起始行号，从 1 开始计数的正整数。',
-                    minimum: 1,
-                },
-                end_line: {
-                    type: 'integer',
-                    description:
-                        '可选。结束行号（含该行），不得小于 start_line；不传则读取到文件末尾',
-                    minimum: 1,
-                },
-                encoding: {
-                    type: 'string',
-                    description: '可选。文件编码，默认 utf-8；不传则自动探测。',
-                },
-                include_total_lines: {
-                    type: 'boolean',
-                    description: '可选。是否返回文件总行数，默认 false。',
-                    default: false,
-                },
-            },
-            required: ['path', 'start_line'],
-            additionalProperties: false,
-        },
-        execute: readFileTool,
-    },
     inspect_image: {
         config: {
             name: 'inspect_image',
@@ -183,36 +215,6 @@ export const EXECUTOR_TOOLS = {
         },
         execute: inspectImage,
     },
-    fs_search: {
-        config: {
-            name: 'fs_search',
-            displayName: '文件系统搜索',
-            buildDescription: buildFsSearchDescription(),
-        },
-        parameters: {
-            type: 'object',
-            properties: {
-                directory: {
-                    type: 'string',
-                    description: '必填。要搜索的【目标目录】绝对路径。',
-                },
-                keyword: {
-                    type: 'string',
-                    description: '可选。搜索关键字，按名称包含匹配；* 表示全部，默认 *。',
-                },
-                depth: {
-                    type: 'integer',
-                    description: '可选。目录递归深度，默认 0，不递归，最大 3。',
-                    default: 0,
-                    minimum: 0,
-                    maximum: 3,
-                },
-            },
-            required: ['directory'],
-            additionalProperties: false,
-        },
-        execute: fsSearch,
-    },
     run_shell: {
         config: {
             name: 'run_shell',
@@ -226,10 +228,6 @@ export const EXECUTOR_TOOLS = {
                     type: 'string',
                     description:
                         '必填，操作系统实际业务指令',
-                },
-                exec_id: {
-                    type: 'string',
-                    description: '可选。外部传入的执行标识，仅用于结果对账。',
                 },
                 suspend: {
                     type: 'boolean',

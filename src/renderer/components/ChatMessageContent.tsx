@@ -725,19 +725,42 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     }
     const isExecutorResult =
       message.source === 'executor' || isDelegatedExecutorToolCall(toolInfo);
+    // ★ 子智能体具体工具调用列表（ChatArea 虚拟消息 toolCalls 透传）：
+    //   过滤 delegate_executor 委派条目自身，逐条以 ToolCallCard 展示 read_file/fs_search 等子工具调用
+    const executorToolCalls = (message.toolCalls ?? []).filter(
+      (toolCall) => !isDelegatedExecutorToolCall(toolCall),
+    );
+    const executorToolCallCards =
+      executorToolCalls.length > 0 ? (
+        <Flex vertical gap={8} style={{ width: '100%' }}>
+          {executorToolCalls.map((toolCall) => (
+            <ToolCallCard key={toolCall.callId} toolCall={toolCall} />
+          ))}
+        </Flex>
+      ) : null;
     // 优先使用 ThoughtChain 渲染（更丰富的展示：执行耗时 + 思考/进度分离）
     // 若结构化字段缺失则退回 ToolCallCard 兜底
     if (toolInfo.startedAt || toolInfo.finishedAt) {
-      return renderToolResultSegment(
-        message.id,
-        toolInfo,
-        message.status === 'loading',
-        message.createdAt,
-        toolSummaries,
-        { includeStructuredFilePreview: true, thinkingText: message.thinking, progressText: message.progress },
+      return (
+        <>
+          {renderToolResultSegment(
+            message.id,
+            toolInfo,
+            message.status === 'loading',
+            message.createdAt,
+            toolSummaries,
+            { includeStructuredFilePreview: true, thinkingText: message.thinking, progressText: message.progress },
+          )}
+          {executorToolCallCards}
+        </>
       );
     }
-    return <ToolCallCard toolCall={toolInfo} />;
+    return (
+      <>
+        <ToolCallCard toolCall={toolInfo} />
+        {executorToolCallCards}
+      </>
+    );
   }
 
   // 助理消息

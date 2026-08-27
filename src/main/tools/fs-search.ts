@@ -1,10 +1,8 @@
-import { randomUUID } from 'node:crypto';
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { type ToolRuntimeContext } from './runtime-context';
 import {
-  buildExecutedToolResultData,
   buildToolResult,
   truncateLinesToLimit,
   type ToolResult,
@@ -48,7 +46,7 @@ function parseDepth(value: unknown): number | null | undefined {
 }
 
 /**
- * fs_search 主入口：目录内按名称关键字搜索（DFS 递归，depth 1-3）。
+ * fs_search 主入口：目录内按名称关键字搜索（DFS 递归，depth 0-3，默认 0 不递归）。
  * 纯 Node fs 只读；仅按名称包含匹配（'*' 表示全部）；结果按路径升序；不做条数/长度限制。
  */
 export async function fsSearch(
@@ -57,8 +55,6 @@ export async function fsSearch(
 ): Promise<ToolResult> {
   const resolvedInput =
     input && typeof input === 'object' ? (input as FsSearchInput) : {};
-  const responseId = randomUUID();
-  const execId = randomUUID();
 
   // 校验：directory 必填且必须是存在的目录
   const directoryRaw = normalizeString(resolvedInput.directory);
@@ -109,9 +105,20 @@ export async function fsSearch(
   const matches: FsSearchMatch[] = [];
   const skipped: string[] = [];
 
-/** 相对 base_dir 的相对路径，统一 '/' 分隔（Windows 反斜杠转换） */
+/** 相对 soruce_dir 的相对路径，统一 '/' 分隔（Windows 反斜杠转换） */
   const toRelative = (absolutePath: string): string =>
-    path.relative(directory, absolutePath).split(path.sep).join('/');
+  {
+      let relative_path=path.relative(directory, absolutePath);
+      if(relative_path==="")
+      {
+          return "./";
+      }
+      else
+      {
+         return relative_path.split(path.sep).join('/');
+      }
+  }
+    
 
   const walk = async (dir: string, level: number): Promise<void> => {
     if (context.signal?.aborted) {
@@ -126,6 +133,7 @@ export async function fsSearch(
       if (keyword === '*' || entry.name.toLowerCase().includes(keywordLower)) {
         try {
           const entryStat = await stat(full);
+
           matches.push({
             path: full,
             type: entry.isDirectory() ? 'dir' : 'file',
@@ -165,13 +173,6 @@ export async function fsSearch(
         success: false,
         code: 'ABORTED',
         message: '目录搜索已取消',
-        data: buildExecutedToolResultData({
-          returncode: 130,
-          stdout: '',
-          stderr: 'ABORTED',
-          execId,
-          responseId,
-        }),
       });
     }
 
@@ -184,37 +185,29 @@ export async function fsSearch(
 
   // 路径 codePoint 升序（确定性输出）
   matches.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-
+  
   const stdoutLines = matches.map(
-    (m) => `${toRelative(m.path)} | ${m.type} | ${m.size === null ? '-' : `${m.size}B`} | ${m.mtime}`,
+    (m) => `\`${toRelative(m.path)}\` | ${m.type} | ${m.size === null ? '-' : `${m.size}B`} | ${m.mtime}`,
   );
 
   const fileCount = matches.filter((m) => m.type === 'file').length;
   const dirCount = matches.length - fileCount;
 
-  const message = `共匹配 ${matches.length} 项（文件 ${fileCount}，目录 ${dirCount}）${
-    skipped.length ? `，跳过 ${skipped.length} 个无法访问的路径` : ''
-  }`;
-
+  const message = `
+- 共匹配 ${matches.length} 项（文件 ${fileCount}，目录 ${dirCount}）${skipped.length ? `，跳过 ${skipped.length} 个无法访问的路径` : ''};
+- 【search_results】包含的【所有路径类型的信息】均为相对于【soruce_dir】的路径，**对外使用请务必拼接成绝对路径使用**。`;
   return buildToolResult({
     success: true,
     code: ERR_OK,
     message,
-    data: buildExecutedToolResultData({
-      returncode: 0,
-      stdout: truncateLinesToLimit(stdoutLines),
-      stderr: truncateLinesToLimit(skipped),
-      execId,
-      responseId,
-      extra: {
-        directory,
-        keyword,
-        depth,
-        base_dir: directory,
-        match_count: matches.length,
-        file_count: fileCount,
-        dir_count: dirCount,
-      },
-    }),
+    data: {
+      search_keyword:keyword,
+      search_depth:depth,
+      soruce_dir: directory,
+      match_count: matches.length,
+      match_file_count: fileCount,
+      match_dir_count: dirCount,
+      search_results: truncateLinesToLimit(stdoutLines),
+    },
   });
 }

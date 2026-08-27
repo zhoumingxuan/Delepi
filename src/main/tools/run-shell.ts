@@ -30,7 +30,6 @@ import {
 type RunShellInput = {
   command?: unknown;
   run_dir?: unknown;
-  exec_id?: unknown;
   suspend?: unknown;
   timeout_seconds?: unknown;
 };
@@ -315,7 +314,7 @@ async function runSuspendedSpawnCommand(
 export async function runShell(input: unknown, context: ToolRuntimeContext): Promise<ToolResult> {
   const resolvedInput = input && typeof input === 'object' ? (input as RunShellInput) : {};
   const responseId = randomUUID();
-  const execId = normalizeOptionalString(resolvedInput.exec_id) || randomUUID();
+  const execId = randomUUID();
 
   // 单条 command 校验（无多行命令/多行脚本支持）
   const commandRaw = resolvedInput.command;

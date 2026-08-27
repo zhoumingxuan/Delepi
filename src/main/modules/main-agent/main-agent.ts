@@ -1229,7 +1229,18 @@ export async function runMainAgent(
               //   窗口取累积全文按 \n{2,} 切分后的最后一段（对齐主进程 splitExecutorIntermediate 段级分类模式）：
               //   进度行整段完整后归类准确；碎片期间不误命中进度正则。
               // 进度行前插段落分隔：\n{2,} 切分后独立成段，整段锚定正则可命中，不混入 thinking 累积
-              executorThinkingClassifyBuffer += info?.type === 'tool-progress' ? `\n\n${text}` : text;
+              // 尾段已是完整进度行时，thinking delta 同样前插 \n\n 分隔，
+              // 避免 reasoning 文本与进度行粘连导致 isExecutorToolProgressText 锚定正则失配
+              const prevClassifyTail =
+                executorThinkingClassifyBuffer
+                  .split(/\n{2,}/)
+                  .map((chunk) => chunk.trim())
+                  .filter(Boolean)
+                  .pop() ?? '';
+              executorThinkingClassifyBuffer +=
+                info?.type === 'tool-progress' || isExecutorToolProgressText(prevClassifyTail)
+                  ? `\n\n${text}`
+                  : text;
               const lastClassifyChunk = executorThinkingClassifyBuffer
                 .split(/\n{2,}/)
                 .map((chunk) => chunk.trim())
