@@ -55,8 +55,8 @@ function buildReadFileDescription(): string {
 
 function buildFsSearchDescription(): string {
     return `
-    - 文件系统搜索工具，仅搜索文件名和目录名。
-    - 不填keyword则默认搜索全部。
+    - 文件系统搜索工具，仅适配【文件名和目录名】以及【目录扫描】功能。
+    - 不填keyword则视作按depth扫描【目标目录】。
     - 返回内容超过16384个字符会触发截断。
     - 返回匹配的文件数和目录数，列表中每项标记是文件还是目录。
     **必须注意**
