@@ -105,7 +105,7 @@ export async function fsSearch(
   const matches: FsSearchMatch[] = [];
   const skipped: string[] = [];
 
-/** 相对 soruce_dir 的相对路径，统一 '/' 分隔（Windows 反斜杠转换） */
+/** 相对 source_dir 的相对路径，统一 '/' 分隔（Windows 反斜杠转换） */
   const toRelative = (absolutePath: string): string =>
   {
       let relative_path=path.relative(directory, absolutePath);
@@ -195,7 +195,7 @@ export async function fsSearch(
 
   const message = `
 - 共匹配 ${matches.length} 项（文件 ${fileCount}，目录 ${dirCount}）${skipped.length ? `，跳过 ${skipped.length} 个无法访问的路径` : ''};
-- 【search_results】包含的【所有路径类型的信息】均为相对于【soruce_dir】的路径，**对外使用请务必拼接成绝对路径使用**。`;
+- 【search_results】包含的【所有路径类型的信息】均为相对于【source_dir】的路径，**对外使用请务必拼接成绝对路径使用**。`;
   return buildToolResult({
     success: true,
     code: ERR_OK,
@@ -203,7 +203,7 @@ export async function fsSearch(
     data: {
       search_keyword:keyword,
       search_depth:depth,
-      soruce_dir: directory,
+      source_dir: directory,
       match_count: matches.length,
       match_file_count: fileCount,
       match_dir_count: dirCount,

@@ -7,7 +7,7 @@
  * - 删除对 var(--color-accent) 的依赖
  */
 
-import { useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, type ReactElement } from 'react';
 import type { MenuProps } from 'antd';
 import {
   Button,
@@ -77,7 +77,7 @@ const GROUP_PRIORITY: Record<string, number> = {
   '更早': 4,
 };
 
-export function Sidebar({
+export const Sidebar = memo(function Sidebar({
   conversations,
   activeConversationId,
   hoveredConversationId,
@@ -411,4 +411,4 @@ export function Sidebar({
       </Modal>
     </Flex>
   );
-}
+});

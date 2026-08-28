@@ -15,7 +15,7 @@ import type {
   DragEvent as ReactDragEvent,
   ClipboardEvent as ReactClipboardEvent,
 } from 'react';
-import { useState, useCallback, useRef } from 'react';
+import { memo, useState, useCallback, useRef } from 'react';
 import { Button, Flex, Typography, Upload, theme } from 'antd';
 import {
   PaperClipOutlined,
@@ -68,7 +68,7 @@ function collectFilesFromDataTransfer(
     .filter((file): file is File => Boolean(file));
 }
 
-export function SenderBox({
+export const SenderBox = memo(function SenderBox({
   value = '',
   onChange,
   onSend,
@@ -362,4 +362,4 @@ export function SenderBox({
       </div>
     </div>
   );
-}
+});

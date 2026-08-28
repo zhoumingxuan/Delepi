@@ -186,11 +186,21 @@ function renderToolResultContent(
 }
 
 // ★ P04: 追加第三参 cacheKey（必传，流标识级缓存键），切分改走增量缓存（根因 R4）
-function renderLoadingToolContent(value: string, thinkingOverride: string | undefined, cacheKey: string) {
+// ★ 缺陷②修复：追加第四参 progressOverride（= options.progressText / message.progress，快照级进度文案
+//   describeLatestToolCall 三态文本或快照进度行）——优先于缓存提取，接通 M17 完成分支删除后失连的
+//   '工具调用'块渲染出口（子工具原始 result 不匹配进度正则致缓存提取恒空的场景由该参兜住）
+function renderLoadingToolContent(
+  value: string,
+  thinkingOverride: string | undefined,
+  cacheKey: string,
+  progressOverride?: string,
+) {
   const { thinking: thinkingFromResult } = splitLoadingToolContentCached(cacheKey, value);
   // ★ 项9：对齐 ai_fr renderLoadingToolContent(value, thinkingOverride?)——优先使用显式 thinking
   const thinking = thinkingOverride?.trim() || thinkingFromResult;
-  const progressContent = latestToolProgressTextCached(cacheKey, value) || (thinking ? '' : '执行中');
+  const progressContent = progressOverride?.trim()
+    || latestToolProgressTextCached(cacheKey, value)
+    || (thinking ? '' : '执行中');
 
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
@@ -349,28 +359,23 @@ function renderToolResultSegment(
   ) : (
     title
   );
-  // ★ 项9 微调（执行智能体显示体验）：thinking 执行中随进度渲染；完成态以默认收起的
-  //   ThinkingBlock 保留（闭环 ChatArea 项6 虚拟消息附带 thinking 的数据消费，
-  //   缓解 loading→completed 思考内容整块消失的切换生硬感；复用组件既有标题，不新增文案）
+  // ★ 项9 + M17（D3 两态覆盖历史）：thinking/进度仅执行中（loading 分支）渲染；完成态仅渲染 Result
   const thinkingText = options?.thinkingText?.trim() || '';
-  const progressText = options?.progressText?.trim() || '';
   const content = loading
     ? toolCall.result || ''
     : renderToolResultContent(toolCall.result || '', {
         includeStructuredFilePreview: options?.includeStructuredFilePreview,
       });
   const renderedContent = loading ? (
-    renderLoadingToolContent(content, thinkingText, toolCall.callId)
+    // ★ 缺陷②修复：接通 options.progressText（=message.progress，ChatArea.tsx:117 describeLatestToolCall
+    //   三态文案'正在调用 X...'/'X 完成：...'或快照级进度文本）作为'工具调用'块内容——运行中可见且
+    //   内容可追溯快照数据；完成分支不受影响（loading=false 不进本调用，仅渲染 Result，M17 零回归）
+    renderLoadingToolContent(content, thinkingText, toolCall.callId, options?.progressText)
   ) : (
-    <Space direction="vertical" size={8} style={{ width: '100%' }}>
-      {thinkingText ? (
-        <ThinkingBlock content={thinkingText} title="思考过程" />
-      ) : null}
-      {progressText ? <ThinkingBlock content={progressText} title="工具调用" /> : null}
-      <div style={{ maxHeight: TOOL_RESULT_EXPANDED_MAX_HEIGHT_PX, overflowY: 'auto' }}>
-        <RichMarkdown content={content} />
-      </div>
-    </Space>
+    // ★ M17（D3 两态覆盖历史）：完成分支仅渲染 Result（RichMarkdown）；思考块/工具调用块移除
+    <div style={{ maxHeight: TOOL_RESULT_EXPANDED_MAX_HEIGHT_PX, overflowY: 'auto' }}>
+      <RichMarkdown content={content} />
+    </div>
   );
 
   return (
@@ -723,44 +728,19 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     if (!toolInfo) {
       return null;
     }
-    const isExecutorResult =
-      message.source === 'executor' || isDelegatedExecutorToolCall(toolInfo);
-    // ★ 子智能体具体工具调用列表（ChatArea 虚拟消息 toolCalls 透传）：
-    //   过滤 delegate_executor 委派条目自身，逐条以 ToolCallCard 展示 read_file/fs_search 等子工具调用
-    const executorToolCalls = (message.toolCalls ?? []).filter(
-      (toolCall) => !isDelegatedExecutorToolCall(toolCall),
-    );
-    const executorToolCallCards =
-      executorToolCalls.length > 0 ? (
-        <Flex vertical gap={8} style={{ width: '100%' }}>
-          {executorToolCalls.map((toolCall) => (
-            <ToolCallCard key={toolCall.callId} toolCall={toolCall} />
-          ))}
-        </Flex>
-      ) : null;
     // 优先使用 ThoughtChain 渲染（更丰富的展示：执行耗时 + 思考/进度分离）
     // 若结构化字段缺失则退回 ToolCallCard 兜底
     if (toolInfo.startedAt || toolInfo.finishedAt) {
-      return (
-        <>
-          {renderToolResultSegment(
-            message.id,
-            toolInfo,
-            message.status === 'loading',
-            message.createdAt,
-            toolSummaries,
-            { includeStructuredFilePreview: true, thinkingText: message.thinking, progressText: message.progress },
-          )}
-          {executorToolCallCards}
-        </>
+      return renderToolResultSegment(
+        message.id,
+        toolInfo,
+        message.status === 'loading',
+        message.createdAt,
+        toolSummaries,
+        { includeStructuredFilePreview: true, thinkingText: message.thinking, progressText: message.progress },
       );
     }
-    return (
-      <>
-        <ToolCallCard toolCall={toolInfo} />
-        {executorToolCallCards}
-      </>
-    );
+    return <ToolCallCard toolCall={toolInfo} />;
   }
 
   // 助理消息

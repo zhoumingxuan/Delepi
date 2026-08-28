@@ -21,7 +21,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { CloseOutlined } from '@ant-design/icons';
 import { App as AntApp, Flex, theme } from 'antd';
 import { ChatArea } from './ChatArea';
 import { ChatHeader } from './ChatHeader';
@@ -48,7 +47,6 @@ export function ChatShell() {
     conversationId,
     conversations,
     isStreaming,
-    error: chatError,
     sendMessage,
     abortChat,
     createConversation,
@@ -63,7 +61,6 @@ export function ChatShell() {
     showScrollToBottom,
     setShowScrollToBottom,
     stickToBottomRef,
-    clearError,
   } = useChat({ messageApi: { error: (content: string) => messageApi.error(content) } });
 
   const { config, loading: configLoading, saveConfig, saveAllConfig, reloadConfig } =
@@ -167,6 +164,28 @@ const { check, canCheck } = useConfigReadiness({
       (config.mainModelName?.trim() ?? '').length > 0
     );
   }, [config.mainModelApiKey, config.mainModelName, configLoading]);
+
+  // ============================================================
+  // ★ P0-B 渲染范围收敛：6 个低频内联回调 useCallback 化（引用稳定，
+  //   流式期间 ChatHeader/Sidebar/SenderBox/ConfigDrawer/ConfigCheckModal
+  //   的 memo 不再被内联新引用击穿；依赖见各行，行为与原内联闭包一致）
+  // ============================================================
+  const handleMenuClick = useCallback(() => setSidebarOpen((v) => !v), []);
+  const handleSettingsClick = useCallback(() => setSettingsOpen(true), []);
+  // ConfigDrawer onClose；依赖 configConfigured——流式期间该值稳定，引用稳定
+  const handleCloseConfigDrawer = useCallback(() => {
+    if (!configConfigured) return;
+    setSettingsOpen(false);
+  }, [configConfigured]);
+  const handleConfigDrawerTabChange = useCallback(
+    (tab: string) => setConfigDrawerActiveTab(tab as 'model' | 'python'),
+    [],
+  );
+  const handleCloseConfigCheckModal = useCallback(() => setShowConfigCheckModal(false), []);
+  const handleGoToConfig = useCallback((tab: string) => {
+    setConfigDrawerActiveTab(tab as 'model' | 'python');
+    setSettingsOpen(true);
+  }, []);
 
   const canSend =
     !showCancel &&
@@ -393,8 +412,8 @@ const { check, canCheck } = useConfigReadiness({
           subtitle={headerSubtitle || undefined}
           isRunning={activeConversationRunning}
           showMenuButton={!sidebarOpen}
-          onMenuClick={() => setSidebarOpen((v) => !v)}
-          onSettingsClick={() => setSettingsOpen(true)}
+          onMenuClick={handleMenuClick}
+          onSettingsClick={handleSettingsClick}
         />
 
         <Flex
@@ -408,39 +427,6 @@ const { check, canCheck } = useConfigReadiness({
             flexDirection: 'column',
           }}
         >
-          {/* {chatError ? (
-            <div
-              style={{
-                position: 'relative',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                background: token.colorError,
-                color: '#fff',
-                padding: '8px 16px',
-                fontSize: 13,
-                flexShrink: 0,
-              }}
-            >
-              <span>{chatError}</span>
-              <span
-                onClick={clearError}
-                style={{
-                  cursor: 'pointer',
-                  padding: '4px',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  minWidth: 20,
-                  minHeight: 20,
-                  opacity: 0.85,
-                }}
-                title="关闭"
-              >
-                <CloseOutlined style={{ fontSize: 14 }} />
-              </span>
-            </div>
-          ) : null} */}
           <ChatArea
             messages={messages}
             toolSnapshots={toolSnapshots}
@@ -470,27 +456,21 @@ const { check, canCheck } = useConfigReadiness({
 
       <ConfigDrawer
         open={settingsOpen}
-        onClose={() => {
-          if (!configConfigured) return;
-          setSettingsOpen(false);
-        }}
+        onClose={handleCloseConfigDrawer}
         config={config}
         configLoading={configLoading}
         onSave={saveConfig}
         onSaveAll={saveAllConfig}
         onReload={reloadConfig}
         activeTab={configDrawerActiveTab}
-        onTabChange={(tab) => setConfigDrawerActiveTab(tab as 'model' | 'python')}
+        onTabChange={handleConfigDrawerTabChange}
       />
 
       <ConfigCheckModal
         open={showConfigCheckModal}
         missingItems={configCheckMissingItems}
-        onClose={() => setShowConfigCheckModal(false)}
-        onGoToConfig={(tab) => {
-          setConfigDrawerActiveTab(tab);
-          setSettingsOpen(true);
-        }}
+        onClose={handleCloseConfigCheckModal}
+        onGoToConfig={handleGoToConfig}
       />
 
 

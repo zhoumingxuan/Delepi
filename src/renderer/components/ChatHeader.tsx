@@ -3,7 +3,7 @@
  * 对齐 ai-client ChatHeader.tsx 样式
  */
 
-import { useState, type ReactElement } from 'react';
+import { memo, useState, type ReactElement } from 'react';
 import { Button, Input, Typography, theme } from 'antd';
 import { SettingOutlined, MenuOutlined, EditOutlined } from '@ant-design/icons';
 
@@ -28,7 +28,7 @@ interface ChatHeaderProps {
   editable?: ChatHeaderEditable | undefined;
 }
 
-export function ChatHeader({
+export const ChatHeader = memo(function ChatHeader({
   title,
   subtitle,
   isRunning = false,
@@ -134,4 +134,4 @@ export function ChatHeader({
       ) : null}
     </div>
   );
-}
+});

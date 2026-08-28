@@ -35,7 +35,7 @@ import type { AppSettings } from '../types/config';
 import type { ConfigGetResult, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { eventBus } from '../modules/event-bus/event-bus';
 import { getRunningAssistantMessage } from '../modules/main-agent/running-assistant-message-map';
-import { getSnapshotMessages, clearSnapshotSession } from '../modules/main-agent/snapshot-session-map';
+import { getSnapshotMessages, clearSnapshotSession, getRunningSnapshotEntries } from '../modules/main-agent/snapshot-session-map';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
 import { refreshMainTools } from '../modules/main-agent/prompt';
 import {
@@ -559,33 +559,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }));
 
-  // executor:thinking → IPC executor:thinking（执行子智能体思考过程和工具调用进度）
-  eventBusCleanups.push(eventBus.on('executor:thinking', (data) => {
-    if (mainWindow.isDestroyed()) {
-      return;
-    }
-    try {
-      mainWindow.webContents.send(IPC_EXECUTOR.THINKING, data);
-    } catch {
-      // renderer frame 已销毁时 send 会抛错，静默吞掉
-    }
-  }));
-
-  // ★ 修复主/子智能体消息混淆：executor:tool-progress → IPC executor:tool-progress
-  //   后端 main-agent.ts onToolCall / onToolResult 回调 emit 此事件
-  //   前端 useChat.ts 订阅后按 taskId/taskName 聚合到 toolSnapshots 状态
-  //   payload 含 source='executor' / taskName / 子智能体工具真实 callId
-  eventBusCleanups.push(eventBus.on('executor:tool-progress', (data) => {
-    if (mainWindow.isDestroyed()) {
-      return;
-    }
-    try {
-      mainWindow.webContents.send(IPC_EXECUTOR.TOOL_PROGRESS, data);
-    } catch {
-      // renderer frame 已销毁时 send 会抛错，静默吞掉
-    }
-  }));
-
   eventBusCleanups.push(eventBus.on('executor:snapshot', (data) => {
     if (mainWindow.isDestroyed()) {
       return;
@@ -1056,6 +1029,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       messages: list,
       snapshotMessages: snapshotMessages.map((item) => item.message),
     };
+  });
+
+  /**
+   * conv:get-running-snapshots — 轻量快照查询（11:41:49 裁决①）
+   * 仅返回该对话正在运行的任务快照；不读 messages 表、不返回历史消息、不去重读库。
+   * is_running=false 时返回空数组（门禁语义与 conv:get-messages 一致，纯内存判断）。
+   */
+  ipcMain.handle(IPC_CONV.GET_RUNNING_SNAPSHOTS, (_event, conversationId: string) => {
+    const conversation = getConversationById(conversationId);
+    if (!conversation?.isRunning) return [];
+    return getRunningSnapshotEntries(conversationId);
   });
 
   // ================================================================

@@ -87,24 +87,12 @@ export const IPC_CONV = {
   RENAME: 'conv:rename',
   /** 移除对话标签（渲染→主，invoke） */
   TAG_REMOVE: 'conv:tag-remove',
+  /** 轻量快照查询（渲染→主，invoke）：仅返回该对话正在运行的任务快照（三元组），不读 messages 表、不返回历史消息 */
+  GET_RUNNING_SNAPSHOTS: 'conv:get-running-snapshots',
 } as const;
 
 // --- 执行子智能体 IPC 通道 ---
 export const IPC_EXECUTOR = {
-  /**
-   * 子智能体 thinking / 工具进度推送（主→渲染）
-   * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
-   * 通道定义就绪，前端 listener 占位注册即生效
-   */
-  THINKING: 'executor:thinking',
-  /**
-   * 子智能体工具进度推送（主→渲染）
-   * ★ 修复主/子智能体消息混淆：后端 main-agent.ts 的 onToolCall / onToolResult 回调 emit 此事件，
-   *   前端 useChat.ts 订阅后写入 toolSnapshots 状态（按 taskId/taskName 聚合）
-   *   payload 包含：conversationId, taskId, callId（子智能体工具真实 ID）, name, arguments/result,
-   *   source='executor', taskName, status='calling'|'completed'|'failed'
-   */
-  TOOL_PROGRESS: 'executor:tool-progress',
   /**
    * 子智能体执行中间快照推送（主→渲染）
    * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）

@@ -9,7 +9,7 @@
  *
  * S1-4 方向1前端治理（展示层治理，存储层全量）：
  * - 超长折叠：内容超过 LONG_THINKING_COLLAPSE_THRESHOLD 字符时，非 loading 态默认收起，
- *   标题栏显示字数摘要（如 "思考过程（约 12,400 字）"）+ 摘要头（前 80 字符 + '…'）
+  *   标题栏显示摘要头（前 80 字符 + '…'）
  * - loading 流式期间保持展开（轮内可见性优先），滚动上限生效 + 尾部自动滚动
  * - 展开态滚动高度上限：内容容器 maxHeight + overflowY auto，避免长思考撑爆消息流
  *   （消息流唯一滚动容器在 ChatArea scrollRef，折叠落点在组件内部，不涉及外层容器）
@@ -33,10 +33,6 @@ const LONG_THINKING_EXPANDED_MAX_HEIGHT_PX = 320;
 const STREAMING_CONTENT_MAX_HEIGHT_PX = 240;
 /** ★ P06 跟底恢复阈值（px）：距底 ≤ 该值视为"回到底部"，恢复自动跟底 */
 const FOLLOW_TAIL_RESUME_PX = 24;
-
-function formatCharCount(count: number): string {
-  return count.toLocaleString('zh-CN');
-}
 
 export const ThinkingBlock = memo(function ThinkingBlock({
   content,
@@ -107,10 +103,10 @@ export const ThinkingBlock = memo(function ThinkingBlock({
 
   const baseTitle = title ?? (isLoading ? '思考中...' : '思考过程');
 
-  // S1-4 标题栏：超长内容附加字数摘要 + 摘要头（收起态即可见，不依赖展开）
+  // S1-4 标题栏：超长内容附加摘要头（收起态即可见，不依赖展开）
   const resolvedTitle: ReactNode = isLongContent ? (
     <div>
-      <div>{baseTitle}（约 {formatCharCount(text.length)} 字）</div>
+      <div>{baseTitle}</div>
       <div style={{ fontSize: 12, opacity: 0.65, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
         {text.slice(0, LONG_THINKING_SUMMARY_HEAD_CHARS)}
         {text.length > LONG_THINKING_SUMMARY_HEAD_CHARS ? '…' : ''}

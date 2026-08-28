@@ -17,56 +17,15 @@
 
 import { EXECUTOR_TOOL_PROGRESS_PATTERNS, isExecutorToolProgressText } from '@shared/utils/executor-patterns';
 
-/**
- * 拆分加载中工具内容为思考 / 进度两段
- * @param value 累积的 thinking 文本（多行以 \n 或 \n\n 分隔）
- * @returns { thinking, progress } 两段文本
- */
-export function splitLoadingToolContent(value: string): {
-  thinking: string;
-  progress: string;
-} {
-  if (!value) {
-    return { thinking: '', progress: '' };
-  }
-  const chunks = value
-    .split(/\n{2,}/)
-    .map((chunk) => chunk.trim())
-    .filter(Boolean);
-  const thinkingChunks: string[] = [];
-  const progressChunks: string[] = [];
-  for (const chunk of chunks) {
-    if (isExecutorToolProgressText(chunk)) {
-      progressChunks.push(chunk);
-    } else {
-      thinkingChunks.push(chunk);
-    }
-  }
-  return {
-    thinking: thinkingChunks.join('\n'),
-    progress: progressChunks.join('\n'),
-  };
-}
-/**
- * 取工具进度段最后一条非空进度行（显示用：仅最新一条，不累积）
- * @param value 累积的 thinking 文本（多行以 \n 或 \n\n 分隔）
- * @returns 最后一条非空进度行；无进度行时返回 ''
- */
-export function latestToolProgressText(value: string): string {
-  const { progress } = splitLoadingToolContent(value);
-  const lines = progress.split('\n').filter(Boolean);
-  return lines.length ? lines[lines.length - 1] : '';
-}
-
 // ============================================================
 // ★ P04 executor 切分增量缓存（根因 R4：每增量对累积全文 O(n) 重复切分，全程 O(n²)
 //   → 增量路径摊薄至 O(delta) + O(1) 摊销 join）
 //
 // 输出等价性（防回归核心）：
-//   全量函数把 split 后的最后一段同样以 isExecutorToolProgressText 临时归类输出；
+//   已移除的全量函数把 split 后的最后一段同样以 isExecutorToolProgressText 临时归类输出；
 //   Cached 版仅把「已定界段」的结果持久化、把「最后一段（尾段）」照旧每次临时归类——
 //   两者的分段边界（\n{2,}）、trim、filter(Boolean)、归类正则、join('\n') 完全一致，
-//   故对任意相同输入，Cached 版输出 ≡ splitLoadingToolContent(value)（逐字一致）。
+//   故对任意相同输入，Cached 版输出 ≡ 原全量版（逐字一致；等价性声明保留作为验证基准）。
 //   尾段以原文留存（不做 trim），仅输出时 trim——保证跨增量追加的字符串拼接无字符丢失
 //   （尾随空白+后续增量场景与全量版逐字一致）。
 //
@@ -99,7 +58,7 @@ function joinWith(base: string, tail: string): string {
 }
 
 /**
- * 全量重算重建缓存（复用与 splitLoadingToolContent 完全同一的分段算法）
+ * 全量重算重建缓存（复用与原全量版（已移除）完全同一的分段算法，算法语义由本函数承载）
  * ★ tailText = split 后最后一个 raw 段原文（可为空串——value 以 \n{2,} 结尾时；
  *   此时全部非空段均已定界进 done，与全量函数 chunks 序列完全一致）
  */
@@ -209,7 +168,7 @@ export function splitLoadingToolContentCached(cacheKey: string, value: string): 
 
 /**
  * ★ P04 latestToolProgressText 增量缓存版（与 splitLoadingToolContentCached 共享同一缓存条目）
- * @returns 最后一条非空进度行；无进度行时返回 ''（与全量版逐字等价）
+ * @returns 最后一条非空进度行；无进度行时返回 ''（与已移除的全量版逐字等价；原实现：progress.split 滤空取末行，行为由本函数保持）
  */
 export function latestToolProgressTextCached(cacheKey: string, value: string): string {
   const { progress } = splitLoadingToolContentCached(cacheKey, value);

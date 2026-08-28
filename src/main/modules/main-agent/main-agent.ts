@@ -63,7 +63,7 @@ import {
   getRunningAssistantMessage,
   deleteRunningAssistantMessage,
 } from './running-assistant-message-map';
-import { setTaskSnapshot, clearSnapshotSession } from './snapshot-session-map';
+import { setTaskSnapshot, clearSnapshotSession, upsertTaskSnapshotToolCall } from './snapshot-session-map';
 import {
   MAX_CONVERSATION_TITLE_LENGTH,
   DELEGATE_ARGUMENTS_RETRY_LIMIT,
@@ -974,9 +974,8 @@ export async function runMainAgent(
         // 与正常路径 executor-agent runDelegatedTask 入口 taskStartedAt 语义一致。
         const delegatedTaskStartedAt = formatCurrentDateTime();
         // 委派给 ExecutorAgent
-        // ★ 修复主/子智能体消息混淆：在 emit 'executor:thinking' / 'executor:tool-progress' 时
-        //   携带 source='executor' + taskName 字段，前端可据此判定消息来源于执行子智能体并
-        //   渲染任务标题。
+        // v2.1 D2：executor:thinking / executor:tool-progress 两通道已停用删除，taskName 仅在
+        //   内存快照与 tool.message.created 落库消息中承载。
         // 复用 L673-683 解析逻辑：委派时立即解析（不等 execResult.success），
         // 使整个执行期间 onThinking / onToolCall / onToolResult 回调都能取到 taskName。
         let taskName = '';
@@ -1003,8 +1002,6 @@ export async function runMainAgent(
           arguments: toolCall.function.arguments,
         };
         let latestThinking = '';
-        // 完整思考链累积（每次真实思考推送时追加，去重），用于 tool 消息 payload.thinking 持久化
-        const executorThinkingHistory: string[] = [];
         // S1-3 增量分类窗口缓冲：累积全文（thinking delta + 进度文本全量），
         //   分类匹配在累积全文的最后一段上执行（非裸 delta，防 D1R5 增量模式分类退化）——
         //   进度行在整段完整后才能命中锚定正则（^正在调用.+工具\.\.\.$ 等），裸 delta 碎片永不误命中
@@ -1012,6 +1009,36 @@ export async function runMainAgent(
         // S1-5 思考全量累积（跨轮，仅 thinking 分支的 delta 追加；进度文本不混入）：
         //   作为 sendToolSnapshot 的 thinking/result 入参 → snapshot.json thinking 字段存储全量
         let executorThinkingAccumulated = '';
+        // ★ P0-C-1 分类尾段增量缓存：消除每 delta 两次全量 split（O(n)×2 → O(|尾段|+|delta|)）
+        let classifyTailRaw = '';              // 不变量 I1：≡ classifyBuffer 最后一个 \n{2,} 之后的原文（未定界尾段）
+        let classifyLastNonEmptyTail = '';     // 不变量 I2：≡ split(buffer).map(trim).filter(Boolean).pop() ?? ''
+        const SNAPSHOT_STREAM_EMIT_MIN_INTERVAL_MS = 200;    // ★ P0-C-2 流式 delta 快照推送最小间隔（终态/init 不节流）
+        let lastSignalEmitAt = 0;
+        let pendingSignal: {
+          conversationId: string; taskId: string; callId: string;
+          status: 'running' | 'completed' | 'failed'; messageId: string; updatedAt: string;
+        } | null = null;
+        let signalTimerId: ReturnType<typeof setTimeout> | null = null;
+        const emitSnapshotSignal = (status: 'running' | 'completed' | 'failed', immediate: boolean): void => {
+          const signal = { conversationId, taskId, callId: toolCall.id, status,
+            messageId: assistantMessageId, updatedAt: new Date().toISOString() };
+          if (immediate) {
+            if (signalTimerId !== null) { clearTimeout(signalTimerId); signalTimerId = null; }
+            pendingSignal = null; lastSignalEmitAt = Date.now();
+            eventBus.emit('executor:snapshot', signal); return;
+          }
+          const now = Date.now();
+          if (now - lastSignalEmitAt >= SNAPSHOT_STREAM_EMIT_MIN_INTERVAL_MS) {
+            lastSignalEmitAt = now; eventBus.emit('executor:snapshot', signal); return;   // leading
+          }
+          pendingSignal = signal;              // trailing：窗口末必补发
+          if (signalTimerId === null) {
+            signalTimerId = setTimeout(() => {
+              signalTimerId = null; lastSignalEmitAt = Date.now();
+              if (pendingSignal) { const s = pendingSignal; pendingSignal = null; eventBus.emit('executor:snapshot', s); }
+            }, SNAPSHOT_STREAM_EMIT_MIN_INTERVAL_MS - (now - lastSignalEmitAt));
+          }
+        };
 
         const resolveSnapshotTaskStatus = (
           result: string | undefined,
@@ -1069,16 +1096,8 @@ export async function runMainAgent(
           const nextResult = result;
           // 思考内容跟踪：显式传入的思考文本优先；否则仅当推送文本不是进度文本时才视为思考
           // S1-5 增量适配：S1-3 后 thinkingText 为累积全文（每 delta 触发一次本函数），
-          //   历史末项与新值呈前缀关系时替换末项（避免逐 delta 前缀快照膨胀），
-          //   保持「完整思考链累积」语义：末项恒为最新全量，新轮思考（非前缀关系）追加新项
           if (typeof thinkingText === 'string' && thinkingText.trim()) {
             latestThinking = thinkingText;
-            const lastHistoryEntry = executorThinkingHistory[executorThinkingHistory.length - 1];
-            if (lastHistoryEntry && thinkingText.startsWith(lastHistoryEntry)) {
-              executorThinkingHistory[executorThinkingHistory.length - 1] = thinkingText;
-            } else if (lastHistoryEntry !== thinkingText) {
-              executorThinkingHistory.push(thinkingText);
-            }
           }
           const snapshotMessage = buildToolSnapshotMessage({
             conversationId,
@@ -1092,18 +1111,14 @@ export async function runMainAgent(
             isError,
             finishedAt,
           });
-          // 前端字典 ToolSnapshot.status 语义映射（init/running→running，finished→completed/failed）
-          const frontendStatus = resolveSnapshotTaskStatus(result, snapshotStatus, finishedAt) === 'finished'
-            ? (isError ? ('failed' as const) : ('completed' as const))
-            : ('running' as const);
-          // 推送（Delepi 形态：eventBus → ipc-handlers 三通道 → preload）
-          eventBus.emit('executor:snapshot', {
-            conversationId,
-            taskId,
-            callId: toolCall.id,
-            status: frontendStatus,
-            message: snapshotMessage,
-          });
+          // ★ M3 六字段信号三态漏斗：leading 200ms 立发 / 窗口末 trailing 必补发 / 终态 immediate 立发；
+          //   下方 setTaskSnapshot 内存快照写保持每 delta 照写（查询侧恒最新，被节流的仅是信号推送）
+          emitSnapshotSignal(
+            resolveSnapshotTaskStatus(result, snapshotStatus, finishedAt) === 'finished'
+              ? (isError ? ('failed' as const) : ('completed' as const))
+              : 'running',
+            !(finishedAt === undefined && snapshotStatus === undefined),
+          );
           // 快照内存写入（tasks_snapshot 集合同键覆盖式更新，三态 init/running/finished；
           //   重置时机与 tasks 目录重置完全相同，进程重启内存自动清空，无文件 IO）
           setTaskSnapshot(conversationId, toolCall.id, {
@@ -1113,6 +1128,10 @@ export async function runMainAgent(
             status: resolveSnapshotTaskStatus(result, snapshotStatus, finishedAt),
             ...(finishedAt ? { finishedAt } : {}),
             snapshot: snapshotMessage,
+            // ★ 缺陷①修复（taskName 载体补回）：委派任务名（:981-991 已解析的闭包变量）随快照条目写入内存——
+            //   D2 两通道停用后的唯一 taskName 快照载体（不进 StreamMessage.payload、不进 executor:snapshot
+            //   六字段信号载荷——D6/规则②/规则④不越界），经 getRunningSnapshotEntries 三元组透传至前端恢复
+            taskName,
           });
         };
 
@@ -1132,8 +1151,6 @@ export async function runMainAgent(
               arguments: toolCall.function.arguments,
               result: failureResultText,
               isError: true,
-              // ★ M09 持久层补链：payload 补 thinking（executorThinkingHistory 完整思考链，前缀去重语义现成）
-              thinking: executorThinkingHistory.join('\n\n') || undefined,
               startedAt: toolStartedAt,
               finishedAt: toolFinishedAt,
             },
@@ -1151,30 +1168,6 @@ export async function runMainAgent(
         // ★ 并行改造配套·abort 顺序对齐（ai_fr route.ts:784-818）：init 快照发送移至 abort 检查之后——
         //   未启动即中止时不再发出 init 快照（原位置在 abort 检查之前，会多发一次瞬时 init 事件）；
         //   任务真正启动（闭包首个 await 前）即同步发出，前端任务卡片立即出现。
-        eventBus.emit('executor:snapshot', {
-          conversationId,
-          taskId,
-          callId: toolCall.id,
-          status: 'running',
-          toolCalls: [
-            {
-              callId: toolCall.id,
-              name: toolCall.function.name,
-              arguments: toolCall.function.arguments,
-              result: '',
-              status: 'loading',
-              startedAt: toolStartedAt,
-              isDelegatedExecutor: true,
-            },
-          ],
-          result: '',
-          isError: false,
-          createdAt: toolStartedAt,
-          updatedAt: toolStartedAt,
-          source: 'executor',
-          taskName,
-          messageId: assistantMessageId,
-        });
 
         try {
           await mkdir(conversationDir, { recursive: true });
@@ -1213,14 +1206,13 @@ export async function runMainAgent(
             onStreamRetry: () => {
               executorThinkingClassifyBuffer = '';
               executorThinkingAccumulated = '';
+              classifyTailRaw = '';
+              classifyLastNonEmptyTail = '';
               latestThinking = '';
-              executorThinkingHistory.length = 0;
             },
             onThinking: (text, info) => {
-              // 透传子智能体 thinking / 工具进度 → EventBus → IPC → 前端
               // 对齐 ai_fr route.ts onThinking 分流：进度文本仅推送 result 不更新 thinking；
               // 真实思考文本：写入 payload.thinking
-              // 保留 Delepi 三通道形态：executor:thinking 仍按 type 分流推送（thinking/tool-progress）
               // 快照语义（thinking 跟踪 + 写 snapshot.json + executor:snapshot）统一由 sendToolSnapshot 负责
               //
               // S1-3 增量分类窗口：text 在流式模式下为 reasoning delta（增量推送），
@@ -1231,39 +1223,24 @@ export async function runMainAgent(
               // 进度行前插段落分隔：\n{2,} 切分后独立成段，整段锚定正则可命中，不混入 thinking 累积
               // 尾段已是完整进度行时，thinking delta 同样前插 \n\n 分隔，
               // 避免 reasoning 文本与进度行粘连导致 isExecutorToolProgressText 锚定正则失配
-              const prevClassifyTail =
-                executorThinkingClassifyBuffer
-                  .split(/\n{2,}/)
-                  .map((chunk) => chunk.trim())
-                  .filter(Boolean)
-                  .pop() ?? '';
-              executorThinkingClassifyBuffer +=
-                info?.type === 'tool-progress' || isExecutorToolProgressText(prevClassifyTail)
-                  ? `\n\n${text}`
-                  : text;
-              const lastClassifyChunk = executorThinkingClassifyBuffer
-                .split(/\n{2,}/)
-                .map((chunk) => chunk.trim())
-                .filter(Boolean)
-                .pop() ?? '';
+              const prevClassifyTail = classifyLastNonEmptyTail;   // ≡ 追加前全量 split().pop()（归纳等价，见方案 4.4）
+              const needSeparator =
+                info?.type === 'tool-progress' || isExecutorToolProgressText(prevClassifyTail);
+              executorThinkingClassifyBuffer += needSeparator ? `\n\n${text}` : text;
+              const mergedTail = classifyTailRaw + (needSeparator ? `\n\n${text}` : text);
+              const tailSegs = mergedTail.split(/\n{2,}/);
+              classifyTailRaw = tailSegs[tailSegs.length - 1] ?? '';
+              let nextTail = classifyLastNonEmptyTail;             // mergedTail 各段全空时回退旧值（≡ filter(Boolean).pop() 语义）
+              for (let i = tailSegs.length - 1; i >= 0; i -= 1) {
+                const t = tailSegs[i].trim();
+                if (t) { nextTail = t; break; }
+              }
+              classifyLastNonEmptyTail = nextTail;
+              const lastClassifyChunk = classifyLastNonEmptyTail;  // ≡ 追加后全量 split().pop()
               if (isExecutorToolProgressText(lastClassifyChunk)) {
                 // 进度文本：仅推送 result，不更新 thinking（增量模式下 text 为完整进度块/进度 delta 碎片，
                 //   sendToolSnapshot 覆盖式写入，快照 result 收敛到最新进度态）
                 sendToolSnapshot(text);
-                eventBus.emit('executor:thinking', {
-                  conversationId,
-                  taskId,
-                  callId: toolCall.id,
-                  // ★ 修复主/子智能体消息混淆：明确消息来源标识 + 任务标题
-                  source: 'executor',
-                  taskName,
-                  executorCallId: typeof info?.executorCallId === 'string' ? info.executorCallId : undefined,
-                  type: info?.type ?? 'tool-progress',
-                  content: text,
-                  // ★ M14 幂等全量字段：classifyBuffer 追加后的全量（重试复位后自动收敛，
-                  //   渲染端优先 accumulated 整体覆盖）——沿类型墙 as 透传先例，不改 event-bus.ts
-                  accumulated: executorThinkingClassifyBuffer,
-                } as ExecutorAgentEvents['executor:thinking'] & { accumulated?: string });
               } else {
                 // 真实思考文本：thinkingText 第 5 参 → thinking + 快照
                 // S1-5 存储同步：快照 thinking/result 均传累积全文（存储全量不截断）——
@@ -1272,67 +1249,35 @@ export async function runMainAgent(
                 executorThinkingAccumulated += text;
                 sendToolSnapshot(
                   executorThinkingAccumulated,
-                  undefined,
-                  undefined,
-                  undefined,
+                  undefined, undefined, undefined,
                   executorThinkingAccumulated,
                 );
-                eventBus.emit('executor:thinking', {
-                  conversationId,
-                  taskId,
-                  callId: toolCall.id,
-                  source: 'executor',
-                  taskName,
-                  executorCallId: typeof info?.executorCallId === 'string' ? info.executorCallId : undefined,
-                  type: info?.type ?? 'thinking',
-                  content: text,
-                  // ★ M14 幂等全量字段：classifyBuffer 追加后的全量（同 tool-progress 分支）
-                  accumulated: executorThinkingClassifyBuffer,
-                } as ExecutorAgentEvents['executor:thinking'] & { accumulated?: string });
               }
             },
-            // ★ 修复 callId 语义错位：onToolCall / onToolResult 接收子智能体工具的真实 callId
-            //   （executor-agent.ts L956/L987-991 处已透传），通过 emit 'executor:tool-progress'
-            //   事件传递，前端可据此精确路由到子智能体的具体工具调用，
-            //   而不是主智能体 delegate_executor 的 id。
+            // ★ M6：onToolCall / onToolResult 接收子智能体工具的真实 callId（executor-agent.ts 已透传），
+            //   直写内存快照（conversationId→toolCall.id→callId 三键精确定位）+六字段信号
             onToolCall: (toolName, args, callId) => {
-              eventBus.emit('executor:tool-progress', {
-                conversationId,
-                taskId,
-                // 外层 delegate_executor 的 callId，用于前端把子任务快照和最终 tool-result 对齐。
-                delegateCallId: toolCall.id,
-                // 子智能体工具的真实 callId（修复 L609 处 callId=主智能体 delegate_executor id 的语义错位）
+              upsertTaskSnapshotToolCall(conversationId, toolCall.id, {
                 callId,
                 name: toolName,
-                arguments: args,
-                // 标识消息来源于执行子智能体（前端据此把工具进度路由到独立消息流）
-                source: 'executor',
-                // 委派任务名称（与 executor:thinking 事件一致，供前端做时间线标题渲染）
-                taskName,
-                status: 'calling',
-                // ★ Phase 3 P3-8 messageId ↔ taskId 关联键
-                messageId: assistantMessageId,
+                arguments: args ?? '',
+                result: '',
+                status: 'loading',
+                startedAt: new Date().toISOString(),
               });
+              emitSnapshotSignal('running', false);
             },
             onToolResult: (toolName, success, message, callId) => {
-              eventBus.emit('executor:tool-progress', {
-                conversationId,
-                taskId,
-                // 外层 delegate_executor 的 callId，用于前端把子任务快照和最终 tool-result 对齐。
-                delegateCallId: toolCall.id,
-                // 子智能体工具的真实 callId
+              upsertTaskSnapshotToolCall(conversationId, toolCall.id, {
                 callId,
                 name: toolName,
-                result: message,
-                success,
-                // 标识消息来源于执行子智能体
-                source: 'executor',
-                // 委派任务名称
-                taskName,
-                status: success ? 'completed' : 'failed',
-                // ★ Phase 3 P3-8 messageId ↔ taskId 关联键
-                messageId: assistantMessageId,
+                arguments: '',
+                result: message ?? '',
+                status: success ? 'success' : 'error',
+                finishedAt: new Date().toISOString(),
+                isError: success === false,
               });
+              emitSnapshotSignal('running', false);
             },
           });
 
@@ -1368,7 +1313,6 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #7）：tool 消息不再即时落库，改为批次暂存（批次末 insertMessages 单事务配对落库）
-          //   ★ M09 持久层补链：payload 补 thinking（executorThinkingHistory 完整思考链，前缀去重语义现成）
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1377,7 +1321,6 @@ export async function runMainAgent(
               arguments: toolCall.function.arguments,
               result: toolResultContent,
               isError: !execResult.success,
-              thinking: executorThinkingHistory.join('\n\n') || undefined,
               startedAt: toolStartedAt,
               finishedAt: toolFinishedAt,
             },
@@ -1446,7 +1389,6 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #8）：失败 tool 消息批次暂存（批次末 insertMessages 配对落库）；事件移批次末 emit
-          //   ★ M09 持久层补链：payload 补 thinking（同正常/中止路径）
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1455,7 +1397,6 @@ export async function runMainAgent(
               arguments: toolCall.function.arguments,
               result: failureResultText,
               isError: true,
-              thinking: executorThinkingHistory.join('\n\n') || undefined,
               startedAt: toolStartedAt,
               finishedAt: toolFinishedAt,
             },
@@ -1557,8 +1498,6 @@ export async function runMainAgent(
         arguments: string;
         result: string;
         isError: boolean;
-        /** ★ M09：批次暂存 payload 补的 executor 完整思考链（可选） */
-        thinking?: string;
         startedAt: string;
         finishedAt: string;
       };
@@ -1571,8 +1510,6 @@ export async function runMainAgent(
           // ★ M11 批次稳定次序键贯通：pairedMessages 元素含逐条 seq（insertMessages 返回），
           //   事件载荷透传供前端 time 相同时的排序依据
           seq: pairedMessage.seq,
-          // ★ M09 持久层补链：事件载荷补 thinking（payload 可选字段，旧数据无此字段时 undefined）
-          thinking: toolPayload.thinking ?? undefined,
           toolCall: {
             callId: toolPayload.toolCallId,
             name: toolPayload.name,

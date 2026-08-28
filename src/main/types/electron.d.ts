@@ -2,8 +2,7 @@
  * Electron 环境类型声明
  *
  * Phase 3 P0 适配层：
- * - executor.onThinking(callback)：订阅子智能体 thinking / 工具进度
- * - executor.onSnapshot(callback)：订阅子智能体执行中间快照
+ * - executor.onSnapshot(callback)：订阅子智能体六字段信号（v2.1 M1/D2 收敛）
  */
 
 /** 通过 contextBridge 暴露给渲染进程的 API */
@@ -17,6 +16,8 @@ export interface ElectronAPI {
     create: () => Promise<import('./ipc').ConversationListItem>;
     delete: (id: string) => Promise<void>;
     getMessages: (id: string) => Promise<unknown[]>;
+    /** 轻量快照查询：返回 Array<{toolCallId, message, toolCalls, taskName}>（正在运行的任务快照；taskName=缺陷①修复三元组透传员） */
+    getRunningSnapshots: (id: string) => Promise<unknown[]>;
     /** v2恢复方案：获取上次活跃的对话ID，主进程内存维护，重启后返回null */
     getRestoreConversationId: () => Promise<string | null>;
   };
@@ -61,17 +62,8 @@ export interface ElectronAPI {
     cleanupOrphans: (params?: import('./ipc').FileCleanupOrphansParams) => Promise<import('./ipc').FileCleanupOrphansResult>;
   };
   executor: {
-    /** Phase 3 P0-1 适配层：订阅子智能体 thinking / 工具进度推送 */
-    onThinking: (listener: (payload: unknown) => void) => () => void;
-    /** Phase 3 P0-3 适配层：订阅子智能体执行中间快照推送 */
+    /** Phase 3 P0-3 适配层：订阅子智能体执行中间快照推送（v2.1 M1/D2：六字段信号） */
     onSnapshot: (listener: (payload: unknown) => void) => () => void;
-    /**
-     * Phase 3 P0-2 适配层：订阅子智能体工具进度推送
-     * ★ 修复主/子智能体消息混淆：后端 main-agent.ts 的 onToolCall / onToolResult 回调
-     *   emit 'executor:tool-progress' 事件，前端 useChat.ts 订阅后按 taskId/taskName 聚合到
-     *   toolSnapshots 状态（独立于主消息 toolCalls 字段），实现主/子智能体消息分流
-     */
-    onToolProgress: (listener: (payload: unknown) => void) => () => void;
   };
   python: {
     /** 下载/安装 Python */

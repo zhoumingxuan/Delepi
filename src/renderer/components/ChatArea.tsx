@@ -7,7 +7,7 @@
  * - 切换会话时 useChat.switchConversation 已重置 stickToBottomRef=true
  */
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { Actions, Bubble, Welcome } from '@ant-design/x';
 import type { BubbleItemType } from '@ant-design/x';
@@ -63,6 +63,21 @@ function getToolSnapshotFinishedAt(snapshot: ToolSnapshot): string | undefined {
 }
 
 /**
+ * ★ M16：toolCalls 末项（最新一条工具调用）的三态描述文案
+ * - loading → 「正在调用 X...」；error → 「X 返回错误：首行」；success → 「X 完成：首行」
+ * - 首行截断 80 字；空数组返回空串（调用点回退进度行缓存）
+ */
+function describeLatestToolCall(snapshot: ToolSnapshot): string {
+  const list = snapshot.toolCalls ?? [];
+  const last = list.length > 0 ? list[list.length - 1] : undefined;
+  if (!last) return '';
+  const firstLine = (last.result || '').split('\n')[0]?.slice(0, 80) ?? '';
+  if (last.status === 'loading') return `正在调用 ${last.name}...`;
+  if (last.status === 'error') return `${last.name} 返回错误${firstLine ? '：' + firstLine : ''}`;
+  return `${last.name} 完成${firstLine ? '：' + firstLine : ''}`;
+}
+
+/**
  * 把 toolSnapshots 转虚拟 ChatMessage（role='tool', source='executor'）
  * - 过滤：仅保留当前 conversationId 的快照（避免跨会话污染）
  * - 虚拟消息 id = `executor-tool-${taskId}`
@@ -83,10 +98,13 @@ function toolSnapshotsToChatMessages(
   return snapshots.map((s) => {
     const firstToolCall =
       s.toolCalls && s.toolCalls.length > 0 ? s.toolCalls[0] : undefined;
+    const lastToolCall =
+      s.toolCalls && s.toolCalls.length > 0 ? s.toolCalls[s.toolCalls.length - 1] : undefined;
+    const detailToolCall = lastToolCall ?? firstToolCall;   // M16：展示字段取值源（末项=最新一条）
     const status = mapToolSnapshotMessageStatus(s.status);
     const startedAt = getToolSnapshotStartedAt(s);
     const finishedAt = getToolSnapshotFinishedAt(s);
-    const result = s.result || s.lastContent || firstToolCall?.result || '';
+    const result = s.result || s.lastContent || lastToolCall?.result || firstToolCall?.result || '';
     const callId = s.callId || firstToolCall?.callId || s.taskId;
     const name = s.taskName || firstToolCall?.name || '子智能体任务';
 
@@ -96,25 +114,23 @@ function toolSnapshotsToChatMessages(
       content: result,
       // ★ 项6：虚拟消息附带完整思考链（来源 ToolSnapshot.thinking），供完成态 Think 渲染
       thinking: s.thinking || '',
-      progress: latestToolProgressTextCached(`snap-${s.taskId}`, s.lastContent || ''),
-      // ★ 子工具调用透传：完整 toolCalls 数组（delegate_executor 委派条目 + read_file/fs_search 等子工具调用），
-      //   供 ChatMessageContent tool 分支过滤 delegate_executor 后逐条渲染子工具调用
-      toolCalls: (s.toolCalls ?? []),
+      progress: describeLatestToolCall(s) || latestToolProgressTextCached(`snap-${s.taskId}`, s.lastContent || ''),  // M16：toolCalls 末项描述优先
       toolCall: {
         ...(firstToolCall ?? {}),
         callId,
         name,
         arguments: firstToolCall?.arguments ?? '',
-        result,
+        result: detailToolCall?.result ?? result,
         status:
-          status === 'loading'
+          detailToolCall?.status ??
+          (status === 'loading'
             ? 'loading'
             : status === 'error'
               ? 'error'
-              : 'success',
-        startedAt,
-        finishedAt,
-        isError: s.status === 'failed' || firstToolCall?.isError,
+              : 'success'),
+        startedAt: startedAt ?? detailToolCall?.startedAt,
+        finishedAt: detailToolCall?.finishedAt ?? finishedAt,
+        isError: s.status === 'failed' || detailToolCall?.isError,
       },
       status,
       createdAt: startedAt,
@@ -233,7 +249,7 @@ interface ChatAreaProps {
   toolSummaries?: ToolSummary[];
 }
 
-export function ChatArea({
+export const ChatArea = memo(function ChatArea({
   messages,
   toolSnapshots,
   conversationId,
@@ -254,6 +270,8 @@ export function ChatArea({
   const internalStickRef = useRef(true);
   const scrollRef = messageListRef ?? internalScrollRef;
   const stickRef = stickToBottomRef ?? internalStickRef;
+  /** ★ P0-B item 引用缓存：msg 引用未变 ⇒ item 全部派生字段未变 ⇒ 复用整 item（extraInfo 随之稳定） */
+  const bubbleItemCacheRef = useRef(new Map<string, BubbleItemType>());
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = 'smooth') => {
@@ -290,6 +308,8 @@ export function ChatArea({
   //   同一帧内多次 scroll 事件只读一次布局（滚动期强制同步布局次数合并至帧级）。
   //   判定逻辑逐字保持（96px/8px 阈值原样），仅执行时机帧对齐；按钮显隐最多晚一帧，无感。
   const scrollStateRafRef = useRef<number | null>(null);
+  /** ★ P3 贴底滚动 rAF 合帧：同帧内多次 mergedMessages 变化只执行一次 scrollTo（强制布局合并至帧级） */
+  const scrollFollowRafRef = useRef<number | null>(null);
   const updateScrollBottomState = useCallback(() => {
     if (scrollStateRafRef.current !== null) return; // 同帧多次 scroll 事件只读一次布局
     scrollStateRafRef.current = requestAnimationFrame(() => {
@@ -313,15 +333,34 @@ export function ChatArea({
       cancelAnimationFrame(scrollStateRafRef.current);
       scrollStateRafRef.current = null;
     }
+    if (scrollFollowRafRef.current !== null) {
+      cancelAnimationFrame(scrollFollowRafRef.current);
+      scrollFollowRafRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
     if (mergedMessages.length > 0 && stickRef.current) {
-      scrollToBottom(isStreaming ? 'auto' : 'smooth');
+      if (scrollFollowRafRef.current === null) {           // 本帧已调度 → 跳过（合帧）
+        scrollFollowRafRef.current = requestAnimationFrame(() => {
+          scrollFollowRafRef.current = null;
+          const el = scrollRef.current;
+          // rAF 回调时重读 stickRef（最新）：调度与回调之间用户上滚 → 跳过，保住「上滚停跟」语义
+          if (el && stickRef.current) {
+            el.scrollTo({ top: el.scrollHeight, behavior: isStreaming ? 'auto' : 'smooth' });
+          }
+        });
+      }
     }
     // P3-3：合并后消息列表变化后主动调用判定
     updateScrollBottomState();
-  }, [mergedMessages, isStreaming, scrollToBottom, stickRef, updateScrollBottomState]);
+    return () => {
+      if (scrollFollowRafRef.current !== null) {           // 依赖变化/卸载时取消挂起帧
+        cancelAnimationFrame(scrollFollowRafRef.current);
+        scrollFollowRafRef.current = null;
+      }
+    };
+  }, [mergedMessages, isStreaming, scrollRef, stickRef, updateScrollBottomState]);
 
   const renderUserMessageFooter = useCallback(
     (
@@ -463,9 +502,16 @@ export function ChatArea({
   // ★ 对齐参考项目 E:\ai_fr\components\chat-shell.tsx L2684-2738
   // bubbleItem.content 设为空字符串占位（contentRender 接管渲染），
   // 通过 extraInfo.message 把 message 传给 contentRender。
-  const bubbleItems: BubbleItemType[] = useMemo(
-    () =>
-      mergedMessages.map((msg) => ({
+  const bubbleItems: BubbleItemType[] = useMemo(() => {
+    const cache = bubbleItemCacheRef.current;
+    const seen = new Set<string>();
+    const items = mergedMessages.map((msg) => {
+      seen.add(msg.id);
+      const cached = cache.get(msg.id);
+      if (cached && (cached.extraInfo as { message?: ChatMessage } | undefined)?.message === msg) {
+        return cached;   // 消息对象引用未变 → 整 item 复用（key/role/content/extraInfo/status/streaming 全部未变）
+      }
+      const item: BubbleItemType = {
         key: msg.id,
         role: (msg.role === 'assistant'
           ? 'ai'
@@ -474,9 +520,16 @@ export function ChatArea({
         extraInfo: { message: msg },
         status: msg.status,
         streaming: msg.role === 'assistant' && msg.status === 'loading',
-      })),
-    [mergedMessages],
-  );
+      };
+      cache.set(msg.id, item);
+      return item;
+    });
+    // 防泄漏：清除已不存在的消息缓存（会话切换/消息删除后旧 id 全清，上界=当前会话消息数）
+    for (const id of Array.from(cache.keys())) {
+      if (!seen.has(id)) cache.delete(id);
+    }
+    return items;
+  }, [mergedMessages]);
 
   // ★ 修复主/子智能体消息混淆：showEmpty 判定使用合并后消息列表
   // 如果只有 toolSnapshots（无主消息）也视为非空（避免空状态闪烁）
@@ -690,4 +743,4 @@ export function ChatArea({
       </div>
     </div>
   );
-}
+});

@@ -2,8 +2,7 @@
  * Preload 脚本 - contextBridge 安全暴露 API
  *
  * Phase 3 P0 适配层：
- * - electronAPI.executor.onThinking(callback)：订阅子智能体 thinking / 工具进度（已由主进程推送）
- * - electronAPI.executor.onSnapshot(callback)：订阅子智能体中间快照（已由主进程推送）
+ * - electronAPI.executor.onSnapshot(callback)：订阅子智能体六字段信号（已由主进程推送，v2.1 M1/D2 收敛）
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -20,6 +19,8 @@ const electronAPI = {
     create: () => ipcRenderer.invoke(IPC_CONV.CREATE),
     delete: (id: string) => ipcRenderer.invoke(IPC_CONV.DELETE, id),
     getMessages: (id: string) => ipcRenderer.invoke(IPC_CONV.GET_MESSAGES, id),
+    /** 轻量快照查询：仅返回该对话正在运行的任务快照（三元组数组，含缺陷①修复透传的 taskName 员），不拉历史 messages */
+    getRunningSnapshots: (id: string) => ipcRenderer.invoke(IPC_CONV.GET_RUNNING_SNAPSHOTS, id),
     /**
      * v2恢复方案：获取上次活跃的对话ID
      * 主进程内存维护，重启后返回 null → 场景C退化
@@ -103,21 +104,6 @@ const electronAPI = {
   },
   executor: {
     /**
-     * 订阅子智能体 thinking / 工具进度事件（Phase 3 P0-1 适配层）
-     * 主进程已通过 executor:thinking 通道推送真实数据（main-agent.ts emit → ipc-handlers.ts 白名单转发）
-     * 通道已就绪，调用方注册 listener 后即生效
-     * @param listener 回调函数，参数为 IPC 推送载荷
-     * @returns 取消监听的函数
-     */
-    onThinking: (listener: (payload: unknown) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) =>
-        listener(args[0]);
-      ipcRenderer.on(IPC_EXECUTOR.THINKING, handler);
-      return () => {
-        ipcRenderer.removeListener(IPC_EXECUTOR.THINKING, handler);
-      };
-    },
-    /**
      * 订阅子智能体执行中间快照事件（Phase 3 P0-3 适配层）
      * 主进程已通过 executor:snapshot 通道推送真实快照数据（main-agent.ts sendToolSnapshot 唯一出口），前端按 callId 键 upsert 到 toolSnapshots
      * @param listener 回调函数，参数为 IPC 推送载荷
@@ -129,22 +115,6 @@ const electronAPI = {
       ipcRenderer.on(IPC_EXECUTOR.SNAPSHOT, handler);
       return () => {
         ipcRenderer.removeListener(IPC_EXECUTOR.SNAPSHOT, handler);
-      };
-    },
-    /**
-     * 订阅子智能体工具进度事件
-     * ★ 修复主/子智能体消息混淆：后端 main-agent.ts 的 onToolCall / onToolResult 回调 emit
-     *   'executor:tool-progress' 事件，前端 useChat.ts 订阅后按 taskId/taskName 聚合到
-     *   toolSnapshots 状态（独立于主消息 toolCalls 字段），实现主/子智能体消息分流
-     * @param listener 回调函数，参数为 IPC 推送载荷
-     * @returns 取消监听的函数
-     */
-    onToolProgress: (listener: (payload: unknown) => void) => {
-      const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) =>
-        listener(args[0]);
-      ipcRenderer.on(IPC_EXECUTOR.TOOL_PROGRESS, handler);
-      return () => {
-        ipcRenderer.removeListener(IPC_EXECUTOR.TOOL_PROGRESS, handler);
       };
     },
   },

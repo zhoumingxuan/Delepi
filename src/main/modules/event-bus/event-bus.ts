@@ -8,7 +8,6 @@
  */
 
 import { EventEmitter } from 'events';
-import type { StreamMessage } from '@shared/types/chat';
 import {
   ASSISTANT_MESSAGE_DONE_EVENT,
   ASSISTANT_MESSAGE_STARTED_EVENT,
@@ -149,76 +148,27 @@ export interface MainAgentEvents {
 
 /**
  * ★ Phase 3 P3-8 ExecutorAgent 事件(走 IPC 白名单推送)
- * 现状:ExecutorAgent 事件 → EventBus → IPC 白名单 → 前端（executor 三通道）
- * P3-8 修复:executor:snapshot 推送时附带 messageId ↔ taskId 映射,
- *   让前端 useChat 能按 assistantMessageId 路由到对应 toolSnapshots,
- *   解决多子任务并行时各 assistant 消息的 toolCall 快照混淆问题
- *
- * ★ 兼容实现: 旧代码用 (eventBus as any).emit('executor:thinking', ...) 转发
- *   现在补到 ExecutorAgentEvents 中,实现类型安全 + messageId 字段
+ * v2.1 D2：executor:thinking / executor:tool-progress 两数据通道已完全停用删除，
+ * 仅保留 executor:snapshot 六字段信号通道（M1 白名单收敛，规则②）：
+ * 前端收到信号后触发轻量快照查询 conv:get-running-snapshots 获取运行中任务明细。
  */
 export interface ExecutorAgentEvents {
-  /** executor 子智能体 thinking 推送(原 main-agent.ts 中通过 (eventBus as any).emit) */
-  'executor:thinking': {
-    conversationId: string;
-    taskId: string;
-    callId?: string;
-    source?: 'main' | 'executor';
-    taskName?: string;
-    executorCallId?: string;
-    type: 'thinking' | 'tool-progress';
-    content: string;
-    /**
-     * ★ Phase 3 P3-8 主智能体 assistant 消息 ID(messageId ↔ taskId 关联键)
-     * 由 main-agent.ts 在 delegate_executor 时附带
-     * 前端 useChat 据此把 toolSnapshots 与对应 assistant 消息对齐
-     */
-    messageId?: string;
-  };
-  /** executor 子智能体工具进度推送(原 main-agent.ts 中通过 (eventBus as any).emit) */
-  'executor:tool-progress': {
-    conversationId: string;
-    taskId: string;
-    delegateCallId?: string;
-    callId: string;
-    name: string;
-    arguments?: string;
-    result?: string;
-    success?: boolean;
-    source?: 'main' | 'executor';
-    taskName?: string;
-    status: 'calling' | 'completed' | 'failed';
-    /**
-     * ★ Phase 3 P3-8 主智能体 assistant 消息 ID
-     */
-    messageId?: string;
-  };
   /**
-   * ★ Phase 3 P3-8 executor:snapshot 事件
-   * 完整快照推送(由 main-agent.ts 在 delegate_executor 完成时 emit)
-   * 携带 messageId ↔ taskId 映射供前端合并 toolSnapshots
-   * 后端已 emit 真实 snapshot 数据（main-agent.ts sendToolSnapshot :893 唯一出口，批次/收尾/错误快照均经此通道）
+   * ★ Phase 3 P3-8 executor:snapshot 事件（v2.1 M1：收敛为六字段信号白名单——规则②）
+   * 纯信号载荷（main-agent.ts emitSnapshotSignal 唯一出口构造）：前端收到后触发轻量查询
+   * conv:get-running-snapshots 获取运行中任务快照明细（信号本身不携带任何过程数据）。
    */
   'executor:snapshot': {
     conversationId: string;
     taskId: string;
     /** 委派工具调用的 callId */
     callId?: string;
-    /** 完整 snapshot 消息（对齐 ai_fr tool.message.snapshot；由 sendToolSnapshot 唯一出口附带） */
-    message?: StreamMessage;
     status: 'running' | 'completed' | 'failed';
-    toolCalls?: unknown[];
-    result?: string;
-    isError?: boolean;
-    createdAt?: string;
-    updatedAt?: string;
-    finishedAt?: string;
-    source?: 'main' | 'executor';
-    taskName?: string;
     /**
      * ★ Phase 3 P3-8 messageId ↔ taskId 关联键
      */
     messageId?: string;
+    updatedAt?: string;
   };
 }
 
