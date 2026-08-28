@@ -35,7 +35,7 @@ import type { AppSettings } from '../types/config';
 import type { ConfigGetResult, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { eventBus } from '../modules/event-bus/event-bus';
 import { getRunningAssistantMessage } from '../modules/main-agent/running-assistant-message-map';
-import { getSnapshotMessages, clearSnapshotSession, getRunningSnapshotEntries } from '../modules/main-agent/snapshot-session-map';
+import { clearSnapshotSession, getRunningSnapshotEntries } from '../modules/main-agent/snapshot-session-map';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
 import { refreshMainTools } from '../modules/main-agent/prompt';
 import {
@@ -1029,30 +1029,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       list.push(runningMsg as unknown as typeof list[number]);
     }
 
-    // ★ S4（M5）恢复单源收敛（对齐 ai_fr [id]/route.ts:100-118）：
-    //   已完成委派任务结果由 messages（tool 角色 payload 自足）承载，过渡态由会话内存快照承载，
-    //   去重键=已持久化 tool 消息的 callId（=快照 payload.toolCallId）。
-    const existingToolCallIds = new Set(
-      list
-        .filter((message) => message.role === 'tool')
-        .map((message) => message.toolCall?.callId)
-        .filter((v): v is string => typeof v === 'string' && !!v),
-    );
-    // 仅当会话运行中（is_running=true）才加载快照消息；is_running=false 时永不读取会话内存快照
-    const conversation = getConversationById(conversationId);
-    const snapshotMessages = conversation?.isRunning
-      ? getSnapshotMessages(conversationId, existingToolCallIds)
-      : [];
-
     return {
       messages: list,
-      snapshotMessages: snapshotMessages.map((item) => item.message),
     };
   });
 
   /**
    * conv:get-running-snapshots — 轻量快照查询（11:41:49 裁决①）
-   * 仅返回该对话正在运行的任务快照；不读 messages 表、不返回历史消息、不去重读库。
+   * 返回该对话当前内存中的任务快照条目（未随 clearSnapshotSession 清理前均外流）；
+   * 不读 messages 表、不返回历史消息、不去重读库。
    * is_running=false 时返回空数组（门禁语义与 conv:get-messages 一致，纯内存判断）。
    */
   ipcMain.handle(IPC_CONV.GET_RUNNING_SNAPSHOTS, (_event, conversationId: string) => {

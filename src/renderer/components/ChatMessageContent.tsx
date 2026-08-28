@@ -186,8 +186,8 @@ function renderToolResultContent(
 }
 
 // ★ P04: 追加第三参 cacheKey（必传，流标识级缓存键），切分改走增量缓存（根因 R4）
-// ★ 缺陷②修复：追加第四参 progressOverride（= options.progressText / message.progress，快照级进度文案
-//   describeLatestToolCall 三态文本或快照进度行）——优先于缓存提取，接通 M17 完成分支删除后失连的
+// ★ 缺陷②修复：追加第四参 progressOverride（= options.progressText / message.progress，
+//   快照级进度行）——优先于缓存提取，接通 M17 完成分支删除后失连的
 //   '工具调用'块渲染出口（子工具原始 result 不匹配进度正则致缓存提取恒空的场景由该参兜住）
 function renderLoadingToolContent(
   value: string,
@@ -339,7 +339,7 @@ function renderToolResultSegment(
   loading: boolean,
   createdAt: string,
   toolSummaries?: ToolSummary[],
-  options?: { includeStructuredFilePreview?: boolean; thinkingText?: string; progressText?: string },
+  options?: { includeStructuredFilePreview?: boolean; thinkingText?: string; progressText?: string; content?: string },
 ) {
   const title = resolveTaskDisplayTitle({
     toolName: toolCall.name,
@@ -361,14 +361,18 @@ function renderToolResultSegment(
   );
   // ★ 项9 + M17（D3 两态覆盖历史）：thinking/进度仅执行中（loading 分支）渲染；完成态仅渲染 Result
   const thinkingText = options?.thinkingText?.trim() || '';
+  // ★ 本次修复：运行中（loading）不再把 toolCall.result（=末项子工具结果 JSON）作为渲染输入，
+  //   改用 options.content（=message.content=快照 payload.result：思考全量/最新进度文本）——
+  //   彻底移除「工具调用任务调用结果（Result 内容）」混入运行中 tool 显示区域；
+  //   完成态（loading=false）仍仅渲染 Result（M17 既有正确行为，零回归）
   const content = loading
-    ? toolCall.result || ''
+    ? options?.content || ''
     : renderToolResultContent(toolCall.result || '', {
         includeStructuredFilePreview: options?.includeStructuredFilePreview,
       });
   const renderedContent = loading ? (
-    // ★ 缺陷②修复：接通 options.progressText（=message.progress，ChatArea.tsx:117 describeLatestToolCall
-    //   三态文案'正在调用 X...'/'X 完成：...'或快照级进度文本）作为'工具调用'块内容——运行中可见且
+    // ★ 缺陷②修复：接通 options.progressText（=message.progress，来自 ChatArea.tsx
+    //   toolSnapshotsToChatMessages 的快照级进度文本）作为'工具调用'块内容——运行中可见且
     //   内容可追溯快照数据；完成分支不受影响（loading=false 不进本调用，仅渲染 Result，M17 零回归）
     renderLoadingToolContent(content, thinkingText, toolCall.callId, options?.progressText)
   ) : (
@@ -737,7 +741,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
         message.status === 'loading',
         message.createdAt,
         toolSummaries,
-        { includeStructuredFilePreview: true, thinkingText: message.thinking, progressText: message.progress },
+        { includeStructuredFilePreview: true, thinkingText: message.thinking, progressText: message.progress, content: message.content },
       );
     }
     return <ToolCallCard toolCall={toolInfo} />;

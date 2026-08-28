@@ -1,55 +1,24 @@
-/**
- * 会话快照内存 Map（snapshot.json 文件快照 → 主进程内存方案）
- *
- * 作用：替代 tasks/{toolCallId}/snapshot.json 文件快照，在主进程内存保存各会话
- * 正在运行的委派任务中间快照（tasks_snapshot 集合），消除流式期间每个 reasoning
- * delta 触发的全量覆盖写盘
- *
- * 结构（用户 2026-08-25 决策）：
- * - key：conversationId（一个对话一个 session）
- * - value：SnapshotSession（内含 tasks_snapshot 集合，键=toolCallId，插入序=任务启动序）
- * - 条目为七字段快照，与原 snapshot.json 文件内容逐字段一致
- *
- * 并发隔离（v2.1 M9，用户 12:13:07 强调项）：
- * - 外层 conversationId 隔离对话（跨对话零串写）
- * - 内层 toolCallId 隔离任务（同对话多任务并发各持唯一条目）
- * - toolCalls 数组按 callId upsert 防回退（并发 chunk 三键精确定位，无模糊匹配）
- *
- * 生命周期：
- * - 写入：main-agent.ts sendToolSnapshot 唯一出口（同键覆盖式，最新态收敛）
- *   + upsertTaskSnapshotToolCall（子工具调用事件，M6/M9）
- * - 读取：ipc-handlers.ts conv:get-messages（仅 isRunning=true 会话，门禁在外层）
- *   + conv:get-running-snapshots 轻量查询（M9 getRunningSnapshotEntries，仅运行中条目）
- * - 重置：与 tasks 目录重置时机完全相同（resetConversationTasksDir 函数体内）
- * - 删除：conv:delete 会话删除（deleteConversationRecord 之后）
- * - 清空：进程重启模块级 Map 随主进程销毁，天然自动清空
- *
- * 风格对齐 running-assistant-message-map.ts / conversation-runtime.ts：
- * 模块级单例 Map + 导出纯函数，无类、无依赖注入、无初始化时序
- */
 
-import type { StreamMessage } from '@shared/types/chat';
+import { resolveExecutorToolProgressDisplayName } from '../../constants/agent';
+import { getDynamicExecutorToolMeta } from '../../tools/executor-registry';
 
 /**
  * 子智能体单次工具调用快照（M9：仅内存结构——D6/规则④，绝不进 StreamMessage.payload 与推送载荷；
- * 仅经轻量查询响应三元组成员外流）
+ * 仅经轻量查询响应外流）
  * upsert 键=callId（子智能体工具真实调用 ID，executor-agent.ts 回调透传）
  */
 export interface ExecutorToolCallSnapshot {
   /** 子智能体工具真实 callId（与主智能体委派 toolCall.id 不同层） */
   callId: string;
   name: string;
-  arguments: string;
-  result: string;
   /** loading=调用中 / success=完成 / error=失败（与前端 ToolCallInfo.status 同构） */
   status: 'loading' | 'success' | 'error';
   startedAt?: string;
   finishedAt?: string;
-  isError?: boolean;
 }
 
 /**
- * 单个委派任务快照条目（与原 snapshot.json 文件七字段逐字段一致）
+ * 单个委派任务快照条目
  */
 export interface TaskSnapshotEntry {
   thinking: string;
@@ -57,7 +26,8 @@ export interface TaskSnapshotEntry {
   createdAt: string;
   status: 'init' | 'running' | 'finished';
   finishedAt?: string;
-  snapshot: StreamMessage;
+  /** 任务名称：来自 delegate_executor 委派参数 taskname（创建点解析写入，缺失时前端走"子智能体任务"兜底） */
+  taskName?: string;
   /** ★ M9：任务期间累计的工具调用数组（仅内存；按 callId upsert，末项=最新一条） */
   toolCalls: ExecutorToolCallSnapshot[];
 }
@@ -77,15 +47,6 @@ export interface SnapshotSession {
  */
 const snapshotSessions: Map<string, SnapshotSession> = new Map();
 
-/**
- * 覆盖式写入单个任务快照（session 不存在时惰性建立）
- * 写入时机：main-agent.ts sendToolSnapshot 唯一出口（5 个调用点行为不变）
- * ★ M9 merge 语义：传入 entry 不携带 toolCalls（思考 delta 覆盖写场景）时保留旧数组，
- *   与 upsertTaskSnapshotToolCall 互补不互删（思考流与工具事件两路写入互不冲掉对方数据）
- * @param conversationId 会话 ID
- * @param toolCallId 委派工具调用 ID（=快照 payload.toolCallId，与前端快照键同源）
- * @param entry 快照条目（toolCalls 可缺省）
- */
 export function setTaskSnapshot(
   conversationId: string,
   toolCallId: string,
@@ -108,7 +69,7 @@ export function setTaskSnapshot(
  * 三键精确定位：conversationId（外层对话隔离）→ delegateToolCallId（内层任务隔离）
  *   → toolCall.callId（数组条目键）——绝无按数组首/末项的模糊匹配与跨任务串写。
  * @param conversationId 会话 ID
- * @param delegateToolCallId 委派工具调用 ID（=内层 Map 键=快照 payload.toolCallId）
+ * @param delegateToolCallId 委派工具调用 ID（=内层 Map 键）
  * @param toolCall 子智能体工具调用快照条目（callId 必填）
  */
 export function upsertTaskSnapshotToolCall(
@@ -121,7 +82,7 @@ export function upsertTaskSnapshotToolCall(
     session = { tasksSnapshot: new Map() };
     snapshotSessions.set(conversationId, session);
   }
-  // 防御性初始化：子工具事件先于思考首写到达时也保证条目结构完整（toolCalls 恒为数组）
+
   let entry = session.tasksSnapshot.get(delegateToolCallId);
   if (!entry) {
     const nowIso = new Date().toISOString();
@@ -131,35 +92,14 @@ export function upsertTaskSnapshotToolCall(
       createdAt: nowIso,
       status: 'init',
       toolCalls: [],
-      snapshot: {
-        id: `snapshot-${delegateToolCallId}`,
-        conversationId,
-        role: 'tool',
-        payload: {
-          toolCallId: delegateToolCallId,
-          name: '',
-          arguments: '',
-          result: '',
-          thinking: '',
-          isError: false,
-          startedAt: nowIso,
-        },
-        createdAt: nowIso,
-      },
     };
     session.tasksSnapshot.set(delegateToolCallId, entry);
   }
   const toolCalls = [...entry.toolCalls];
   const idx = toolCalls.findIndex((tc) => tc.callId === toolCall.callId);
   if (idx >= 0) {
-    const prev = toolCalls[idx];
-    // 命中同 callId：按下标覆盖；arguments/startedAt 取现有值防回退（onToolResult 不携带 arguments）
-    toolCalls[idx] = {
-      ...toolCall,
-      arguments: toolCall.arguments || prev.arguments,
-      startedAt: toolCall.startedAt ?? prev.startedAt,
-      result: toolCall.result || prev.result,
-    };
+    // 命中同 callId：原样整体替换
+    toolCalls[idx] = toolCall;
   } else {
     // 未命中：push 到末尾（末项=最新一条）
     toolCalls.push(toolCall);
@@ -168,49 +108,55 @@ export function upsertTaskSnapshotToolCall(
 }
 
 /**
- * 读取会话快照消息列表（消费形态与原 loadSnapshotMessages 返回值一致）
- * - 去重键=条目 snapshot.payload.toolCallId（与已持久化 tool 消息 callId 对齐）
- * - 顺序=Map 插入序（任务启动序）；前端时间线经三级稳定排序（time→seq→id）不依赖本顺序
- * - 同步直读内存引用，无文件 IO、无 JSON.parse、无加载拼接
- * @param conversationId 会话 ID
- * @param existingToolCallIds 已持久化 tool 消息 callId 集合（去重）
+ * 工具调用快照 → 中文友好文案（三态模板逐字对齐 executor-agent.ts buildExecutorToolProgressText；
+ * 工具名→中文显示名复用 resolveExecutorToolProgressDisplayName 三级回退映射，不返回原始工具 ID 名）
  */
-export function getSnapshotMessages(
-  conversationId: string,
-  existingToolCallIds: Set<string>,
-): Array<{ toolCallId: string; message: StreamMessage }> {
-  const session = snapshotSessions.get(conversationId);
-  if (!session) {
-    return [];
+function buildSnapshotToolProgressText(toolCall: ExecutorToolCallSnapshot): string {
+  const toolDisplayName = resolveExecutorToolProgressDisplayName(
+    toolCall.name,
+    getDynamicExecutorToolMeta(toolCall.name),
+  );
+
+  if (toolCall.status === 'loading') {
+    return `正在调用${toolDisplayName}工具...`;
   }
-  const result: Array<{ toolCallId: string; message: StreamMessage }> = [];
-  for (const entry of session.tasksSnapshot.values()) {
-    const snapshotToolCallId = entry.snapshot.payload.toolCallId;
-    if (snapshotToolCallId && existingToolCallIds.has(snapshotToolCallId)) continue;
-    result.push({ toolCallId: snapshotToolCallId, message: entry.snapshot });
+
+  if (toolCall.status === 'error') {
+    return `${toolDisplayName}工具返回错误，正在调整处理方式...`;
   }
-  return result;
+
+  return `${toolDisplayName}工具完成，继续处理...`;
 }
 
 /**
- * 轻量查询：读取会话【正在运行】的任务快照三元组（M21 前端轻量消费函数唯一数据源）
- * - 仅返回 entry.status !== 'finished' 的条目（init/running）＝「只返回正在运行的任务快照」
- * - 终态条目（status='finished'）已被 TOOL_MESSAGE_CREATED 落库承载，不外流——
- *   天然去重，无需 existingToolCallIds（零 messages 表读取）
- * - toolCalls 为内存累计数组（D6：仅内存结构，经 invoke 查询响应直出，不经推送载荷）
+ * 轻量查询：读取会话任务快照条目（M21 前端轻量消费函数唯一数据源）
+ * - 返回每个任务的 toolCallId（用于对应快照）、累计思考内容（thinking）与
+ *   最新一条工具调用的中文友好文案（latestToolCallText）
+ * - 条目清理统一由 clearSnapshotSession 承担，未清理前均外流显示
  */
 export function getRunningSnapshotEntries(
   conversationId: string,
-): Array<{ toolCallId: string; message: StreamMessage; toolCalls: ExecutorToolCallSnapshot[] }> {
+): Array<{ toolCallId: string; thinking: string; latestToolCallText: string; taskName: string }> {
   const session = snapshotSessions.get(conversationId);
   if (!session) return [];
-  const result: Array<{ toolCallId: string; message: StreamMessage; toolCalls: ExecutorToolCallSnapshot[] }> = [];
+  const result: Array<{ toolCallId: string; thinking: string; latestToolCallText: string; taskName: string }> = [];
   for (const entry of session.tasksSnapshot.values()) {
-    if (entry.status === 'finished') continue;
+    // 最新一条工具调用：默认取 startedAt，存在 finishedAt 则替换 startedAt 参与排序，取时间最大的一条
+    let latestToolCall: ExecutorToolCallSnapshot | undefined;
+    let latestTime = Number.NEGATIVE_INFINITY;
+    for (const toolCall of entry.toolCalls) {
+      const stamp = toolCall.finishedAt ?? toolCall.startedAt;
+      const time = stamp ? Date.parse(stamp) : Number.NEGATIVE_INFINITY;
+      if (time >= latestTime) {
+        latestTime = time;
+        latestToolCall = toolCall;
+      }
+    }
     result.push({
-      toolCallId: entry.snapshot.payload.toolCallId,
-      message: entry.snapshot,
-      toolCalls: entry.toolCalls,
+      toolCallId: entry.toolCall.toolCallId,
+      thinking: entry.thinking,
+      latestToolCallText: latestToolCall ? buildSnapshotToolProgressText(latestToolCall) : '',
+      taskName: entry.taskName ?? '',
     });
   }
   return result;

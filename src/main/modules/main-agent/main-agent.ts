@@ -55,7 +55,7 @@ import {
   resolveStoragePath,
   resolveTaskWorkspaceDir,
 } from '../../utils/storage-paths';
-import type { ChatAttachment, ChatContentPart, StreamMessage, StreamStatus } from '@shared/types/chat';
+import type { ChatAttachment, ChatContentPart, StreamStatus } from '@shared/types/chat';
 import { runningAssistantMessages } from './running-assistant-message-map';
 import {
   setRunningAssistantMessage,
@@ -1038,39 +1038,7 @@ export async function runMainAgent(
         };
 
         /**
-         * 构造含 thinking 的 tool snapshot 消息（对齐 ai_fr route.ts buildToolSnapshot）
-         */
-        const buildToolSnapshotMessage = (options: {
-          conversationId: string;
-          toolCallId: string;
-          name: string;
-          rawArguments: string;
-          startedAt: string;
-          result?: string;
-          thinking?: string;
-          status?: StreamStatus;
-          isError?: boolean;
-          finishedAt?: string;
-        }): StreamMessage => ({
-          id: `snapshot-${options.toolCallId}`,
-          conversationId: options.conversationId,
-          role: 'tool',
-          payload: {
-            toolCallId: options.toolCallId,
-            name: options.name,
-            arguments: options.rawArguments,
-            result: options.result ?? '',
-            thinking: options.thinking ?? '',
-            isError: options.isError ?? false,
-            startedAt: options.startedAt,
-            ...(options.finishedAt ? { finishedAt: options.finishedAt } : {}),
-          },
-          status: options.status,
-          createdAt: options.startedAt,
-        });
-
-        /**
-         * 唯一出口：跟踪 thinking + 构造 snapshot 消息 + 推送 executor:snapshot + 写七字段快照
+         * 唯一出口：跟踪 thinking + 推送 executor:snapshot + 写任务快照
          * 对齐 ai_fr route.ts sendToolSnapshot（唯一出口职责）
          */
         const sendToolSnapshot = (
@@ -1080,24 +1048,11 @@ export async function runMainAgent(
           finishedAt?: string,
           thinkingText?: string,
         ) => {
-          const nextResult = result;
           // 思考内容跟踪：显式传入的思考文本优先；否则仅当推送文本不是进度文本时才视为思考
           // S1-5 增量适配：S1-3 后 thinkingText 为累积全文（每 delta 触发一次本函数），
           if (typeof thinkingText === 'string' && thinkingText.trim()) {
             latestThinking = thinkingText;
           }
-          const snapshotMessage = buildToolSnapshotMessage({
-            conversationId,
-            toolCallId: toolCall.id,
-            name: toolCall.function.name,
-            rawArguments: toolCall.function.arguments,
-            startedAt: toolStartedAt,
-            result: nextResult,
-            thinking: latestThinking,
-            status: snapshotStatus,
-            isError,
-            finishedAt,
-          });
           // ★ M3 六字段信号三态漏斗：leading 200ms 立发 / 窗口末 trailing 必补发 / 终态 immediate 立发；
           //   下方 setTaskSnapshot 内存快照写保持每 delta 照写（查询侧恒最新，被节流的仅是信号推送）
           emitSnapshotSignal(
@@ -1108,13 +1063,26 @@ export async function runMainAgent(
           );
           // 快照内存写入（tasks_snapshot 集合同键覆盖式更新，三态 init/running/finished；
           //   重置时机与 tasks 目录重置完全相同，进程重启内存自动清空，无文件 IO）
+          // ★ 任务名称解析（模式照搬下方批末 completedEntry 既有先例）：从 delegate_executor
+          //   委派参数 toolCall.function.arguments 提取 taskname；非合法 JSON / 非字符串回退空串
+          let snapshotTaskName = '';
+          try {
+            const parsedSnapshotArguments = JSON.parse(toolCall.function.arguments) as {
+              taskname?: unknown;
+            };
+            snapshotTaskName = typeof parsedSnapshotArguments.taskname === 'string'
+              ? parsedSnapshotArguments.taskname.trim()
+              : '';
+          } catch {
+            snapshotTaskName = '';
+          }
           setTaskSnapshot(conversationId, toolCall.id, {
             thinking: latestThinking,
             toolCall: snapshotToolCall,
             createdAt: toolStartedAt,
             status: resolveSnapshotTaskStatus(result, snapshotStatus, finishedAt),
+            taskName: snapshotTaskName,
             ...(finishedAt ? { finishedAt } : {}),
-            snapshot: snapshotMessage,
           });
         };
 
@@ -1222,11 +1190,11 @@ export async function runMainAgent(
               const lastClassifyChunk = classifyLastNonEmptyTail;  // ≡ 追加后全量 split().pop()
               if (isExecutorToolProgressText(lastClassifyChunk)) {
                 // 进度文本：仅推送 result，不更新 thinking（增量模式下 text 为完整进度块/进度 delta 碎片，
-                //   sendToolSnapshot 覆盖式写入，快照 result 收敛到最新进度态）
+                //   sendToolSnapshot 覆盖式更新任务快照状态）
                 sendToolSnapshot(text);
               } else {
                 // 真实思考文本：thinkingText 第 5 参 → thinking + 快照
-                // S1-5 存储同步：快照 thinking/result 均传累积全文（存储全量不截断）——
+                // S1-5 存储同步：快照 thinking 传累积全文（存储全量不截断）——
                 //   增量模式下若传裸 delta 会使 latestThinking/snapshot.json 只剩最后碎片；
                 //   累积全文覆盖式写入天然收敛到完整思考态（协议字段不变，仅值语义为全量）
                 executorThinkingAccumulated += text;
@@ -1239,26 +1207,21 @@ export async function runMainAgent(
             },
             // ★ M6：onToolCall / onToolResult 接收子智能体工具的真实 callId（executor-agent.ts 已透传），
             //   直写内存快照（conversationId→toolCall.id→callId 三键精确定位）+六字段信号
-            onToolCall: (toolName, args, callId) => {
+            onToolCall: (toolName, _args, callId) => {
               upsertTaskSnapshotToolCall(conversationId, toolCall.id, {
                 callId,
                 name: toolName,
-                arguments: args ?? '',
-                result: '',
                 status: 'loading',
                 startedAt: new Date().toISOString(),
               });
               emitSnapshotSignal('running', false);
             },
-            onToolResult: (toolName, success, message, callId) => {
+            onToolResult: (toolName, success, _message, callId) => {
               upsertTaskSnapshotToolCall(conversationId, toolCall.id, {
                 callId,
                 name: toolName,
-                arguments: '',
-                result: message ?? '',
                 status: success ? 'success' : 'error',
                 finishedAt: new Date().toISOString(),
-                isError: success === false,
               });
               emitSnapshotSignal('running', false);
             },

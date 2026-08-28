@@ -63,21 +63,6 @@ function getToolSnapshotFinishedAt(snapshot: ToolSnapshot): string | undefined {
 }
 
 /**
- * ★ M16：toolCalls 末项（最新一条工具调用）的三态描述文案
- * - loading → 「正在调用 X...」；error → 「X 返回错误：首行」；success → 「X 完成：首行」
- * - 首行截断 80 字；空数组返回空串（调用点回退进度行缓存）
- */
-function describeLatestToolCall(snapshot: ToolSnapshot): string {
-  const list = snapshot.toolCalls ?? [];
-  const last = list.length > 0 ? list[list.length - 1] : undefined;
-  if (!last) return '';
-  const firstLine = (last.result || '').split('\n')[0]?.slice(0, 80) ?? '';
-  if (last.status === 'loading') return `正在调用 ${last.name}...`;
-  if (last.status === 'error') return `${last.name} 返回错误${firstLine ? '：' + firstLine : ''}`;
-  return `${last.name} 完成${firstLine ? '：' + firstLine : ''}`;
-}
-
-/**
  * 把 toolSnapshots 转虚拟 ChatMessage（role='tool', source='executor'）
  * - 过滤：仅保留当前 conversationId 的快照（避免跨会话污染）
  * - 虚拟消息 id = `executor-tool-${taskId}`
@@ -114,7 +99,7 @@ function toolSnapshotsToChatMessages(
       content: result,
       // ★ 项6：虚拟消息附带完整思考链（来源 ToolSnapshot.thinking），供完成态 Think 渲染
       thinking: s.thinking || '',
-      progress: describeLatestToolCall(s) || latestToolProgressTextCached(`snap-${s.taskId}`, s.lastContent || ''),  // M16：toolCalls 末项描述优先
+      progress: latestToolProgressTextCached(`snap-${s.taskId}`, s.lastContent || ''),
       toolCall: {
         ...(firstToolCall ?? {}),
         callId,
