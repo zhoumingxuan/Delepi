@@ -974,21 +974,8 @@ export async function runMainAgent(
         // 与正常路径 executor-agent runDelegatedTask 入口 taskStartedAt 语义一致。
         const delegatedTaskStartedAt = formatCurrentDateTime();
         // 委派给 ExecutorAgent
-        // v2.1 D2：executor:thinking / executor:tool-progress 两通道已停用删除，taskName 仅在
-        //   内存快照与 tool.message.created 落库消息中承载。
-        // 复用 L673-683 解析逻辑：委派时立即解析（不等 execResult.success），
-        // 使整个执行期间 onThinking / onToolCall / onToolResult 回调都能取到 taskName。
-        let taskName = '';
-        try {
-          const parsedArgsForTaskName = JSON.parse(toolCall.function.arguments) as {
-            taskname?: unknown;
-          };
-          taskName = typeof parsedArgsForTaskName.taskname === 'string'
-            ? parsedArgsForTaskName.taskname.trim()
-            : '';
-        } catch {
-          // JSON 解析失败时保持 taskName 为空字符串
-        }
+        // v2.1 D2：executor:thinking / executor:tool-progress 两通道已停用删除，
+        //   运行态过程数据仅在内存快照（snapshot-session-map）与批次末落库 tool 消息中承载。
 
         // 协议文件写入临时任务目录；真实交付文件写入固定 output/YYYY/MM 目录。
         const conversationDir = resolveConversationDir(conversationId);
@@ -1128,10 +1115,6 @@ export async function runMainAgent(
             status: resolveSnapshotTaskStatus(result, snapshotStatus, finishedAt),
             ...(finishedAt ? { finishedAt } : {}),
             snapshot: snapshotMessage,
-            // ★ 缺陷①修复（taskName 载体补回）：委派任务名（:981-991 已解析的闭包变量）随快照条目写入内存——
-            //   D2 两通道停用后的唯一 taskName 快照载体（不进 StreamMessage.payload、不进 executor:snapshot
-            //   六字段信号载荷——D6/规则②/规则④不越界），经 getRunningSnapshotEntries 三元组透传至前端恢复
-            taskName,
           });
         };
 

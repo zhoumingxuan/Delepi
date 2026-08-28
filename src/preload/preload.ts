@@ -19,7 +19,7 @@ const electronAPI = {
     create: () => ipcRenderer.invoke(IPC_CONV.CREATE),
     delete: (id: string) => ipcRenderer.invoke(IPC_CONV.DELETE, id),
     getMessages: (id: string) => ipcRenderer.invoke(IPC_CONV.GET_MESSAGES, id),
-    /** 轻量快照查询：仅返回该对话正在运行的任务快照（三元组数组，含缺陷①修复透传的 taskName 员），不拉历史 messages */
+    /** 轻量快照查询：仅返回该对话正在运行的任务快照（三元组数组：toolCallId/message/toolCalls），不拉历史 messages */
     getRunningSnapshots: (id: string) => ipcRenderer.invoke(IPC_CONV.GET_RUNNING_SNAPSHOTS, id),
     /**
      * v2恢复方案：获取上次活跃的对话ID

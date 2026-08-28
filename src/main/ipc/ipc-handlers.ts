@@ -595,6 +595,25 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         params.value as AppSettings[keyof AppSettings],
       );
     }
+
+    // 【链路C】当前加载了方案（activeProfileId 存在）时，模型配置修改后同步更新该方案在
+    // modelProfiles 中的对应字段；方案字段全集 = PROFILE_CONFIG_KEYS（visionEnabled 等非方案键不入档，不同步）。
+    // 注：PROFILE_CONFIG_KEYS 在本函数后续定义，handler 回调异步执行时已初始化，无 TDZ 问题。
+    if ((PROFILE_CONFIG_KEYS as readonly string[]).includes(params.key)) {
+      const s = configManager.getSettings();
+      const activeId = s.activeProfileId;
+      if (activeId) {
+        const profiles = [...s.modelProfiles];
+        const idx = profiles.findIndex((item) => item.id === activeId);
+        if (idx >= 0) {
+          const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
+          next[params.key] = params.value;
+          profiles[idx] = next as ModelProfile;
+          saveSetting('modelProfiles', profiles);
+          configManager.setSetting('modelProfiles', profiles);
+        }
+      }
+    }
   });
 
   ipcMain.handle(IPC_CONFIG.RELOAD, async (): Promise<void> => {

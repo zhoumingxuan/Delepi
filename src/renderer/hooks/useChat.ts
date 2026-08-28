@@ -7,7 +7,7 @@
  *   → 更新消息状态 → React 重渲染
  *
  * Phase 3 P0 适配层：
- * - P0-1: 订阅 executor:thinking（子智能体 thinking / 工具进度）→ 按 taskId/taskName 聚合到 toolSnapshots
+ * - P0-1: 订阅 executor:thinking（子智能体 thinking / 工具进度）→ 按 taskId 聚合到 toolSnapshots
  *         ★ 修复主/子智能体消息混淆：不再写入主消息 toolCalls 字段
  *         旧数据无 source 字段时默认视为主智能体（向后兼容）
  * - P0-3: 订阅 executor:snapshot（子智能体执行中间快照）→ 按 taskId upsert 到 toolSnapshots
@@ -16,8 +16,8 @@
  * Phase 3 P0-2 适配层（★ 修复主/子智能体消息混淆）：
  * - 订阅 executor:tool-progress（子智能体工具调用进度）→ 按 taskId/callId 聚合到 toolSnapshots.toolCalls
  *   后端 main-agent.ts 的 onToolCall / onToolResult 回调 emit 此事件
- *   payload 含 source='executor' / taskName / 子智能体工具真实 callId
- *   旧数据无 source/taskName 字段时默认视为主智能体（向后兼容）
+ *   payload 含 source='executor' / 子智能体工具真实 callId
+ *   旧数据无 source 字段时默认视为主智能体（向后兼容）
  *
  * Phase 3 P1 + P3 适配层（后端已接入）：
  * - P1-1: 本地乐观插入 user message（status='local'）+ chat:user-message-created 替换
@@ -33,6 +33,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolCallInfo } from '../components/ToolCallCard';
+import { pickTaskTitleFromArguments } from '../components/ChatMessageContent';
 import type { AssistantMessageSegment } from '../lib/message-filter';
 import { latestToolProgressTextCached } from '../lib/executor-thinking';
 import { createThinkingEventMerger } from '../lib/thinking-event-merger';
@@ -160,11 +161,11 @@ export interface ToolSnapshot {
    */
   source?: 'main' | 'executor';
   /**
-   * ★ 修复主/子智能体消息混淆：委派任务名称（按 taskName 聚合）
-   *   后端 main-agent.ts 在 delegate_executor 时从参数解析的 taskname
-   *   前端按 taskId 索引的快照中可读取此字段做时间线标题渲染
+   * ★ 委派任务名称（运行中任务卡片标题取值源）：从快照 message.payload.arguments
+   *   （delegate_executor 委派参数）解析 taskname——与完成态真实 tool 消息标题
+   *   （pickTaskTitleFromArguments）同一解析器同一数据源；缺省时标题回退子工具名链
    */
-  taskName?: string;
+  name?: string;
   /**
    * ★ 修复主/子智能体消息混淆：子智能体工具的真实 callId（修复 callId 语义错位）
    *   - 主智能体 callId：delegate_executor 的 id（外层 toolCall.id）
@@ -397,25 +398,6 @@ function getToolCallIdFromPayload(payload: unknown): string | null {
 }
 
 /**
- * ★ 缺陷①修复：从委派参数 JSON 解析任务名（taskname 键）——
- * conv:get-messages 恢复路径（getSnapshotMessages 出口仅携带 message，无轻量查询三元组的 taskName 员）
- * 的 taskName 同步恢复源：与 main-agent.ts 委派时（:981-991）写入侧解析逻辑逐字同源
- * （JSON.parse → taskname 字符串校验 → trim），两出口（轻量查询/全量恢复）恢复结果一致
- */
-function parseTaskNameFromDelegateArguments(rawArguments: string | undefined): string {
-  if (!rawArguments) {
-    return '';
-  }
-  try {
-    const parsed = JSON.parse(rawArguments) as { taskname?: unknown };
-    return typeof parsed.taskname === 'string' ? parsed.taskname.trim() : '';
-  } catch {
-    // JSON 解析失败时保持空串（与写入侧 catch 语义一致，标题回退子工具名链）
-    return '';
-  }
-}
-
-/**
  * 从 StreamMessage 构造 ToolSnapshot（对齐 ai_fr snapshotMessageToToolSnapshot 语义）
  * status 映射：success→completed、error→failed、其余→running
  * thinking 取自 message.payload.thinking（完整思考链）
@@ -425,7 +407,6 @@ function snapshotMessageToToolSnapshot(
   conversationId: string,
   taskId: string,
   toolCallsDetail?: ExecutorToolCallDetail[],
-  taskName?: string,
 ): ToolSnapshot | null {
   if (!message || !message.payload) {
     return null;
@@ -471,10 +452,10 @@ function snapshotMessageToToolSnapshot(
         isDelegatedExecutor: message.payload.name === 'delegate_executor',
       },
     ];
-  // ★ 缺陷①修复：taskName 恢复取值——三元组透传值（轻量查询出口）优先，
-  //   缺省时解析委派参数 payload.arguments（conv:get-messages 出口）保持两出口一致
-  const restoredTaskName = (typeof taskName === 'string' && taskName.trim())
-    || parseTaskNameFromDelegateArguments(message.payload.arguments);
+  // ★ 运行中标题取值源：委派任务名从快照 message.payload.arguments（委派参数）解析——
+  //   与完成态真实 tool 消息标题（pickTaskTitleFromArguments(payload.arguments)）同一解析器，
+  //   轻量查询/全量恢复两出口数据同源（均携带 message），恢复结果天然一致
+  const restoredTaskName = pickTaskTitleFromArguments(message.payload.arguments ?? '') ?? '';
   return {
     conversationId,
     taskId,
@@ -488,11 +469,10 @@ function snapshotMessageToToolSnapshot(
     updatedAt: finishedAt ?? startedAt,
     ...(finishedAt ? { finishedAt } : {}),
     source: 'executor',
-    // ★ 缺陷①修复（taskName 载体补回）：恢复 taskName——轻量查询三元组透传值（第 5 参）优先，
-    //   缺省时从委派参数 payload.arguments 解析兜底（getSnapshotMessages 出口同步一致）。
-    //   ChatArea.tsx toolSnapshotsToChatMessages 的 s.taskName 优先级自此全程命中，
+    // ★ 运行中标题载体：name=委派任务名（委派参数 taskname 解析结果）。
+    //   ChatArea.tsx toolSnapshotsToChatMessages 的 s.name 优先取值，
     //   运行中标题不再被子工具条目置换（首个子工具调用前后不翻转、并发多任务各自任务名）
-    taskName: restoredTaskName,
+    name: restoredTaskName,
     // ★ M16：lastContent/lastType 恢复（有 progress 时 lastType=tool-progress）
     lastContent: [restoredThinking, restoredProgress]
       .filter((segment) => segment.trim().length > 0)
@@ -1346,13 +1326,13 @@ const scheduleProjection = useCallback(() => {
   const fetchRunningSnapshots = useCallback(async (id: string) => {
     if (!window.electronAPI) return;
     const entries = (await window.electronAPI.conversations.getRunningSnapshots(id)) as
-      Array<{ toolCallId: string; message: StreamMessage; toolCalls?: ExecutorToolCallDetail[]; taskName?: string }> | undefined;
+      Array<{ toolCallId: string; message: StreamMessage; toolCalls?: ExecutorToolCallDetail[] }> | undefined;
     if (!Array.isArray(entries) || entries.length === 0) return;   // 空快照：不做任何处理（裁决④）
     const restored: Record<string, ToolSnapshot> = {};
     for (const item of entries) {
       if (!item?.message?.payload) continue;
       const converted = snapshotMessageToToolSnapshot(
-        item.message, id, item.toolCallId, item.toolCalls, item.taskName,  // M15 第4参 + 缺陷①修复：第5参 taskName 透传
+        item.message, id, item.toolCallId, item.toolCalls,  // M15 第4参：轻量查询 toolCalls 明细
       );
       if (converted) restored[converted.taskId] = converted;
     }

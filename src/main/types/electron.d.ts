@@ -16,7 +16,7 @@ export interface ElectronAPI {
     create: () => Promise<import('./ipc').ConversationListItem>;
     delete: (id: string) => Promise<void>;
     getMessages: (id: string) => Promise<unknown[]>;
-    /** 轻量快照查询：返回 Array<{toolCallId, message, toolCalls, taskName}>（正在运行的任务快照；taskName=缺陷①修复三元组透传员） */
+    /** 轻量快照查询：返回 Array<{toolCallId, message, toolCalls}>（正在运行的任务快照三元组） */
     getRunningSnapshots: (id: string) => Promise<unknown[]>;
     /** v2恢复方案：获取上次活跃的对话ID，主进程内存维护，重启后返回null */
     getRestoreConversationId: () => Promise<string | null>;

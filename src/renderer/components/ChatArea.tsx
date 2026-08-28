@@ -81,7 +81,7 @@ function describeLatestToolCall(snapshot: ToolSnapshot): string {
  * 把 toolSnapshots 转虚拟 ChatMessage（role='tool', source='executor'）
  * - 过滤：仅保留当前 conversationId 的快照（避免跨会话污染）
  * - 虚拟消息 id = `executor-tool-${taskId}`
- * - toolCall.name 优先取 taskName，否则取第一个 toolCall.name
+ * - toolCall.name 优先取委派任务名（ToolSnapshot.name=委派参数 taskname 解析），否则取第一个 toolCall.name
  * - createdAt 使用快照的 updatedAt（用于时间线排序）
  * @param toolSnapshots 按 taskId 索引的快照字典
  * @param conversationId 当前活跃会话 ID
@@ -106,7 +106,7 @@ function toolSnapshotsToChatMessages(
     const finishedAt = getToolSnapshotFinishedAt(s);
     const result = s.result || s.lastContent || lastToolCall?.result || firstToolCall?.result || '';
     const callId = s.callId || firstToolCall?.callId || s.taskId;
-    const name = s.taskName || firstToolCall?.name || '子智能体任务';
+    const name = s.name || firstToolCall?.name || '子智能体任务';
 
     return {
       id: `executor-tool-${s.taskId}`,

@@ -40,6 +40,7 @@ import {
   EyeOutlined,
 } from '@ant-design/icons';
 import type { AppSettings, ModelProfile, CustomSkillTag } from '@shared/types/config';
+import { DEFAULT_APP_SETTINGS } from '@shared/constants';
 import { PythonEnvTab } from './PythonEnvTab';
 
 /** 配置方案列表/切换结果（主进程 config:profiles-* 通道返回） */
@@ -286,6 +287,32 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
   }, [open, loadProfiles]);
 
+  // 【链路B】打开配置抽屉时，以最新 config 全量刷新表单。
+  // antd Form initialValues 仅在首次挂载时生效一次，且 Drawer 未配置 destroyOnClose（Form store 跨打开保留），
+  // 若不显式 setFieldsValue，打开配置页后表单将显示过期/残留值（"打开配置页加载方案后 ApiKey 显示 BaseUrl"的根因载体）。
+  const latestConfigRef = useRef(config);
+  latestConfigRef.current = config;
+  useEffect(() => {
+    if (open && !configLoading) {
+      form.setFieldsValue(latestConfigRef.current);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, configLoading, form]);
+
+  // 【链路B】config 引用变化时，同步全部未 touched 字段（用户正在编辑的字段不打断）。
+  // 覆盖"打开配置页时 config 异步加载完成"与"加载/切换方案后 reload 刷新 config"两类时序，
+  // 保证表单字段始终与当前生效配置一致，杜绝 ApiKey 等字段残留 BaseUrl 值。
+  useEffect(() => {
+    if (configLoading) return;
+    const patch: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(config)) {
+      if (!form.isFieldTouched(key as keyof AppSettings) && value !== undefined) {
+        patch[key] = value;
+      }
+    }
+    form.setFieldsValue(patch);
+  }, [config, configLoading, form]);
+
   /** 切换方案：成功后回填表单（Form initialValues 不随 config 刷新）并刷新全局 config */
   const handleSwitchProfile = useCallback(
     async (id: string) => {
@@ -297,7 +324,13 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         setActiveProfileId(result?.activeProfileId ?? id);
         if (profile) {
           const { id: _profileId, name: _profileName, ...profileValues } = profile;
-          form.setFieldsValue(profileValues);
+          // 【链路B】回填兜底：存量档案可能缺键/含 undefined，合并默认值并过滤 undefined，
+          // 避免切换方案后表单字段残留旧值或显示错位值
+          const merged = { ...DEFAULT_APP_SETTINGS, ...profileValues };
+          const clean = Object.fromEntries(
+            Object.entries(merged).filter(([, v]) => v !== undefined),
+          );
+          form.setFieldsValue(clean);
         }
         antdMessage.success(`已切换到方案「${result?.profileName ?? profile?.name ?? ''}」`);
         await onReload();

@@ -238,7 +238,7 @@ function parseToolArguments(
   }
 }
 
-function pickTaskTitleFromArguments(rawArguments: string): string | null {
+export function pickTaskTitleFromArguments(rawArguments: string): string | null {
   const parsedArguments = parseToolArguments(rawArguments);
 
   if (!parsedArguments) {

@@ -60,10 +60,6 @@ export interface TaskSnapshotEntry {
   snapshot: StreamMessage;
   /** ★ M9：任务期间累计的工具调用数组（仅内存；按 callId upsert，末项=最新一条） */
   toolCalls: ExecutorToolCallSnapshot[];
-  /** ★ 缺陷①修复：委派任务名（main-agent.ts 委派时从 arguments.taskname 解析，sendToolSnapshot 唯一出口写入）。
-   *  仅内存结构（同 toolCalls——D6/规则④：绝不进 StreamMessage.payload 与推送载荷），
-   *  经 getRunningSnapshotEntries 轻量查询三元组外流，供前端恢复运行中任务卡片标题 */
-  taskName: string;
 }
 
 /**
@@ -135,7 +131,6 @@ export function upsertTaskSnapshotToolCall(
       createdAt: nowIso,
       status: 'init',
       toolCalls: [],
-      taskName: '',   // ★ 缺陷①修复：防御性初始化占位（子工具事件先于思考首写到达时保持条目结构完整；后续 sendToolSnapshot 覆盖式补真值）
       snapshot: {
         id: `snapshot-${delegateToolCallId}`,
         conversationId,
@@ -203,23 +198,19 @@ export function getSnapshotMessages(
  * - 终态条目（status='finished'）已被 TOOL_MESSAGE_CREATED 落库承载，不外流——
  *   天然去重，无需 existingToolCallIds（零 messages 表读取）
  * - toolCalls 为内存累计数组（D6：仅内存结构，经 invoke 查询响应直出，不经推送载荷）
- * - ★ 缺陷①修复：三元组增加第 4 员 taskName（entry.taskName 透传——同样仅经查询响应外流，
- *   供前端 snapshotMessageToToolSnapshot 恢复运行中任务卡片标题；getSnapshotMessages 出口仅携带
- *   message，由前端从委派 payload.arguments 解析兜底，两出口恢复结果一致）
  */
 export function getRunningSnapshotEntries(
   conversationId: string,
-): Array<{ toolCallId: string; message: StreamMessage; toolCalls: ExecutorToolCallSnapshot[]; taskName: string }> {
+): Array<{ toolCallId: string; message: StreamMessage; toolCalls: ExecutorToolCallSnapshot[] }> {
   const session = snapshotSessions.get(conversationId);
   if (!session) return [];
-  const result: Array<{ toolCallId: string; message: StreamMessage; toolCalls: ExecutorToolCallSnapshot[]; taskName: string }> = [];
+  const result: Array<{ toolCallId: string; message: StreamMessage; toolCalls: ExecutorToolCallSnapshot[] }> = [];
   for (const entry of session.tasksSnapshot.values()) {
     if (entry.status === 'finished') continue;
     result.push({
       toolCallId: entry.snapshot.payload.toolCallId,
       message: entry.snapshot,
       toolCalls: entry.toolCalls,
-      taskName: entry.taskName,   // ★ 缺陷①修复：taskName 透传（不经推送载荷，仅查询响应）
     });
   }
   return result;
