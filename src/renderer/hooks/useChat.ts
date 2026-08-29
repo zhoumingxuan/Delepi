@@ -710,6 +710,16 @@ export function useChat(options?: UseChatOptions) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [streamingConversationIds, setStreamingConversationIds] = useState<Set<string>>(new Set());
+  /**
+   * ★ M2/T1 修复（一个对话一个 is_running 标志位）：新建会话在途标记。
+   * conv:create 的 await 返回前为 true：
+   * - 抑制创建窗口内的重复建会话（双击“新建对话”）；
+   * - 上游（ChatShell/SenderBox）据此锁定发送/停止动作的目标身份，
+   *   消除“窗口内 conversationIdRef.current 仍指向旧会话 A”的身份漂移判定。
+   * 注意：这是“创建动作在途”标记，不是任何会话的 running 状态，不参与发送五重守卫。
+   */
+  const [creatingConversation, setCreatingConversation] = useState(false);
+  const creatingConversationRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
   /** 子智能体执行中间快照（Phase 3 P0-3），按 taskId 索引 */
@@ -962,7 +972,19 @@ const scheduleProjection = useCallback(() => {
   }, []);
 
   // 创建对话
+  // ★ M2/T1/T3 修复（一个对话一个 is_running 标志位）：
+  // - 在途标记：await conv:create 返回前 creatingConversation=true，重复触发直接返回 null，
+  //   防止双击“新建对话”产生两个会话；
+  // - 删除原“全局清空 pendingConversationSendIds / sendingConversationIds 两 Set”的副作用：
+  //   A 会话运行中创建 B 时，该全局清空会把 A（乃至全部会话）的 per-conversation 发送守卫
+  //   一次性抹掉（前端全局标志位问题）。守卫 Set 中的每个会话条目只能由该会话自身的
+  //   终态事件清理（chat:done / chat:error / chat:aborted 处理器，均已按 conversationId
+  //   精确移除），禁止任何跨会话全局清空；
+  // - 失败反馈：创建失败经 messageApi 提示并返回 null。
   const createConversation = useCallback(async () => {
+    if (creatingConversationRef.current) return null; // 在途去重（同步 ref，拦 await 前的连击）
+    creatingConversationRef.current = true;
+    setCreatingConversation(true);
     try {
       if (window.electronAPI) {
         const conv = await window.electronAPI.conversations.create();
@@ -984,17 +1006,24 @@ const scheduleProjection = useCallback(() => {
           conversationRuntimeStoreRef.current.set(conv.id, createRuntimeState(conv.id));
           assistantMessageIdRef.current = null;
           setShowScrollToBottom(false);
-          setPendingConversationSendIds(new Set());
-          setSendingConversationIds(new Set());
+          // ★ T3 修复：原 setPendingConversationSendIds(new Set()) +
+          //   setSendingConversationIds(new Set()) 的全局清空副作用已删除——
+          //   per-conversation 守卫仅由该会话自身终态事件清理
+          //  （chat:done / chat:error / chat:aborted），禁止跨会话全局清空
           setError(null);
         }
         return conv;
       }
     } catch (err) {
       console.error('[useChat] 创建对话失败:', err);
+      messageApiRef.current?.error('创建会话失败，请重试');
+      return null;
+    } finally {
+      creatingConversationRef.current = false;
+      setCreatingConversation(false);
     }
     return null;
-  }, []);
+  }, [createRuntimeState]);
 
   // 删除对话
   const deleteConversation = useCallback(async (id: string) => {
@@ -1411,7 +1440,11 @@ const scheduleProjection = useCallback(() => {
   // - 主进程通过 storageKey 从磁盘读取已上传文件
   // ============================================================
   const sendMessage = useCallback(
-    async (text: string, attachments: SendAttachment[] = []) => {
+    async (
+      text: string,
+      attachments: SendAttachment[] = [],
+      targetConversationId?: string | null,
+    ) => {
       const trimmed = text.trim();
       // ============================================================
       // Phase 3 P3-1 发送五重守卫（任一不满足则静默 return）
@@ -1421,7 +1454,10 @@ const scheduleProjection = useCallback(() => {
       const hasAttachments = attachments.length > 0;
       if (!hasText && !hasAttachments) return;
       // 守卫 2：!isConversationPendingSend(activeConversationId)（P0-3 per-conversation）
-      const activeConvId = conversationIdRef.current;
+      // ★ M1：目标会话显式传入优先（ChatShell 在任何 await 前捕获的会话 ID）；
+      //   未传时回退 conversationIdRef.current（既有语义）。五重守卫一律按该目标会话 ID
+      //   判定，B 的发送不会被 A 的运行状态拦截，A 的运行也不会被 B 误中止。
+      const activeConvId = targetConversationId ?? conversationIdRef.current;
       if (isConversationPendingSend(activeConvId) || (activeConvId ? pendingSendRef.current.has(activeConvId) : false)) return;
       // 守卫 3：!isConversationSending(activeConversationId)
       if (isConversationSending(activeConvId)) return;
@@ -1429,7 +1465,8 @@ const scheduleProjection = useCallback(() => {
       if (isConversationRunning(activeConvId)) return;
 
       // P0-3：convId 提前声明，用于 per-conversation pending/streaming 状态设置
-      let convId: string | null = conversationIdRef.current;
+      // ★ M1：convId 与守卫同源（目标会话 ID），消除 await 期间 ref 漂移导致的错投递
+      let convId: string | null = activeConvId;
 
       setError(null);
       if (convId) {
@@ -1535,7 +1572,12 @@ const scheduleProjection = useCallback(() => {
         // 避免在流式还在进行时守卫过早重置导致守卫失效
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        setError(errMsg);
+        // ★ M1：主进程 chat:send 并发拒绝错误码（ERR_CONVERSATION_RUNNING='CONVERSATION_RUNNING'，
+        //   ipc-handlers.ts:301 throw new Error(ERR_CONVERSATION_RUNNING)）翻译为中文提示
+        const friendlyErrMsg = errMsg.includes('CONVERSATION_RUNNING')
+          ? '该会话正在回复中，请等待完成或先停止后再发送'
+          : errMsg;
+        setError(friendlyErrMsg);
         if (convId) {
           setConversationStreaming(convId, false);
           setConversationPendingSend(convId, false);
@@ -1560,8 +1602,10 @@ const scheduleProjection = useCallback(() => {
   );
 
   // 中止对话
-  const abortChat = useCallback(() => {
-    const convId = conversationIdRef.current;
+  // ★ M3：可选 targetConversationId 显式绑定目标会话（停止按钮身份锚定，防漂移误中止他话）；
+  //   未传时回退 conversationIdRef.current（当前活跃会话，原有语义）
+  const abortChat = useCallback((targetConversationId?: string | null) => {
+    const convId = targetConversationId ?? conversationIdRef.current;
     if (convId) {
       try {
         if (window.electronAPI) {
@@ -2322,6 +2366,8 @@ const scheduleProjection = useCallback(() => {
     conversations,
     /** ★ P0-1 per-conversation：基于 conversationId 的派生 streaming 状态 */
     isStreaming: Boolean(conversationId && streamingConversationIds.has(conversationId)),
+    /** ★ M2/T1：新建会话在途标记（conv:create 未返回期间为 true），供上游锁定发送目标身份 */
+    creatingConversation,
     error,
     sendMessage,
     abortChat,

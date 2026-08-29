@@ -43,6 +43,14 @@ interface SenderBoxProps {
   onCancel?: (() => void) | undefined;
   loading?: boolean | undefined;
   showCancel?: boolean | undefined;
+  /**
+   * ★ M4（一个对话一个 is_running 标志位）：目标会话级提交锁。
+   * 上游按“当前目标会话 ID”计算（该会话 running/sending，或新建会话在途），
+   * 锁定时提交被拦截并回调 onBlocked('locked')，不再静默吞回车/吞点击。
+   */
+  submitLocked?: boolean | undefined;
+  /** ★ M4：提交被拦截时的反馈回调（组件内 300ms 节流，避免高频提示） */
+  onBlocked?: ((reason: 'locked' | 'empty') => void) | undefined;
   canSend?: boolean | undefined;
   pendingFiles?: PendingFile[] | undefined;
   onAddFiles?: ((files: File[]) => void) | undefined;
@@ -75,6 +83,8 @@ export const SenderBox = memo(function SenderBox({
   onCancel,
   loading = false,
   showCancel = false,
+  submitLocked = false,
+  onBlocked,
   canSend = false,
   pendingFiles = [],
   onAddFiles,
@@ -83,6 +93,17 @@ export const SenderBox = memo(function SenderBox({
   const { token } = theme.useToken();
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
+  // ★ M4：被拦截提示 300ms 节流——连按回车/连点按钮只反馈一次
+  const lastBlockedNotifyAtRef = useRef(0);
+  const notifyBlocked = useCallback(
+    (reason: 'locked' | 'empty') => {
+      const now = Date.now();
+      if (now - lastBlockedNotifyAtRef.current < 300) return;
+      lastBlockedNotifyAtRef.current = now;
+      onBlocked?.(reason);
+    },
+    [onBlocked],
+  );
 
   // ── Drag handlers ──────────────────────────────────────────────
   const handleDragEnter = useCallback(
@@ -163,27 +184,46 @@ export const SenderBox = memo(function SenderBox({
 
   // ── Submit ─────────────────────────────────────────────────────
   const handleSubmit = useCallback(() => {
-    if (showCancel || loading) return;
+    // ★ M4：目标会话锁定（showCancel/loading/submitLocked 任一为真）→ 拦截并反馈
+    //   （三者均由上游按目标会话 ID 计算，非全局标志）
+    if (showCancel || loading || submitLocked) {
+      notifyBlocked('locked');
+      return;
+    }
     const text = value.trim();
-    if (!text && pendingFiles.length === 0) return;
+    if (!text && pendingFiles.length === 0) {
+      notifyBlocked('empty');
+      return;
+    }
     onSend?.(value);
-  }, [onSend, showCancel, loading, value, pendingFiles.length]);
+  }, [onSend, showCancel, loading, submitLocked, value, pendingFiles.length, notifyBlocked]);
 
   // ── Enter key ──────────────────────────────────────────────────
   const handleKeyDown = useCallback(
-    (event: React.KeyboardEvent<Element>) => {
+    (event: React.KeyboardEvent<Element>): false | void => {
       if (
         event.key === 'Enter' &&
         !event.shiftKey &&
         !event.nativeEvent.isComposing
       ) {
-        if (!showCancel && !loading && (value.trim() || pendingFiles.length > 0)) {
+        if (
+          !showCancel &&
+          !loading &&
+          !submitLocked &&
+          (value.trim() || pendingFiles.length > 0)
+        ) {
           event.preventDefault();
           handleSubmit();
+          // ★ M5：返回 false 抑制 @ant-design/x Sender 内部 onInternalKeyDown 的
+          //   triggerSend 二次提交（TextArea.js:97 “eventRes === false 即跳过”）。
+          //   M5 解冻 submitDisabled 后内部提交路径恢复可用，必须防止双发。
+          return false;
         }
+        // ★ M4：锁定时反馈（原为静默吞回车）；空内容静默（与原行为一致）
+        if (showCancel || loading || submitLocked) notifyBlocked('locked');
       }
     },
-    [handleSubmit, showCancel, loading, value, pendingFiles.length],
+    [handleSubmit, showCancel, loading, submitLocked, value, pendingFiles.length, notifyBlocked],
   );
 
   return (
@@ -320,44 +360,62 @@ export const SenderBox = memo(function SenderBox({
               />
             </Upload>
           }
-          suffix={
-            <Button
-              type={showCancel ? 'default' : 'primary'}
-              shape="circle"
-              style={
-                showCancel
-                  ? {
-                      background: token.colorFillSecondary,
-                      borderColor: token.colorBorderSecondary,
-                      color: token.colorText,
-                    }
-                  : undefined
-              }
-              icon={
-                showCancel ? (
-                  <span
-                    style={{
-                      display: 'block',
-                      width: 10,
-                      height: 10,
-                      background: 'currentColor',
-                      borderRadius: 2,
-                    }}
-                  />
-                ) : (
-                  <ArrowUpOutlined />
-                )
-              }
-              onClick={() => {
-                if (showCancel) {
-                  onCancel?.();
-                } else {
-                  handleSubmit();
+          suffix={(defaultActions) => (
+            <>
+              {/*
+                ★ M5（T2 库级缺陷修复，一个对话一个 is_running 标志位配套）：
+                @ant-design/x v2.9.0 Sender.js:179 的 submitDisabled 以
+                useState(!innerValue) 初始化，唯一更新入口是 ActionButton.js:20-24
+                action='onSend' 的 useEffect；原先自定义 ReactElement suffix 经
+                Sender.js:158-160 整体替换含 SendButton 的默认 actionNode，导致
+                submitDisabled 永久冻结 true、内部 onSubmit 永不触发（回车仅剩
+                TextArea.js:88-89 转发的应用级 onKeyDown 单一路径）。
+                修复：suffix 改函数形式接收默认 actionNode，将其隐藏渲染于
+                display:none 的 span（无布局副作用）——SendButton 重新挂载，
+                submitDisabled 随 onSendDisabled=!innerValue 正常同步解冻；
+                自定义按钮仍按目标会话级 showCancel/canSend 渲染与判定。
+              */}
+              <span style={{ display: 'none' }}>{defaultActions}</span>
+              <Button
+                type={showCancel ? 'default' : 'primary'}
+                shape="circle"
+                style={
+                  showCancel
+                    ? {
+                        background: token.colorFillSecondary,
+                        borderColor: token.colorBorderSecondary,
+                        color: token.colorText,
+                      }
+                    : undefined
                 }
-              }}
-              disabled={showCancel ? false : !canSend}
-            />
-          }
+                icon={
+                  showCancel ? (
+                    <span
+                      style={{
+                        display: 'block',
+                        width: 10,
+                        height: 10,
+                        background: 'currentColor',
+                        borderRadius: 2,
+                      }}
+                    />
+                  ) : (
+                    <ArrowUpOutlined />
+                  )
+                }
+                onClick={() => {
+                  if (showCancel) {
+                    onCancel?.();
+                  } else {
+                    handleSubmit();
+                  }
+                }}
+                // ★ M4：disabled 联动目标会话级锁——锁定态保持可点击（点击后被拦并反馈），
+                //   非锁定态按 canSend 判定
+                disabled={showCancel || submitLocked ? false : !canSend}
+              />
+            </>
+          )}
         />
       </div>
     </div>

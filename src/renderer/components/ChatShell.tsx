@@ -57,6 +57,8 @@ export function ChatShell() {
     /** Phase 3 P1 + P3：守卫 + 状态相关 */
     isConversationSending,
     isConversationRunning,
+    /** ★ M2/T1：新建会话在途标记（创建窗口内目标会话身份未定，发送/停止动作需锁定） */
+    creatingConversation,
     /** Phase 3 P3-3 滚动状态相关 */
     showScrollToBottom,
     setShowScrollToBottom,
@@ -205,6 +207,15 @@ const { check, canCheck } = useConfigReadiness({
   // - sendMessage 第二参数改为 SendAttachment[]（来自 file:upload 已落盘的元数据）
   // ============================================================
   const handleSend = useCallback(async () => {
+    // ── ★ M3（一个对话一个 is_running 标志位）：在任何 await 之前捕获目标会话 ID。
+    //    本函数内一切守卫/停止/上传/发送一律以该捕获值为唯一身份依据，消除
+    //    conversationIdRef.current 在 await 期间被切会话改写导致的身份漂移：
+    //    B 的消息只发往 B、停止动作只作用于用户按下那一刻所在的目标会话 ──
+    const targetConversationId = conversationId;
+
+    // ── ★ M2：新建会话在途（conv:create 未返回）期间目标身份未定 → 拒绝发送 ──
+    if (creatingConversation) return;
+
     // ── 配置就绪守卫：未就绪则弹出 ConfigCheckModal 阻断发送 ──
     if (canCheck) {
       const result = check();
@@ -216,7 +227,9 @@ const { check, canCheck } = useConfigReadiness({
     }
 
     if (showCancel) {
-      abortChat();
+      // ★ M3：停止动作绑定捕获的目标会话 ID——即便此间会话被切换，
+      //   也只中止用户按下发送/停止那一刻的目标会话，不误伤其他运行中会话
+      abortChat(targetConversationId);
       return;
     }
     // ── 场景c：文件上传中 → 明确提示（原为 canSend=false 静默 return）──
@@ -226,7 +239,8 @@ const { check, canCheck } = useConfigReadiness({
     }
     if (!canSend) return;
     // 防重入（按会话隔离，双击/回车连击）：同会话在途则拦截；无会话 id（null→创建会话流程）在途时保持原全局拦截语义
-    const flightConversationId = conversationId; // 捕获进入 handleSend 时的会话 id：finally 释放必须用此捕获值，防会话切换后误删他话
+    // ★ M3：flightKey 直接复用进入时捕获的 targetConversationId（与守卫/发送同源，杜绝二次读取状态漂移）
+    const flightConversationId = targetConversationId; // 捕获进入 handleSend 时的会话 id：finally 释放必须用此捕获值，防会话切换后误删他话
     const flightKey = flightConversationId ?? NO_CONVERSATION_FLIGHT_KEY;
     if (
       sendInFlightConversationIdsRef.current.has(NO_CONVERSATION_FLIGHT_KEY) ||
@@ -250,7 +264,7 @@ const { check, canCheck } = useConfigReadiness({
       }));
       if (pendingItems.length > 0) {
         // ── 场景a核心：发送时序前置串行化（创建会话 → 上传落盘 → 发送）──
-        let convId = conversationId;
+        let convId = targetConversationId; // ★ M3：上传等待期间不重读会话状态，使用进入时捕获值
         if (!convId) {
           const conv = await createConversation(); // 复用 useChat 既有函数（L837-868，非新增创建策略）
           if (!conv) {
@@ -295,7 +309,9 @@ const { check, canCheck } = useConfigReadiness({
       // 发送即清空输入框附件（clearLocalOnly 仅清本地 state，不触发 file:delete，保留磁盘文件）——原 L232-233 语义原样保留
       clearLocalOnly();
       setInputValue(''); // ★修复：对齐 ai_fr chat-shell.tsx L2171-2173——消息受理即清空输入框。闭包 inputValue 已捕获原文本，下行 sendMessage 发送内容不受影响
-      await sendMessage(inputValue, attachments);
+      // ★ M1+M3：第三参显式传入进入时捕获的目标会话 ID——sendMessage 内部五重守卫与
+      //   IPC 投递均按该 ID 判定/路由，不再依赖 await 后的 conversationIdRef.current
+      await sendMessage(inputValue, attachments, targetConversationId);
     } finally {
       sendInFlightConversationIdsRef.current.delete(flightKey); // 释放进入时捕获的键：禁用 finally 时刻的 conversationId 状态变量（会话切换后已变值会误删他话）
     }
@@ -310,6 +326,7 @@ const { check, canCheck } = useConfigReadiness({
     check,
     canCheck,
     conversationId,
+    creatingConversation,
     createConversation,
     fileUploadingCount,
     setPendingUploadStatus,
@@ -318,12 +335,25 @@ const { check, canCheck } = useConfigReadiness({
   ]);
 
   const handleAbort = useCallback(() => {
-    abortChat();
-  }, [abortChat]);
+    // ★ M3：停止按钮只中止当前活跃会话——显式传入渲染闭包的 conversationId，
+    //   与按钮渲染态（showCancel 按当前会话计算）保持同一身份
+    abortChat(conversationId);
+  }, [abortChat, conversationId]);
 
   const handleNewChat = useCallback(async () => {
     await createConversation();
   }, [createConversation]);
+
+  // ★ M4：发送被拦截时的用户反馈回调（SenderBox 内 300ms 节流后调用）——
+  //   替代原“静默吞回车/吞点击”：目标会话锁定时用户可感知为何发不出去
+  const handleSendBlocked = useCallback(
+    (reason: 'locked' | 'empty') => {
+      if (reason === 'locked') {
+        messageApi.warning('当前会话正在回复中，请先停止或等待完成后再发送');
+      }
+    },
+    [messageApi],
+  );
 
   const handleSwitchConversation = useCallback(
     (id: string) => {
@@ -446,6 +476,10 @@ const { check, canCheck } = useConfigReadiness({
             onCancel={handleAbort}
             loading={isStreaming}
             showCancel={showCancel}
+            /** ★ M4：目标会话级提交锁（当前会话 running/sending 或新建会话在途） */
+            submitLocked={showCancel || creatingConversation}
+            /** ★ M4：提交被拦截反馈（组件内 300ms 节流后回调） */
+            onBlocked={handleSendBlocked}
             canSend={canSend}
             pendingFiles={pendingFiles}
             onAddFiles={addPendingFiles}
