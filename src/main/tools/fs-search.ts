@@ -76,14 +76,14 @@ export async function fsSearch(
       return buildToolResult({
         success: false,
         code: ERR_PATH_NOT_FILE,
-        message: '路径不是目录',
+        message: '路径不是目录,请确认输入的directory参数是否存在问题',
       });
     }
   } catch {
     return buildToolResult({
       success: false,
       code: ERR_FILE_NOT_FOUND,
-      message: '目录不存在',
+      message: '目录不存在,请确认输入的directory参数是否存在问题',
     });
   }
 
