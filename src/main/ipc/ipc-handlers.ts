@@ -700,9 +700,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const settings = configManager.getSettings();
     const profiles = settings.modelProfiles.filter((item) => item.id !== params.id);
     let activeProfileId = settings.activeProfileId;
-    if (activeProfileId === params.id) {
-      // 删除当前激活档案：仅清空 activeProfileId，九键保持现状（当前生效配置不变）
-      activeProfileId = '';
+    // 【模型配置方案使能】删除激活方案后的激活态转移：剩余非空时自动补选第一个为 activeProfileId
+    // （当前生效九键保持不变，链路C 修改写回链路继续生效）；剩余为空时置空且不报错；
+    // 激活 id 为空或悬空（指向已不存在的方案）时同样统一补选，禁止本分支静默失效。
+    if (!profiles.some((item) => item.id === activeProfileId)) {
+      activeProfileId = profiles.length > 0 ? profiles[0].id : '';
       saveSetting('activeProfileId', activeProfileId);
       configManager.setSetting('activeProfileId', activeProfileId);
     }

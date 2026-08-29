@@ -368,7 +368,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
   }, [profilesApi, profileNameInput, activeProfileId, antdMessage]);
 
-  /** 删除方案：删除当前激活方案时仅解除激活标记，当前生效配置保持不变 */
+  /** 删除方案：删除激活方案后激活态自动转移至剩余第一个方案（剩余为空则置空，下次加载时主进程重建默认方案），当前生效配置保持不变 */
   const handleDeleteProfile = useCallback(
     (id: string) => {
       if (!profilesApi || !id) return;
@@ -377,7 +377,9 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       antdModal.confirm({
         title: '删除配置方案',
         content: isActive
-          ? `确定删除当前使用的方案「${target?.name ?? ''}」？正在使用的配置不变，只是不能再一键切回。`
+          ? profiles.length > 1
+            ? `确定删除当前使用的方案「${target?.name ?? ''}」？正在使用的配置不变，激活方案将自动切换为剩余的第一个方案。`
+            : `确定删除当前使用的方案「${target?.name ?? ''}」？正在使用的配置不变，删除后将暂无方案（下次加载时自动重建默认方案）。`
           : `确定删除方案「${target?.name ?? ''}」？`,
         okText: '删除',
         okButtonProps: { danger: true },
@@ -389,6 +391,8 @@ export const ConfigDrawer = memo(function ConfigDrawer({
             setActiveProfileId(result?.activeProfileId ?? '');
             if (isActive) {
               await onReload();
+              // 删除激活方案后主进程已转移/重建激活态，重拉方案列表保持 Select 显示与主进程一致
+              await loadProfiles();
             }
             antdMessage.success('方案已删除');
           } catch (err) {
@@ -397,7 +401,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         },
       });
     },
-    [profilesApi, profiles, activeProfileId, antdModal, antdMessage, onReload],
+    [profilesApi, profiles, activeProfileId, antdModal, antdMessage, onReload, loadProfiles],
   );
 
   // ---- 技能管理（方向2：内部自治；与聊天流零连接点，故 useChat.ts 零改动） ----
@@ -702,7 +706,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         value={activeProfileId || undefined}
                         onChange={handleSwitchProfile}
                         loading={profileActionLoading}
-                        disabled={configLoading || profiles.length === 0}
+                        disabled={configLoading}
                         options={profiles.map((item) => ({
                           value: item.id,
                           label: item.name,

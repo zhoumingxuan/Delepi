@@ -6,7 +6,9 @@
 import { HARDCODED_CONFIG, DEFAULT_MAX_TOKENS } from './env';
 import type { HardcodedConfig, AppSettings, ComputedConfig, AppConfig } from '../../types/config';
 import { DEFAULT_APP_SETTINGS } from '@shared/constants';
-import { listSettings } from '../../db';
+import type { ModelProfile } from '@shared/types/config';
+import { listSettings, saveSetting } from '../../db';
+import { v4 as uuidv4 } from 'uuid';
 
 export class ConfigManager {
   private hardcoded: HardcodedConfig;
@@ -72,6 +74,41 @@ export class ConfigManager {
     }
 
     this.settings = { ...DEFAULT_APP_SETTINGS, ...filtered };
+
+    // 【模型配置方案使能】方案列表为空时创建默认方案：以当前生效配置（三组九键+多模态开关/思考档位）
+    // 为快照源（对齐 profiles-save 的另存为语义，含 ModelProfile 全部 12 个配置键的合理默认值），
+    // 保证首启/清空后始终存在一个可用方案，前端方案 Select 不再因空列表被禁用；创建后持久化写回 settings 表。
+    if (this.settings.modelProfiles.length === 0) {
+      const defaultProfile: ModelProfile = {
+        id: uuidv4(),
+        name: '默认方案',
+        mainModelBaseUrl: this.settings.mainModelBaseUrl,
+        mainModelApiKey: this.settings.mainModelApiKey,
+        mainModelName: this.settings.mainModelName,
+        mainModelMultimodal: this.settings.mainModelMultimodal,
+        mainThinkingLevel: this.settings.mainThinkingLevel,
+        executorModelBaseUrl: this.settings.executorModelBaseUrl,
+        executorModelApiKey: this.settings.executorModelApiKey,
+        executorModelName: this.settings.executorModelName,
+        executorThinkingLevel: this.settings.executorThinkingLevel,
+        visionLlmBaseUrl: this.settings.visionLlmBaseUrl,
+        visionLlmApiKey: this.settings.visionLlmApiKey,
+        visionLlmModel: this.settings.visionLlmModel,
+      };
+      this.settings.modelProfiles = [defaultProfile];
+      saveSetting('modelProfiles', this.settings.modelProfiles);
+    }
+
+    // 【模型配置方案使能】activeProfileId 为空或指向不存在的方案但方案列表非空时，
+    // 自动补选第一个方案并持久化写回，保证链路C（修改配置写回激活方案）不因激活键为空静默失效。
+    const activeProfileIdValid = this.settings.modelProfiles.some(
+      (item) => item.id === this.settings.activeProfileId,
+    );
+    if (this.settings.modelProfiles.length > 0 && !activeProfileIdValid) {
+      this.settings.activeProfileId = this.settings.modelProfiles[0].id;
+      saveSetting('activeProfileId', this.settings.activeProfileId);
+    }
+
     this.computed = this.buildComputedConfig();
   }
 
