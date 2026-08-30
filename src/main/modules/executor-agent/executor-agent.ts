@@ -23,6 +23,7 @@ import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
 import { buildExecutorSystemPrompt } from './executor-system-prompt';
 import {
+  SCRIPTS_TOOLS_DIR,
   type TaskTag,
   type TaskTagName,
   getAllTaskTags,
@@ -50,6 +51,7 @@ import {
   getDefaultEnabledExecutorToolNames,
   getDynamicExecutorToolMeta,
 } from '../../tools/executor-registry';
+import { scanScriptToolsDir, type ScriptToolScanEntry } from '../../tools/script-tool-protocol';
 import {
   buildToolResult,
   stringifyToolResult,
@@ -457,6 +459,30 @@ function buildExecutorPlainTextPrompt(options: {
   }
 
   return sections.join('\n\n');
+}
+
+/** R5：经验库『可适配的工具清单』数据块（纯数据；空库返回空串=整块省略） */
+function buildScriptToolsInventoryBlock(entries: ScriptToolScanEntry[]): string {
+  const valid = entries.filter((entry) => entry.ok);
+  if (valid.length === 0) {
+    return '';
+  }
+  const lines = valid.map((entry) => {
+    const condition =
+      typeof entry.protocol.applicableConditions === 'string' && entry.protocol.applicableConditions.trim()
+        ? entry.protocol.applicableConditions.trim()
+        : '（未声明适用条件）';
+    return {
+      "工具名称(tool_name)":entry.dirName,
+      "适用条件":condition
+    };
+  });
+  return `
+  # 经验库工具以及适用条件清单（**必须通过script_tool调用**）
+  \`\`\`json
+  ${JSON.stringify(lines)}
+  \`\`\`
+  `;
 }
 
 async function removeTemporaryPaths(temporaryPaths: string[]): Promise<void> {
@@ -1248,11 +1274,29 @@ export async function runDelegatedTask(
       : getDefaultEnabledExecutorToolNames().filter((name) => name !== 'inspect_image'),
   );
 
+  // v2.0 R1/R5：tool_name 为自由字符串（无枚举）。委派组装期一次性扫描经验库：
+  // 空库（无合法工具）时不注入 script_tool；扫描结果同步构建『可适配的工具清单』文本块，
+  // 追加到用户提示词最后面（R5）。executor-registry.ts 保持零改动。
+  const scriptToolEntries = await scanScriptToolsDir();
+  const hasValidScriptTools = scriptToolEntries.some((entry) => entry.ok);
+  const scriptToolsInventoryText = buildScriptToolsInventoryBlock(scriptToolEntries);
+  const delegatedExecutorTools = executorTools.filter(
+    (tool) => !(tool.function.name === 'script_tool' && !hasValidScriptTools),
+  );
+
   // 读取工作流模板（内置+自定义双源；自定义读取失败收集告警，最终附到委派结果 data）
   const { contents: workflowTemplates, warnings: workflowTemplateWarnings } =
     await readWorkflowTemplates(parsedInput.skillTags);
 
-  // 构建消息
+  // 构建消息（v2.0 R5：清单块尾拼在 buildExecutorPlainTextPrompt 产物之后，保证位于用户提示词最后面）
+  const plainExecutorPrompt = buildExecutorPlainTextPrompt({
+    taskInput: parsedInput,
+    workflowTemplates,
+    completedTasks: options.completedTasks,
+    currentUploadedFiles: options.currentUploadedFiles,
+    finalOutputDir: options.finalOutputDir,
+    runDir: toolContext.runDir,
+  });
   const runtimeMessages: RuntimeMessage[] = [
     {
       role: 'system',
@@ -1261,19 +1305,16 @@ export async function runDelegatedTask(
         sessionDirectoryText: toolContext.runDir
           ? `当前对话目录：${toolContext.runDir}`
           : undefined,
+        // 经验库根目录绝对路径注入（8.1 章节文案 {SCRIPTS_TOOLS_DIR} 占位消费点）
+        scriptsToolsDirText: SCRIPTS_TOOLS_DIR,
         currentPid: process.pid,
       }),
     },
     {
       role: 'user',
-      content: buildExecutorPlainTextPrompt({
-        taskInput: parsedInput,
-        workflowTemplates,
-        completedTasks: options.completedTasks,
-        currentUploadedFiles: options.currentUploadedFiles,
-        finalOutputDir: options.finalOutputDir,
-        runDir: toolContext.runDir,
-      }),
+      content: scriptToolsInventoryText
+        ? `${plainExecutorPrompt}\n\n${scriptToolsInventoryText}`
+        : plainExecutorPrompt,
     },
   ];
 
@@ -1288,7 +1329,7 @@ export async function runDelegatedTask(
     const assistantMessage = await completeExecutorTurn({
       assistantConfig: options.assistantConfig,
       messages: runtimeMessages,
-      tools: executorTools,
+      tools: delegatedExecutorTools,
       signal: options.signal,
       // S1-3 增量推送：reasoning delta 到达即推送（token 级轮内可见）。
       // 既有两条推送分支语义迁移到流式路径：

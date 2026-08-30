@@ -18,8 +18,9 @@ import {
   PRELOAD_FILE_NAME,
   RENDERER_PATH_SEGMENT,
   RENDERER_INDEX_FILE,
+  SCRIPTS_TOOLS_DIR,
 } from './constants';
-import { resolveConversationsRootDir } from './utils/storage-paths';
+import { ensureDir, resolveConversationsRootDir } from './utils/storage-paths';
 console.log('[sandbox-diag] argv =', JSON.stringify(process.argv));
 console.log('[sandbox-diag] ELECTRON_DISABLE_SANDBOX =', process.env.ELECTRON_DISABLE_SANDBOX ?? '(unset)');
 
@@ -171,6 +172,10 @@ function createWindow(): void {
     },
   });
 
+  mainWindow.on('page-title-updated', (event) => {
+    event.preventDefault();
+  });
+
   // 启动健壮性：渲染进程运行期异常/事件日志监听
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
     writeMainLog(
@@ -272,6 +277,15 @@ app.whenReady().then(async () => {
     writeMainLog('INFO', 'resetInterruptedRuntimeState', 'OK');
   } catch (err) {
     writeMainLog('ERROR', 'resetInterruptedRuntimeState', '失败', err);
+  }
+
+  // 经验库根目录启动检查创建（script-tools 方案 R2）：不存在则创建；
+  // try-catch 包裹，失败仅记日志不阻断启动（委派期 script_tool 执行内核另有兜底重建，双层防护）。
+  try {
+    await ensureDir(SCRIPTS_TOOLS_DIR);
+    writeMainLog('INFO', 'ensureScriptToolsDir', `OK path=${SCRIPTS_TOOLS_DIR}`);
+  } catch (err) {
+    writeMainLog('ERROR', 'ensureScriptToolsDir', '失败（不阻断启动；委派期兜底重建）', err);
   }
 
   // BUG1 修复：清空各会话 tasks 目录残留快照（必须在 createWindow 之前完成，

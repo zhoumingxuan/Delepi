@@ -3,6 +3,7 @@ import { runShell } from '@/main/tools/run-shell';
 import { readFileTool } from '@/main/tools/read-file';
 import { inspectImage } from '@/main/tools/inspect-image';
 import { fsSearch } from '@/main/tools/fs-search';
+import { scriptTool } from '@/main/tools/script-tool';
 
 function getShellLabel(): string {
     if (process.platform === 'win32') return 'Windows PowerShell';
@@ -44,6 +45,7 @@ function buildRunWithPythonDescription(): string {
 function buildReadFileDescription(): string {
     return `
     - 读取【非结构化的文本文件】的工具，按行读取文件，会返回每一行行号，行号从 1 开始；同时支持分段读取和全部读取。
+    - **此工具仅限于搜索本地文件读取，不适配远程文件读取**
     - **代码文件,MarkDown文件不算结构化文件，仅算有一定格式的文件**。
     - 结构化的文本文件（例如:json文件，jsonl文件等），优先通过run_with_python 读取。
     - 分段读取end_line必填；全部读取则不需要填end_line。
@@ -56,6 +58,7 @@ function buildReadFileDescription(): string {
 function buildFsSearchDescription(): string {
     return `
     - 文件系统搜索工具，仅适配【文件名和目录名】以及【目录扫描】功能。
+    - **此工具仅限于搜索本地文件系统，不适配远程文件系统**
     - 不填keyword则视作按depth扫描【目标目录】。
     - 返回内容超过16384个字符会触发截断。
     - 返回匹配的文件数和目录数，列表中每项标记是文件还是目录。
@@ -72,6 +75,51 @@ function buildInspectImageDescription(): string {
         '必须提供查询目标，用于限定当前图片中需要查询的信息范围。',
         '输出只能依据图片中可见内容；禁止把图片外信息、用户意图或不可见内容写成事实。',
     ].join('\n');
+}
+
+function buildScriptToolDescription(): string {
+    return `
+    - 【经验工具库调用】用于查看和调用由执行经验积累而成的【经验工具库】。
+    - 使用任何工具前必须先查看目标【tool_name】的【协议】，明确该如何调用。
+    - 【适用条件】：在存在【可简化执行路径】或【其他工具】无法完成任务时可尝试使用此工具。
+    `;
+}
+
+/**
+ * script_tool 参数 Schema 工厂（v2.0 R1）：tool_name 为自由字符串（不再动态目录名枚举）；
+ * 空库隐藏仍由委派组装点承担（executor-agent.ts：扫描无合法工具时不注入本工具）。
+ * timeout（11:49 语义）：运行时一概不拦截——-1=挂起类型调用（只启动进程，不等待、不采集输出、不超时终止）；
+ * 正整数=超时秒数；其余取值（0、非 -1 负数、小数）按『不设置超时限制』处理；未传时回落协议 timeout_seconds。
+ */
+export function buildScriptToolParameters(): Record<string, unknown> {
+    return {
+        type: 'object',
+        properties: {
+            tool_name: {
+                type: 'string',
+                description: '工具名称，即经验库内工具目录名',
+            },
+            action: {
+                type: 'string',
+                enum: ['查看协议', '调用'],
+                description:
+                    '操作类型，枚举值，单选；【查看协议】就是查看【tool_name】的【协议调用说明】；【调用】就是直接发起这个工具调用',
+            },
+            params: {
+                type: 'object',
+                description:
+                    '调用包含的参数，严格依据获取的【协议调用说明】填写',
+            },
+            timeout: {
+                type: 'number',
+                description:
+                    '调用超时时间，单位秒，默认 180；【若填 -1 为挂起类型调用：只启动进程，不采集输出】',
+                default: 180,
+            },
+        },
+        required: ['tool_name','action'],
+        additionalProperties: false,
+    };
 }
 
 /**
@@ -249,5 +297,15 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: runShell,
-    }
+    },
+    script_tool: {
+        config: {
+            name: 'script_tool',
+            displayName: '经验工具库调用',
+            buildDescription: buildScriptToolDescription(),
+        },
+        // v2.0 R1：tool_name 为自由字符串，无动态枚举注入；此处静态声明即唯一声明，executor-registry.ts 保持零改动。
+        parameters: buildScriptToolParameters(),
+        execute: scriptTool,
+    },
 }

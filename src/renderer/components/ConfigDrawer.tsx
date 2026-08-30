@@ -27,12 +27,16 @@ import {
   Switch,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   App as AntApp,
   theme as antdTheme,
 } from 'antd';
 import {
   ApiOutlined,
+  PlusOutlined,
+  SaveOutlined,
+  DeleteOutlined,
   ProfileOutlined,
   RobotOutlined,
   ThunderboltOutlined,
@@ -261,6 +265,8 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const [activeProfileId, setActiveProfileId] = useState('');
   const [profileNameModalOpen, setProfileNameModalOpen] = useState(false);
   const [profileNameInput, setProfileNameInput] = useState('');
+  const [profileCreateModalOpen, setProfileCreateModalOpen] = useState(false);
+  const [profileCreateNameInput, setProfileCreateNameInput] = useState('');
   const [profileActionLoading, setProfileActionLoading] = useState(false);
   const profilesApiMissingRef = useRef(false);
 
@@ -367,6 +373,66 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       setProfileActionLoading(false);
     }
   }, [profilesApi, profileNameInput, activeProfileId, antdMessage]);
+
+  // 新建方案名重名实时校验：弹窗内即时提示 + 提交时 handler 内同步拦截，双保险防 profiles-save 同名覆盖
+  const profileCreateNameTrimmed = profileCreateNameInput.trim();
+  const profileCreateNameDuplicate =
+    profileCreateNameTrimmed !== '' &&
+    profiles.some((item) => item.name === profileCreateNameTrimmed);
+
+  /**
+   * 新建方案（禁止重名）：经 profilesApi.saveProfile({ name }) 以主进程当前生效配置为快照创建
+   * （前端不自行拼装方案对象写库）；随后取新方案 id（saveProfile 返回按唯一名匹配，缺失时回退
+   * listProfiles 匹配），经等价 switchProfile 链路自动激活切换（与 handleSwitchProfile 同语义：
+   * 写 12 键 + activeProfileId、回填表单、onReload 刷新全局 config），最后 loadProfiles 刷新
+   * 方案列表。全程不写旧方案任何内容，此后字段修改经链路C 写入新方案。
+   * 注：不直接复用 handleSwitchProfile，因其闭包内的 profiles 为创建前快照、找不到新方案，
+   * 表单回填分支会被跳过；此处在拿到新方案对象后执行等价链路，行为与其完全一致。
+   */
+  const handleCreateProfile = useCallback(async () => {
+    const name = profileCreateNameTrimmed;
+    if (!profilesApi) return;
+    if (!name) {
+      antdMessage.warning('请输入方案名称');
+      return;
+    }
+    if (profiles.some((item) => item.name === name)) {
+      antdMessage.error(`方案「${name}」已存在，请更换名称`);
+      return;
+    }
+    setProfileActionLoading(true);
+    try {
+      const result = await profilesApi.saveProfile({ name });
+      let newProfiles = result?.profiles ?? [];
+      let target = newProfiles.find((item) => item.name === name);
+      if (!target) {
+        const listed = await profilesApi.listProfiles();
+        newProfiles = listed?.profiles ?? [];
+        target = newProfiles.find((item) => item.name === name);
+      }
+      if (!target) {
+        throw new Error('未找到新建的方案');
+      }
+      const switchResult = await profilesApi.switchProfile({ id: target.id });
+      setProfiles(newProfiles);
+      setActiveProfileId(switchResult?.activeProfileId ?? target.id);
+      const { id: _newProfileId, name: _newProfileName, ...newProfileValues } = target;
+      const merged = { ...DEFAULT_APP_SETTINGS, ...newProfileValues };
+      const clean = Object.fromEntries(
+        Object.entries(merged).filter(([, v]) => v !== undefined),
+      );
+      form.setFieldsValue(clean);
+      setProfileCreateModalOpen(false);
+      setProfileCreateNameInput('');
+      antdMessage.success(`已创建并切换到方案「${switchResult?.profileName ?? name}」`);
+      await onReload();
+      await loadProfiles();
+    } catch (err) {
+      antdMessage.error(err instanceof Error ? err.message : '新建方案失败');
+    } finally {
+      setProfileActionLoading(false);
+    }
+  }, [profilesApi, profileCreateNameTrimmed, profiles, form, antdMessage, onReload, loadProfiles]);
 
   /** 删除方案：删除激活方案后激活态自动转移至剩余第一个方案（剩余为空则置空，下次加载时主进程重建默认方案），当前生效配置保持不变 */
   const handleDeleteProfile = useCallback(
@@ -693,14 +759,14 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       type="secondary"
                       style={{ fontSize: 12, marginBottom: token.paddingMD }}
                     >
-                      保存多套模型配置方案，一键切换免重填；下方是当前正在使用的配置，改动即自动保存。
+                      切换方案一键生效；改动自动保存到当前方案。
                     </Typography.Paragraph>
                     <Flex gap={token.paddingSM} wrap="wrap" align="middle">
                       <Select
                         style={{ minWidth: 220, flex: 1 }}
                         placeholder={
                           profiles.length === 0
-                            ? "暂无保存的方案：配置好后点「另存为方案」保存"
+                            ? "暂无保存的方案：点「＋」以当前配置新建方案"
                             : "选择方案一键切换"
                         }
                         value={activeProfileId || undefined}
@@ -712,26 +778,47 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                           label: item.name,
                         }))}
                       />
-                      <Button
-                        disabled={configLoading || profileActionLoading}
-                        onClick={() => {
-                          setProfileNameInput("");
-                          setProfileNameModalOpen(true);
-                        }}
-                      >
-                        另存为方案
-                      </Button>
-                      <Button
-                        danger
-                        disabled={
-                          configLoading ||
-                          profileActionLoading ||
-                          !activeProfileId
-                        }
-                        onClick={() => handleDeleteProfile(activeProfileId)}
-                      >
-                        删除方案
-                      </Button>
+                      {/* 三操作按钮图标化精简：新建/另存为/删除（span 包裹保证禁用态 Tooltip 仍可悬停） */}
+                      <Flex gap={token.paddingXS} align="middle">
+                        <Tooltip title="新建方案">
+                          <span>
+                            <Button
+                              icon={<PlusOutlined />}
+                              disabled={configLoading || profileActionLoading}
+                              onClick={() => {
+                                setProfileCreateNameInput("");
+                                setProfileCreateModalOpen(true);
+                              }}
+                            />
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="另存为方案">
+                          <span>
+                            <Button
+                              icon={<SaveOutlined />}
+                              disabled={configLoading || profileActionLoading}
+                              onClick={() => {
+                                setProfileNameInput("");
+                                setProfileNameModalOpen(true);
+                              }}
+                            />
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="删除方案">
+                          <span>
+                            <Button
+                              danger
+                              icon={<DeleteOutlined />}
+                              disabled={
+                                configLoading ||
+                                profileActionLoading ||
+                                !activeProfileId
+                              }
+                              onClick={() => handleDeleteProfile(activeProfileId)}
+                            />
+                          </span>
+                        </Tooltip>
+                      </Flex>
                     </Flex>
                   </div>
 
@@ -1399,6 +1486,48 @@ export const ConfigDrawer = memo(function ConfigDrawer({
             maxLength={50}
             showCount
           />
+        </Modal>
+
+        {/* 新建配置方案：以当前生效配置为快照创建（重名实时拦截），创建后自动切换为当前方案 */}
+        <Modal
+          title="新建配置方案"
+          open={profileCreateModalOpen}
+          onOk={() => {
+            void handleCreateProfile();
+          }}
+          onCancel={() => {
+            setProfileCreateModalOpen(false);
+            setProfileCreateNameInput("");
+          }}
+          okText="创建并切换"
+          cancelText="取消"
+          confirmLoading={profileActionLoading}
+          okButtonProps={{ disabled: profileCreateNameDuplicate }}
+        >
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+            将以当前生效的模型配置为内容创建新方案，创建后自动切换为当前方案；已有方案不受影响，此后改动自动保存到新方案。
+          </Typography.Paragraph>
+          <Input
+            placeholder="方案名称，如：DeepSeek-生产 / GLM-测试"
+            value={profileCreateNameInput}
+            onChange={(e) => setProfileCreateNameInput(e.target.value)}
+            onPressEnter={() => {
+              if (!profileCreateNameDuplicate) {
+                void handleCreateProfile();
+              }
+            }}
+            maxLength={50}
+            showCount
+            status={profileCreateNameDuplicate ? "error" : undefined}
+          />
+          {profileCreateNameDuplicate && (
+            <Typography.Paragraph
+              type="danger"
+              style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}
+            >
+              方案「{profileCreateNameTrimmed}」已存在，请更换名称。
+            </Typography.Paragraph>
+          )}
         </Modal>
 
         {/* 技能编辑 Modal（自定义：新建必填/编辑回显；内置：仅编辑模板内容+恢复默认） */}

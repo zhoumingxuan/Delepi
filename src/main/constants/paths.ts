@@ -29,12 +29,21 @@ export const OUTPUT_DIR_NAME = 'output';
 /** 上传目录名 */
 export const UPLOADS_DIR_NAME = 'uploads';
 
+/** 经验库根目录名（script_tool 门面工具的沉淀载体目录，与 skills/ 并排） */
+export const SCRIPTS_TOOLS_DIR_NAME = 'script-tools';
+
 // ============================================================
 // 文件名
 // ============================================================
 
 /** manifest 文件名 */
 export const MANIFEST_FILE_NAME = 'manifest.json';
+
+/** 经验库工具协议文件名（固定名，protocol.yaml） */
+export const SCRIPT_TOOL_PROTOCOL_FILE_NAME = 'protocol.yaml';
+
+/** 经验库工具统一调用入口文件名（固定名，main.py） */
+export const SCRIPT_TOOL_ENTRY_FILE_NAME = 'main.py';
 
 // ============================================================
 // Electron 路径段

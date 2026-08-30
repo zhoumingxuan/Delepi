@@ -7,6 +7,8 @@ import path from 'node:path';
 
 import { app } from 'electron';
 
+import { SCRIPTS_TOOLS_DIR_NAME } from './paths';
+
 // ============================================================
 // 工作流模板
 // ============================================================
@@ -26,6 +28,15 @@ export const EXECUTOR_WORKER_SKILLS_DIR = path.join(
   'skills',
 );
 
+/** 执行子智能体经验库根目录（生产：打包 resources/script-tools；开发：项目根 script-tools；同款三元式仿 EXECUTOR_WORKER_SKILLS_DIR） */
+export const SCRIPTS_TOOLS_DIR = path.join(
+  app.isPackaged ? process.resourcesPath : process.cwd(),
+  SCRIPTS_TOOLS_DIR_NAME,
+);
+
+/** 经验库工具目录数量上限（超出时扫描期自动剔除创建时间最旧的工具，R2） */
+export const MAX_SCRIPT_TOOLS = 32;
+
 /** 工具进度名称映射 */
 export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
   inspect_image: '图片识别',
@@ -33,6 +44,7 @@ export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
   read_file: '文件读取',
   run_shell: '命令行执行',
   fs_search: '文件系统搜索',
+  script_tool: '经验工具库调用',
 };
 
 /**
