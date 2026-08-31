@@ -240,35 +240,58 @@ function collectTaskConstraintDescriptions(value: unknown): string[] {
     .filter(Boolean);
 }
 
+/**
+ * 参数校验报错信息用：把单个参数当前值原样序列化为展示文本（完整原样输出，不截断、不截取、不做预览包装）。
+ * 仅用于错误消息文案组装，不参与任何校验判定。
+ */
+function formatParamCurrentValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
 function collectDelegateExecutorInputIssues(parsed: DelegateExecutorInput): string[] {
   const issues: string[] = [];
+  const deliveryTypeAllowedValues = `[${Array.from(EXECUTOR_DELIVERY_TYPE_SET).join('、')}]`;
 
+  // 报错文案写法：精确指向失败的单个参数并输出其当前值——值缺失/为空时写“缺失（未提供）”，
+  // 值非空时通过 formatParamCurrentValue 原样输出该参数当前值本身（不截断、不截取、不输出入参整体原文）
   if (!normalizeString(parsed.taskname)) {
-    issues.push('taskname 缺失或不是非空字符串');
+    issues.push('taskname 缺失（未提供），期望为非空字符串');
   }
 
   if (!normalizeString(parsed.task_type)) {
-    issues.push('task_type 缺失或不是非空字符串');
+    issues.push('task_type 缺失（未提供），期望为非空字符串');
   }
 
   if (!normalizeString(parsed.tasktarget)) {
-    issues.push('tasktarget 缺失或不是非空字符串');
+    issues.push('tasktarget 缺失（未提供），期望为非空字符串（允许用同义字段 target 传入）');
   }
 
   if (!normalizeExpectedDeliveryType(parsed.delivery_type)) {
-    issues.push('delivery_type 缺失或不在允许范围内');
+    issues.push(
+      !normalizeString(parsed.delivery_type)
+        ? `delivery_type 缺失（未提供），期望为以下之一：${deliveryTypeAllowedValues}`
+        : `delivery_type 当前值 ${formatParamCurrentValue(parsed.delivery_type)} 不在允许范围 ${deliveryTypeAllowedValues}`
+    );
   }
 
   if (!normalizeString(parsed.delivery_spec)) {
-    issues.push('delivery_spec 缺失或不是非空字符串');
+    issues.push('delivery_spec 缺失（未提供），期望为非空字符串');
   }
 
   if (!normalizeString(parsed.context)) {
-    issues.push('context 缺失或不是非空字符串');
+    issues.push('context 缺失（未提供），期望为非空字符串');
   }
 
   if (!Array.isArray(parsed.skills)) {
-    issues.push('skills 缺失或不是数组');
+    issues.push(
+      !normalizeString(parsed.skills)
+        ? 'skills 缺失（未提供），期望为数组（元素需为允许的技能标签）'
+        : `skills 当前值 ${formatParamCurrentValue(parsed.skills)} 不是数组，期望为数组（元素需为允许的技能标签）`
+    );
   }
 
   return issues;
@@ -295,16 +318,21 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
     if (error instanceof SyntaxError) {
       return {
         input: null,
-        issues: ['rawArguments 不是合法 JSON'],
+        issues: ['arguments 当前值不是合法 JSON 文本（无法解析），期望为合法 JSON 对象字符串'],
       };
     }
     throw error;
   }
 
   if (!isRecord(rawParsed)) {
+    const actualTypeName = Array.isArray(rawParsed)
+      ? 'array'
+      : rawParsed === null
+        ? 'null'
+        : typeof rawParsed;
     return {
       input: null,
-      issues: ['arguments 不是 JSON 对象'],
+      issues: [`arguments 当前值 ${formatParamCurrentValue(rawParsed)} 不是 JSON 对象（${actualTypeName} 类型），期望为 JSON 对象`],
     };
   }
 

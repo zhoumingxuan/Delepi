@@ -63,6 +63,9 @@ export function ChatShell() {
     showScrollToBottom,
     setShowScrollToBottom,
     stickToBottomRef,
+    /** ★ BUG3 修复：取消待收口标记查询 / 可重发通知订阅 */
+    isConversationCancelPendingSettle,
+    onCancelPendingSettleReissue,
   } = useChat({ messageApi: { error: (content: string) => messageApi.error(content) } });
 
   const { config, loading: configLoading, saveConfig, saveAllConfig, reloadConfig } =
@@ -82,6 +85,15 @@ export function ChatShell() {
   // 期间二次点击可能重复建会话/重复发送，故该键在途时保持与原全局锁一致的全局拦截语义
   const NO_CONVERSATION_FLIGHT_KEY = '__no_conversation_in_flight__';
   const sendInFlightConversationIdsRef = useRef<Set<string>>(new Set()); // 防重入（按会话隔离）：记录在途发送的会话 id，拦截同会话重复触发
+  // ★ BUG3 修复（取消后窗口内发送排队重发）：取消窗口内暂存的待发文本（按会话 ID 键控）。
+  //   flightKey 命中且该会话存在"取消待收口"标记时暂存原文本；flightKey 释放（前序
+  //   chat:send promise settle）后自动以原内容重走完整 handleSend 流程（仍过全部现有
+  //   发送守卫）。附件不入暂存：重发时按 pendingFiles 现状走既有上传/附件流程，与正常
+  //   发送同源。取走即删保证至多重发一次。
+  const queuedResendTextsRef = useRef<Map<string, string>>(new Map());
+  // ★ BUG3 修复：handleSend 最新引用（排队重发经此调用，规避 useCallback 自引用依赖；
+  //   渲染期同步赋值，模式对齐 messageApiRef/conversationsRef）
+  const handleSendRef = useRef<((senderTextOrQueued?: string | { text: string; conversationId: string | null }) => Promise<void>) | null>(null);
   const latestConversationIdRef = useRef<string | null>(conversationId);  // 上传等待期间检测会话是否被切换
 
   const [inputValue, setInputValue] = useState('');
@@ -206,15 +218,22 @@ const { check, canCheck } = useConfigReadiness({
   // - 未上传完成的文件（pending/uploading/error）不参与本次发送
   // - sendMessage 第二参数改为 SendAttachment[]（来自 file:upload 已落盘的元数据）
   // ============================================================
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(async (senderTextOrQueued?: string | { text: string; conversationId: string | null }) => {
+    // ★ BUG3 修复：queued 非空=取消窗口内排队重发（text/conversationId 均为暂存时的原快照）；
+    //   SenderBox 常规调用只传 string（该实参本就不参与发送内容组装），沿用 inputValue，
+    //   全部行为不变
+    const queued = typeof senderTextOrQueued === 'object' ? senderTextOrQueued : undefined;
     // ── ★ M3（一个对话一个 is_running 标志位）：在任何 await 之前捕获目标会话 ID。
     //    本函数内一切守卫/停止/上传/发送一律以该捕获值为唯一身份依据，消除
     //    conversationIdRef.current 在 await 期间被切会话改写导致的身份漂移：
     //    B 的消息只发往 B、停止动作只作用于用户按下那一刻所在的目标会话 ──
-    const targetConversationId = conversationId;
+    const targetConversationId = queued ? queued.conversationId : conversationId;
+    // ★ BUG3 修复：发送文本统一取 sendText（正常= inputValue；queued 重发=原文本快照）
+    const sendText = queued ? queued.text : inputValue;
 
     // ── ★ M2：新建会话在途（conv:create 未返回）期间目标身份未定 → 拒绝发送 ──
-    if (creatingConversation) return;
+    // ★ BUG3 修复：queued 重发目标身份已由暂存快照锚定（必为已存在会话），不受新建在途影响
+    if (!queued && creatingConversation) return;
 
     // ── 配置就绪守卫：未就绪则弹出 ConfigCheckModal 阻断发送 ──
     if (canCheck) {
@@ -226,7 +245,9 @@ const { check, canCheck } = useConfigReadiness({
       }
     }
 
-    if (showCancel) {
+    // ★ BUG3 修复：queued 重发是程序触发的发送动作，不是"点发送=停止"的用户手势；
+    //   且重发仅在前序 chat:send promise settle（目标会话运行态已复位）后发生
+    if (!queued && showCancel) {
       // ★ M3：停止动作绑定捕获的目标会话 ID——即便此间会话被切换，
       //   也只中止用户按下发送/停止那一刻的目标会话，不误伤其他运行中会话
       abortChat(targetConversationId);
@@ -237,7 +258,11 @@ const { check, canCheck } = useConfigReadiness({
       messageApi.warning('文件上传中，请稍候再发送');
       return;
     }
-    if (!canSend) return;
+    // ★ BUG3 修复：queued 重发不做 canSend 渲染闭包判定——canSend 基于当前会话/当前
+    //   输入框计算，与重发目标（暂存快照）无关；其内容非空性由暂存前提保证（暂存仅发生
+    //   在 canSend=true 的发送尝试上），showCancel/上传中/配置守卫已在上方对 queued
+    //   逐项生效，重发仍通过全部现有发送守卫
+    if (!queued && !canSend) return;
     // 防重入（按会话隔离，双击/回车连击）：同会话在途则拦截；无会话 id（null→创建会话流程）在途时保持原全局拦截语义
     // ★ M3：flightKey 直接复用进入时捕获的 targetConversationId（与守卫/发送同源，杜绝二次读取状态漂移）
     const flightConversationId = targetConversationId; // 捕获进入 handleSend 时的会话 id：finally 释放必须用此捕获值，防会话切换后误删他话
@@ -245,7 +270,20 @@ const { check, canCheck } = useConfigReadiness({
     if (
       sendInFlightConversationIdsRef.current.has(NO_CONVERSATION_FLIGHT_KEY) ||
       sendInFlightConversationIdsRef.current.has(flightKey)
-    ) return;
+    ) {
+      // ★ BUG3 修复：命中防重入时按"取消待收口"标记区分——
+      //   a) 标记存在（用户已取消、前序 chat:send promise 尚未 settle，flightKey 未释放
+      //      窗口）：暂存本次待发原文本，flightKey 释放后自动重发（不静默丢弃）；
+      //   b) 无标记（普通连击）：保持原静默防重入行为完全不变。
+      //   无会话 id（null→创建会话流程）不参与排队（标记仅按具体会话 ID 键控）。
+      if (
+        flightConversationId !== null &&
+        isConversationCancelPendingSettle(flightConversationId)
+      ) {
+        queuedResendTextsRef.current.set(flightConversationId, sendText);
+      }
+      return;
+    }
     sendInFlightConversationIdsRef.current.add(flightKey);
     try {
       const uploadedItems = pendingFiles.filter((i) => i.uploadStatus === 'uploaded' && i.uploadedFile);
@@ -311,9 +349,22 @@ const { check, canCheck } = useConfigReadiness({
       setInputValue(''); // ★修复：对齐 ai_fr chat-shell.tsx L2171-2173——消息受理即清空输入框。闭包 inputValue 已捕获原文本，下行 sendMessage 发送内容不受影响
       // ★ M1+M3：第三参显式传入进入时捕获的目标会话 ID——sendMessage 内部五重守卫与
       //   IPC 投递均按该 ID 判定/路由，不再依赖 await 后的 conversationIdRef.current
-      await sendMessage(inputValue, attachments, targetConversationId);
+      // ★ BUG3 修复：发送文本统一取 sendText（queued 重发=原文本快照，正常= inputValue 不变）
+      await sendMessage(sendText, attachments, targetConversationId);
     } finally {
       sendInFlightConversationIdsRef.current.delete(flightKey); // 释放进入时捕获的键：禁用 finally 时刻的 conversationId 状态变量（会话切换后已变值会误删他话）
+      // ★ BUG3 修复：flightKey 已释放（=前序 chat:send promise settle 之后；渲染层 abort
+      //   归一化（chat:aborted 处理器）与 conversation:updated 合并由主进程在 chat:abort
+      //   内先于 settle 推送、渲染层按序先行完成），此时若该会话存在取消窗口暂存的待发
+      //   内容，取走即删并自动以原内容重走完整 handleSend 流程（重发仍须通过全部现有
+      //   发送守卫；取走即删保证至多重发一次）
+      if (flightConversationId !== null) {
+        const queuedResendText = queuedResendTextsRef.current.get(flightConversationId);
+        if (queuedResendText !== undefined) {
+          queuedResendTextsRef.current.delete(flightConversationId);
+          void handleSendRef.current?.({ text: queuedResendText, conversationId: flightConversationId });
+        }
+      }
     }
   }, [
     showCancel,
@@ -327,6 +378,7 @@ const { check, canCheck } = useConfigReadiness({
     canCheck,
     conversationId,
     creatingConversation,
+    isConversationCancelPendingSettle,
     createConversation,
     fileUploadingCount,
     setPendingUploadStatus,
@@ -339,6 +391,23 @@ const { check, canCheck } = useConfigReadiness({
     //   与按钮渲染态（showCancel 按当前会话计算）保持同一身份
     abortChat(conversationId);
   }, [abortChat, conversationId]);
+
+  // ★ BUG3 修复：渲染期同步 handleSend 最新引用（排队重发经此调用，规避 useCallback
+  //   自引用依赖；模式对齐 messageApiRef/conversationsRef）
+  handleSendRef.current = handleSend;
+
+  // ★ BUG3 修复：订阅取消待收口"可重发"通知。正常时序下重发已由 handleSend 的 finally
+  //   主触发完成（暂存取走即删，此处空转）；若异常时序下通知到达时该会话 flightKey 已
+  //   释放且暂存仍在，则在此兜底触发（幂等，保证至多重发一次）
+  useEffect(() => {
+    return onCancelPendingSettleReissue((reissueConversationId: string) => {
+      if (sendInFlightConversationIdsRef.current.has(reissueConversationId)) return;
+      const queuedText = queuedResendTextsRef.current.get(reissueConversationId);
+      if (queuedText === undefined) return;
+      queuedResendTextsRef.current.delete(reissueConversationId);
+      void handleSendRef.current?.({ text: queuedText, conversationId: reissueConversationId });
+    });
+  }, [onCancelPendingSettleReissue]);
 
   const handleNewChat = useCallback(async () => {
     await createConversation();

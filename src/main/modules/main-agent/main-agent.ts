@@ -817,6 +817,9 @@ export async function runMainAgent(
     //   非 null 回写干净 arguments（A 内存 / B 运行态 / C SQLite / D IPC / E executor_messages.json 五层均记录干净版）；
     //   任一 null → 整轮拒绝（不构建、不 push、不 emit、不落库），当轮重生成重试
     let hasInvalidDelegateArguments = false;
+    // 报错信息定位信息：记录首个校验失败的 delegate_executor 调用（callId + arguments 当前状态说明），
+    // 仅用于超限报错文案补充失败位置，不影响校验判定与重试流程
+    let invalidDelegateArgumentsDetail = '';
     for (const toolCall of filteredToolCalls) {
       if (toolCall.function.name !== 'delegate_executor') {
         continue;
@@ -824,6 +827,11 @@ export async function runMainAgent(
       const sanitizedArguments = sanitizeDelegateArguments(toolCall.function.arguments);
       if (sanitizedArguments === null) {
         hasInvalidDelegateArguments = true;
+        const rawDelegateArguments = toolCall.function.arguments;
+        const delegateArgumentsState = !rawDelegateArguments || !rawDelegateArguments.trim()
+          ? '缺失（未提供），期望为 JSON 对象字符串'
+          : '当前值不是合法 JSON 文本（无法解析），期望为合法 JSON 对象字符串';
+        invalidDelegateArgumentsDetail = `callId=${toolCall.id}，arguments ${delegateArgumentsState}`;
         break;
       }
       toolCall.function.arguments = sanitizedArguments;
@@ -836,7 +844,7 @@ export async function runMainAgent(
       // 超限兜底：走既有 MAIN_AGENT_ERROR_EVENT（1364-1368 模式）报错终止本轮，禁止任何入库
       if (delegateArgsRetryCount >= DELEGATE_ARGUMENTS_RETRY_LIMIT) {
         const delegateArgsLimitError =
-          'delegate_executor 参数校验失败超过重试上限，本轮已终止，请重发消息。';
+          `delegate_executor 参数校验失败超过重试上限（失败位置：${invalidDelegateArgumentsDetail}），本轮已终止，请重发消息。`;
         eventBus.emit(MAIN_AGENT_ERROR_EVENT, {
           conversationId,
           error: delegateArgsLimitError,
