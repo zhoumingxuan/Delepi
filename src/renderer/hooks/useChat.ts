@@ -814,6 +814,17 @@ export function useChat(options?: UseChatOptions) {
   const [pendingConversationSendIds, setPendingConversationSendIds] = useState<Set<string>>(new Set());
   const pendingSendRef = useRef<Set<string>>(new Set());
   /**
+   * ★ BUG3 修复（取消后窗口内发送排队重发）：取消待收口标记集合（按会话 ID 键控）。
+   * abortChat 发起取消时记录：该会话此刻存在在途 chat:send promise（其 IPC resolve 要等
+   * 主进程 runMainAgent 响应 abort 完整退出才返回，与取消同步清理 UI 之间构成
+   * "UI 已恢复但 flightKey 未释放"窗口）。ChatShell 在 flightKey 命中且标记存在时把
+   * 待发内容暂存排队，待前序 settle 后自动重发。前序 chat:send promise settle（含
+   * ERR_ABORTED 抛错路径）时无论标记是否存在一律清理（防残留误排队）。
+   */
+  const cancelPendingSettleConversationIdsRef = useRef<Set<string>>(new Set());
+  /** ★ BUG3 修复：取消待收口"可重发"通知订阅者（ChatShell 注册，参数=已收口会话 ID） */
+  const cancelPendingSettleReissueListenersRef = useRef<Set<(conversationId: string) => void>>(new Set());
+  /**
    * P3-1 守卫 3：正在发送的对话 ID 集合
    * 用于 sendMessage 前判断当前活跃会话是否在发送中
    */
@@ -1297,7 +1308,16 @@ const scheduleProjection = useCallback(() => {
           }
 
           // ★ M20：会话运行中时 fire-and-forget 补一轮轻量查询（切回/激活对账自动恢复运行中快照）
-          if (resumeActiveRun) void fetchRunningSnapshots(id).catch(() => undefined);
+          // ★ BUG2 修复①（委派快照即时恢复）：委派批次执行期批次声明 assistant 消息 status='success'
+          //   （经 runningAssistantMessages 附加返回、批次末才落库），hasActiveRun 仅认 status='loading'
+          //   恒为 false → resumeActiveRun 恒为 false，切回时即时快照恢复不执行，只能等 10s 轮询兜底。
+          //   故将触发条件扩展为 resumeActiveRun 或会话权威态 isRunning===true（conversations.is_running
+          //   按行权威值）；suppressActiveRunResume（chat:aborted 重载）仍强制不触发，防取消竞态复活。
+          //   fetchRunningSnapshots 幂等轻量：空快照直接返回，仅局部更新 toolSnapshots，不触碰 messages。
+          const shouldRestoreSnapshots = !options?.suppressActiveRunResume
+            && (resumeActiveRun
+              || Boolean(conversationsRef.current.find((c) => c.id === id)?.isRunning));
+          if (shouldRestoreSnapshots) void fetchRunningSnapshots(id).catch(() => undefined);
         }
       } catch (err) {
         console.error('[useChat] 加载对话消息失败:', err);
@@ -1326,6 +1346,17 @@ const scheduleProjection = useCallback(() => {
         const toolCallId = item?.toolCallId;
         if (!toolCallId || entry.completedToolCallIds.has(toolCallId)) continue;  // 已收口键不复活
         const updatedAt = new Date().toISOString();
+        // ★ BUG2 修复②（计时锚定·路线B）：从本会话消息基座 entry.messages 中查找携带该委派 callId 的
+        //   assistant 消息（conv:get-messages 经 runningAssistantMessages 附加返回的批次声明消息，
+        //   toolCalls[].callId = 委派 toolCall.id = 快照键 toolCallId），以其 createdAt（= 批次起点
+        //   toolCallTurnStartedAt）作为新建快照的计时基准；查找失败时回退现状（createdAt = updatedAt）。
+        //   已存在快照的合并分支不触碰 createdAt。
+        const hostAssistantMessage = entry.messages.find(
+          (message) =>
+            message.role === 'assistant'
+            && Array.isArray(message.toolCalls)
+            && message.toolCalls.some((toolCall) => toolCall.callId === toolCallId),
+        );
         next[toolCallId] = next[toolCallId]
           ? {
               ...next[toolCallId],
@@ -1345,7 +1376,7 @@ const scheduleProjection = useCallback(() => {
               name: item.taskName,
               lastContent: item.latestToolCallText,
               lastType: item.latestToolCallText ? 'tool-progress' : 'thinking',
-              createdAt: updatedAt,
+              createdAt: hostAssistantMessage?.createdAt ?? updatedAt,
               updatedAt,
               source: 'executor',
             };
@@ -1431,6 +1462,38 @@ const scheduleProjection = useCallback(() => {
       void loadConversations();
     }, 200);
   }, [clearConversationNavigationReloadTimeout, loadConversations]);
+
+  // ============================================================
+  // ★ BUG3 修复（取消后窗口内发送排队重发）：取消待收口标记查询 + "可重发"通知
+  // ============================================================
+  /** 该会话是否存在"取消待收口"标记（取消已发起、前序 chat:send promise 尚未 settle） */
+  const isConversationCancelPendingSettle = useCallback(
+    (conversationId: string | null): boolean => {
+      if (!conversationId) return false;
+      return cancelPendingSettleConversationIdsRef.current.has(conversationId);
+    },
+    [],
+  );
+  /** 订阅取消待收口"可重发"通知（参数=已收口会话 ID）；返回退订函数 */
+  const onCancelPendingSettleReissue = useCallback(
+    (listener: (conversationId: string) => void) => {
+      cancelPendingSettleReissueListenersRef.current.add(listener);
+      return () => {
+        cancelPendingSettleReissueListenersRef.current.delete(listener);
+      };
+    },
+    [],
+  );
+  /** 内部：向订阅者发出"可重发"通知（单订阅者异常不影响其余订阅者） */
+  const notifyCancelPendingSettleReissue = useCallback((conversationId: string) => {
+    for (const listener of Array.from(cancelPendingSettleReissueListenersRef.current)) {
+      try {
+        listener(conversationId);
+      } catch (err) {
+        console.error('[useChat] 取消待收口可重发通知回调异常:', err);
+      }
+    }
+  }, []);
 
   // 发送消息
   // ============================================================
@@ -1590,6 +1653,15 @@ const scheduleProjection = useCallback(() => {
         //   因此 catch 块需自行把已经 push 的 loading 消息归一化为 abort
         setMessages((prev) => markRunningMessagesAbortedInList(prev));
         setToolSnapshots((prev) => markRunningToolSnapshotsAbortedInList(prev));
+      } finally {
+        // ★ BUG3 修复：前序 chat:send promise settle 收口（成功返回与 catch 的 ERR_ABORTED
+        //   等抛错路径均覆盖）。无论标记是否存在一律清理该会话"取消待收口"标记（防残留
+        //   导致误排队重发）；标记确实存在（=取消场景收口）时产生"可重发"通知——
+        //   ChatShell 在该会话 flightKey 释放后把取消窗口内暂存的待发内容自动重发。
+        //   注意：守卫 early-return（未发起 chat:send）不会进入 try，不受影响。
+        if (convId && cancelPendingSettleConversationIdsRef.current.delete(convId)) {
+          notifyCancelPendingSettleReissue(convId);
+        }
       }
     },
     [
@@ -1598,6 +1670,7 @@ const scheduleProjection = useCallback(() => {
       isConversationRunning,
       createConversation,
       setConversationSending,
+      notifyCancelPendingSettleReissue,
     ],
   );
 
@@ -1610,6 +1683,11 @@ const scheduleProjection = useCallback(() => {
       try {
         if (window.electronAPI) {
           window.electronAPI.chat.abort(convId);
+          // ★ BUG3 修复：取消发起即记录"取消待收口"标记（按会话 ID 键控）。该会话此刻
+          //   必有在途 chat:send promise（其 IPC resolve 依赖主进程 runMainAgent 完整退出，
+          //   flightKey 释放晚于取消同步清理出的 UI 恢复）；ChatShell 据此把取消窗口内的
+          //   发送请求暂存排队重发，而非被 flightKey 防重入静默拦截。
+          cancelPendingSettleConversationIdsRef.current.add(convId);
         }
       } catch (err) {
         console.error('[useChat] 中止失败:', err);
@@ -2371,6 +2449,10 @@ const scheduleProjection = useCallback(() => {
     error,
     sendMessage,
     abortChat,
+    /** ★ BUG3 修复：取消待收口标记查询（取消已发起、前序 chat:send promise 尚未 settle） */
+    isConversationCancelPendingSettle,
+    /** ★ BUG3 修复：订阅取消待收口"可重发"通知（参数=已收口会话 ID，返回退订函数） */
+    onCancelPendingSettleReissue,
     createConversation,
     deleteConversation,
     switchConversation,
