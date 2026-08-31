@@ -6,7 +6,7 @@
  * - 分支二【调用】七步：根目录检查 → 定位工具目录（目录名精确等值）→ 读校验协议 → 手工校验 params →
  *   组装 input.json（内容=params 原样，D13）→ spawn python main.py（cwd=工具目录；PYTHONUTF8=1；
  *   SCRIPT_TOOL_WORK_DIR=会话工作目录，D14；超时=调用参数 timeout 显式传入时优先、否则按协议 timeout_seconds；
- *   timeout=-1=挂起类型调用：只启动进程，不等待/不采集输出/不超时终止）→ stdout 末行非空 JSON 映射 ToolResult。
+ *   timeout=-1=挂起类型调用：只启动进程，不等待/不采集输出/不超时终止）→ stdout 完整透传至 data、stderr 完整透传至 message（超 16K 截断并附提示后缀），success=进程退出码===0。
  *
  * 遵循 dyn-tool-loader.ts L228-230 “只读参照，不 import 不依赖”哲学（D6）：
  * 执行内核独立参照实现，不 import dyn-tool-loader 内部函数。
@@ -38,8 +38,8 @@ import {
 // 输入解析与公共助手
 // ============================================================
 
-function fail(code: string, message: string, nextSuggestion?: string): ToolResult {
-  return buildToolResult({ success: false, code, message, nextSuggestion });
+function fail(code: string, message: string): ToolResult {
+  return buildToolResult({ success: false, code, message });
 }
 
 /** V1/C1：根目录存在性检查 + 兜底重建一次（R2 启动创建失败的补偿；重建失败才报 DIR_MISSING） */
@@ -61,31 +61,6 @@ function buildDirMissingResult(detail: string): ToolResult {
     `经验库根目录不存在且兜底重建失败：${SCRIPTS_TOOLS_DIR}（期望路径）。原因：${detail}。` +
       '维护指引：请确认程序目录可写（打包态 resources 只读时以 SCRIPT_TOOL_DIR_NOT_WRITABLE 语义如实上报），重启程序将再次自动尝试创建。',
   );
-}
-
-/** 输出超限防护：对 data 的全部字符串值递归应用统一截断（MAX_OUTPUT_LENGTH=16384，result.ts 语义） */
-function truncateDeepStringValues(data: Record<string, unknown>): Record<string, unknown> {
-  const walk = (value: unknown): unknown => {
-    if (typeof value === 'string') {
-      return truncateToolOutput(value);
-    }
-    if (Array.isArray(value)) {
-      return value.map(walk);
-    }
-    if (value && typeof value === 'object') {
-      const out: Record<string, unknown> = {};
-      for (const [key, item] of Object.entries(value)) {
-        out[key] = walk(item);
-      }
-      return out;
-    }
-    return value;
-  };
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(data)) {
-    out[key] = walk(item);
-  }
-  return out;
 }
 
 // ============================================================
@@ -188,9 +163,8 @@ async function executeScriptToolView(toolName: string | undefined): Promise<Tool
 
     return buildToolResult({
       success: true,
-      code: SCRIPT_TOOL_CODES.OK,
       message: `已返回工具「${toolName}」的协议全文（protocol.yaml 原样）与解析摘要。`,
-      data: truncateDeepStringValues({
+      data: {
         tool_name: hit.dirName,
         root_dir: SCRIPTS_TOOLS_DIR,
         tool_dir: hit.toolDir,
@@ -206,8 +180,7 @@ async function executeScriptToolView(toolName: string | undefined): Promise<Tool
           ...(hit.protocol.applicableConditions ? { applicable_conditions: hit.protocol.applicableConditions } : {}),
           ...(hit.protocol.pythonDeps ? { python_deps: hit.protocol.pythonDeps } : {}),
         },
-      }),
-      nextSuggestion: '调用前请按 protocol.inputSchema 组装 params（先调用后复用经验库沉淀的稳定实现）。',
+      },
     });
   }
 
@@ -232,7 +205,6 @@ async function executeScriptToolView(toolName: string | undefined): Promise<Tool
   }
 
   let message: string;
-  let code: string = SCRIPT_TOOL_CODES.OK;
   if (validEntries.length === 0) {
     message =
       '经验库为空（空库属正常状态：经验库内容由使用期沉淀产生，无出厂预置）。' +
@@ -245,13 +217,12 @@ async function executeScriptToolView(toolName: string | undefined): Promise<Tool
 
   // 超限兜底提示（R2：扫描期自动剔除已在协议层收口，本分支为删除未完全成功时的不可达兜底；不硬阻断，存量工具仍可调用）
   if (validEntries.length > MAX_SCRIPT_TOOLS) {
-    code = SCRIPT_TOOL_CODES.DIR_LIMIT;
     data.warning =
       `SCRIPT_TOOL_DIR_LIMIT：合法工具数 ${validEntries.length} 超过 MAX_SCRIPT_TOOLS=${MAX_SCRIPT_TOOLS}（扫描期自动剔除未完全成功，存量工具仍可调用）；` +
       '请合并同类工具或手动清理创建时间最旧的工具目录。';
   }
 
-  return buildToolResult({ success: true, code, message, data });
+  return buildToolResult({ success: true, message, data });
 }
 
 // ============================================================
@@ -444,18 +415,6 @@ function buildScriptToolEnv(runDir: string | undefined): NodeJS.ProcessEnv {
   };
 }
 
-/** 提取 stdout 中最后一个非空行（约定：main.py 末行输出结果 JSON） */
-function extractLastNonEmptyLine(stdout: string): string {
-  const lines = stdout.split(/\r?\n/);
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i].trim();
-    if (line) {
-      return line;
-    }
-  }
-  return '';
-}
-
 async function executeScriptToolProcess(options: {
   inputPath: string;
   toolName: string;
@@ -506,10 +465,9 @@ async function executeScriptToolProcess(options: {
       resolve(
         buildToolResult({
           success: true,
-          code: SCRIPT_TOOL_CODES.OK,
           message: `经验库工具（${options.toolName}）已按挂起类型启动（timeout=-1）：只启动进程，不等待结束、不采集输出、不超时终止。PID: ${
             child.pid ?? '未知'
-          }；当前任务结束前请务必清理（Windows 可用 run_shell 执行 taskkill /PID ${child.pid ?? '<PID>'} /T /F）`,
+          }；当前任务结束前请务必清理`,
           data: {
             tool_name: options.toolName,
             suspended: true,
@@ -609,65 +567,30 @@ async function executeScriptToolProcess(options: {
         return;
       }
 
+      // stdout/stderr 完整透传：不做 JSON 解析/末行提取/逐字段截断等加工，仅经 truncateToolOutput 16K 截断+提示后缀
       const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
       const stderr = Buffer.concat(stderrChunks).toString('utf-8');
 
-      if (code !== 0) {
-        finish(
-          fail(
-            SCRIPT_TOOL_CODES.EXITED_NON_ZERO,
-            `经验库工具（${options.toolName}）进程非零退出（code=${code ?? 'null'}）：${
-              stderr.trim().slice(-512) || stdout.trim().slice(-512)
-            }（硬性约定：main.py 必须恒以退出码 0 结束，业务成败由 stdout 末行 JSON 的 success 表达）`,
-          ),
-        );
-        return;
+      const success = code === 0;
+      const stdoutText = stdout.trim();
+      const stderrText = stderr.trim();
+
+      let message: string;
+      if (stderrText) {
+        message = truncateToolOutput(stderrText);
+      } else if (!success) {
+        message = `经验库工具（${options.toolName}）进程非零退出（code=${code ?? 'null'}）`;
+      } else {
+        message = '';
       }
 
-      const lastLine = extractLastNonEmptyLine(stdout);
-      if (!lastLine) {
-        finish(
-          fail(
-            SCRIPT_TOOL_CODES.OUTPUT_EMPTY,
-            `经验库工具（${options.toolName}）stdout 为空：main.py 须在 stdout 末行输出结果 JSON（日志/中间输出一律走 stderr）`,
-          ),
-        );
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(lastLine) as Record<string, unknown>;
-        const success = parsed.success === true;
-        const mappedData =
-          parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)
-            ? truncateDeepStringValues(parsed.data as Record<string, unknown>)
-            : undefined;
-        finish(
-          buildToolResult({
-            success,
-            code: success ? SCRIPT_TOOL_CODES.OK : SCRIPT_TOOL_CODES.FAILED,
-            message: truncateToolOutput(
-              typeof parsed.message === 'string'
-                ? parsed.message
-                : success
-                  ? `经验库工具（${options.toolName}）执行成功`
-                  : `经验库工具（${options.toolName}）返回 success=false 且未提供 message`,
-            ),
-            data: mappedData,
-            nextSuggestion:
-              typeof parsed.next_suggestion === 'string' && parsed.next_suggestion.trim()
-                ? truncateToolOutput(parsed.next_suggestion)
-                : undefined,
-          }),
-        );
-      } catch (error) {
-        finish(
-          fail(
-            SCRIPT_TOOL_CODES.OUTPUT_INVALID,
-            `经验库工具（${options.toolName}）stdout 末行不是合法 JSON：${ensureErrorMessage(error)}；末行内容：${lastLine.slice(0, 256)}`,
-          ),
-        );
-      }
+      finish(
+        buildToolResult({
+          success,
+          message,
+          data: truncateToolOutput(stdoutText),
+        }),
+      );
     });
   });
 }

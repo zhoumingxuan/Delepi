@@ -9,8 +9,7 @@ export interface ToolResult {
   success: boolean;
   code: string;
   message: string;
-  data?: Record<string, unknown>;
-  next_suggestion?: string;
+  data?: Record<string, unknown> | string;
 }
 
 // ToolResult 类型本地定义
@@ -40,10 +39,10 @@ function hasSuspectedChineseMojibake(text: string): boolean {
 
 function appendOutputWarningMessage(
   message: string,
-  data: Record<string, unknown>,
+  data: Record<string, unknown> | string,
 ): string {
-  const stdout = typeof data.stdout === 'string' ? data.stdout : '';
-  const stderr = typeof data.stderr === 'string' ? data.stderr : '';
+  const stdout = typeof data === 'string' ? '' : (typeof data.stdout === 'string' ? data.stdout : '');
+  const stderr = typeof data === 'string' ? '' : (typeof data.stderr === 'string' ? data.stderr : '');
 
   if (
     !hasSuspectedChineseMojibake(stdout) &&
@@ -76,50 +75,34 @@ export function buildExecutedToolResultData(options: {
 
 export function buildToolResult(options: {
   success: boolean;
-  code: string;
+  code?: string;
   message: string;
-  data?: Record<string, unknown>;
-  nextSuggestion?: string;
+  data?: Record<string, unknown> | string;
 }): ToolResult {
   const data = options.data ?? {};
-  const result: ToolResult = {
+  return {
     success: options.success,
-    code: options.code,
+    code: options.code ?? '',
     message: appendOutputWarningMessage(options.message, data),
     data,
   };
-  const nextSuggestion = options.nextSuggestion?.trim();
-
-  if (nextSuggestion) {
-    result.next_suggestion = nextSuggestion;
-  }
-
-  return result;
 }
 
 export function buildSimpleToolResult(options: {
   success: boolean;
-  code: string;
+  code?: string;
   message: string;
-  data?: Record<string, unknown>;
-  nextSuggestion?: string;
+  data?: Record<string, unknown> | string;
 },id:string): {id:string,result:ToolResult} {
   const data = options.data ?? {};
-  const result: ToolResult = {
-    success: options.success,
-    code: options.code,
-    message: appendOutputWarningMessage(options.message, data),
-    data,
-  };
-  const nextSuggestion = options.nextSuggestion?.trim();
-
-  if (nextSuggestion) {
-    result.next_suggestion = nextSuggestion;
-  }
-
   return {
     id:id,
-    result:result
+    result:{
+      success: options.success,
+      code: options.code ?? '',
+      message: appendOutputWarningMessage(options.message, data),
+      data,
+    }
   };
 }
 
@@ -158,6 +141,15 @@ export function truncateLinesToLimit(lines: string[]): string {
   return lines.join('\n');
 }
 
+/** 返回给模型的结构化输出：仅 success/message/data 三字段（code 等内部字段不外泄） */
 export function stringifyToolResult(result: ToolResult): string {
-  return JSON.stringify(result, null, 2);
+  return JSON.stringify(
+    {
+      success: result.success,
+      message: result.message,
+      ...(result.data !== undefined ? { data: result.data } : {}),
+    },
+    null,
+    2,
+  );
 }

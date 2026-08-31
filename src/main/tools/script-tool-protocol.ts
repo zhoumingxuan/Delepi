@@ -22,7 +22,7 @@ import {
 import { SCRIPTS_TOOLS_DIR } from '../constants/agent';
 
 // ============================================================
-// 错误码（19 项错误码表；执行侧超时/中止/输出类错误码由 script-tool.ts 使用）
+// 错误码（17 项错误码表；执行侧超时/中止/启动类错误码由 script-tool.ts 使用）
 // ============================================================
 
 export const SCRIPT_TOOL_CODES = {
@@ -39,10 +39,7 @@ export const SCRIPT_TOOL_CODES = {
   INPUT_WRITE_ERROR: 'INPUT_WRITE_ERROR',
   SPAWN_ERROR: 'SCRIPT_TOOL_SPAWN_ERROR',
   TIMEOUT: 'SCRIPT_TOOL_TIMEOUT',
-  EXITED_NON_ZERO: 'SCRIPT_TOOL_EXITED_NON_ZERO',
   ABORTED: 'SCRIPT_TOOL_ABORTED',
-  OUTPUT_EMPTY: 'SCRIPT_TOOL_OUTPUT_EMPTY',
-  OUTPUT_INVALID: 'SCRIPT_TOOL_OUTPUT_INVALID',
   OK: 'SCRIPT_TOOL_OK',
   FAILED: 'SCRIPT_TOOL_FAILED',
   DIR_NOT_WRITABLE: 'SCRIPT_TOOL_DIR_NOT_WRITABLE',

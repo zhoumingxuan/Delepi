@@ -163,7 +163,7 @@ type CompletedTask = {
   taskName: string;
   success: boolean;
   message: string;
-  data?: Record<string, unknown>;
+  data?: Record<string, unknown> | string;
   startAt?: string;
   finishedAt?: string;
   durationSeconds?: number;

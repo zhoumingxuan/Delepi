@@ -61,15 +61,17 @@ ${options.sessionDirectoryText.trim()}
 - 经验库主目录："${options.scriptsToolsDirText.trim()}"。
 - 经验库只经 script_tool 工具操作，动作仅两个：【查看协议】、【调用】；tool_name 填工具名（=工具目录名）。
 - 必须先【查看协议】确认目标工具的参数结构，再【调用】；禁止凭记忆猜测参数直接调用。
+- 经验库主目录严格禁止存放任何产物；但允许经验库下每个工具做【日志记录】。
 \`\`\`
 
 # 经验工具库维护规范（** 内部规则，必须严格遵守 **）
 \`\`\`
-- 新增工具触发条件：试了很多次、不停试错直到最终成功的操作，沉淀为一个工具；不停模糊查找执行路径、同时做了多次重复操作的过程，简化成一个直接性路径，沉淀为一个工具。
+- 工具目录：在经验库（script-tools）下为每个工具建立独立目录，目录内必须有 main.py 与 protocol.yaml 两个文件。
+- protocol.yaml：工具的协议文件；仅允许 8 个字段：name、title、description、inputSchema、timeout_seconds、progress_name、applicable_conditions、python_deps。
+- main.py：工具的唯一执行入口文件；必须读取命令行参数指定的 input.json（内容为入参 JSON 原样）取得任务入参。
+- 新增工具触发条件：反复试错直到最终成功的操作，沉淀为一个工具；不停模糊查找执行路径、多次重复操作的过程，简化成一个直接性路径，沉淀为一个工具。
 - 修改工具触发条件：工具存在适配场景缺口，或工具 BUG 已在实际运行中暴露时，修改该工具。
 - 删除工具触发条件：工具数量超限（上限 32 个，经验库经验此时已几乎饱和）时，删除创建时间最早且适用范围最低的工具，以避免删除不重要的工具。
-- protocol.yaml：调用工具的协议文件，每个工具目录必须有；仅允许 8 个字段：name、title、description、inputSchema、timeout_seconds、progress_name、applicable_conditions、python_deps。
-- main.py：工具的唯一执行入口文件，每个工具目录必须有；必须读取命令行参数指定的 input.json（内容为入参 JSON 原样）取得任务入参；stdout 末行必须输出结果 JSON（success 表示业务成败，message,data）；进程必须恒以退出码 0 结束；**日志与中间输出必须走 stderr；产物必须写入环境变量 SCRIPT_TOOL_WORK_DIR 指向的工作目录，禁止写回工具自身目录**。
 \`\`\`
 `.trim()
     : '';

@@ -5,7 +5,7 @@
  * 执行协议：临时文件 input.json 传参（规避命令行长度与转义；executor-registry.parseToolArguments
  *   会剥离参数中 context 保留字，故 manifest.parameters 显式拒绝 context 键）
  *   → spawn python main.py <input.json路径>（cwd=工具目录，PYTHONUTF8=1）
- *   → stdout 末行非空 JSON 解析映射 ToolResult{success,code,message,data?,next_suggestion?}
+ *   → stdout 末行非空 JSON 解析映射 ToolResult{success,code,message,data?}
  * 超时：默认 DEFAULT_TIMEOUT_SECONDS=180 秒，manifest.timeoutSeconds 可覆盖（上限 3600）。
  * 加载：启动扫描（ipc-handlers.registerIpcHandlers 开头 fire-and-forget，失败告警不阻塞）
  *   + tools:dyn-reload IPC 手动重载（S5-4 四层通道）。
@@ -433,8 +433,6 @@ export async function executeDynToolScript(options: DynToolExecOptions): Promise
             parsed.data && typeof parsed.data === 'object' && !Array.isArray(parsed.data)
               ? (parsed.data as Record<string, unknown>)
               : undefined,
-          next_suggestion:
-            typeof parsed.next_suggestion === 'string' ? parsed.next_suggestion : undefined,
         });
       } catch (error) {
         finish({
