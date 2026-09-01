@@ -384,17 +384,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    * chat:abort — 中止当前对话
    */
   ipcMain.on(IPC_CHAT.ABORT, (_event, conversationId: string) => {
-    abortConversationRun(conversationId);
-
-    // 更新对话状态
-    emitConversationUpdated(
-      mainWindow,
-      setConversationRunning(conversationId, false),
-    );
-
-    // ★ P0-E3：emit main-agent:aborted 事件（统一在 IPC 转发段中转给前端 chat:aborted）
-    // 对齐 E:\ai_fr chat.aborted 事件：触发前端 markRunningMessagesAborted + markRunningToolSnapshotsAborted
-    eventBus.emit(MAIN_AGENT_ABORTED_EVENT, { conversationId });
+    try {
+      abortConversationRun(conversationId);
+    }
+    finally {
+      emitConversationUpdated(
+        mainWindow,
+        setConversationRunning(conversationId, false),
+      );
+      eventBus.emit(MAIN_AGENT_ABORTED_EVENT, { conversationId });
+    }
   });
 
   // ================================================================
