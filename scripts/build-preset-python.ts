@@ -588,7 +588,7 @@ async function main() {
   // pip 默认构建隔离注入 sitecustomize 失效，需关闭隔离并由宿主 site-packages 提供 setuptools.build_meta
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', 'https://mirrors.aliyun.com/pypi/simple/', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
     buildPythonDir,
   );
   const pkgSpecs: string[] = [];
@@ -597,7 +597,7 @@ async function main() {
   }
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '--no-build-isolation', '-i', 'https://pypi.tuna.tsinghua.edu.cn/simple', ...pkgSpecs, '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '--no-build-isolation', '-i', 'https://mirrors.aliyun.com/pypi/simple/', ...pkgSpecs, '--target', sitePackagesDir],
     buildPythonDir,
   );
   log(`预装依赖安装完成: ${pkgSpecs.length} 个包`);
