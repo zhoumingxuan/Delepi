@@ -130,6 +130,7 @@ const VARIANT = VARIANTS[VARIANT_KEY];
 
 // 预装依赖清单（对应6类功能需求，方案文档第5章）
 const PRESET_PACKAGES: Record<string, string> = {
+  'PyYAML': '>=3.0.0',
   // PDF处理
   'pdfplumber': '>=0.11.0',
   'PyPDF2': '>=3.0.0',
@@ -180,6 +181,7 @@ const PRESET_PACKAGES: Record<string, string> = {
 
 // pip 包名 → import 模块名映射（部分 pip 包名与 Python 导入模块名不一致）
 const IMPORT_NAMES: Record<string, string> = {
+  'PyYAML': 'yaml',
   'Pillow': 'PIL',
   'python-docx': 'docx',
   'python-pptx': 'pptx',
