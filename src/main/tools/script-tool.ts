@@ -3,8 +3,9 @@
  *
  * 职责（6.3）：
  * - 分支一【查看协议】：根目录检查（含兜底重建）→ 扫描 → 聚合清单（省略 tool_name）/返回单个工具协议全文+摘要（填写 tool_name）；
- * - 分支二【调用】七步：根目录检查 → 定位工具目录（目录名精确等值）→ 读校验协议 → 手工校验 params →
- *   组装 input.json（内容=params 原样，D13）→ spawn python main.py（cwd=工具目录；PYTHONUTF8=1；
+ * - 分支二【调用】七步：根目录检查 → 定位工具目录（目录名精确等值）→ 读校验协议 → 校验 params string →
+ *   将 params string（CLI/argparse 风格，--key value）直接作为启动命令 CLI 参数携带（不再落地 input.json、不再 --input 传参）
+ *   → spawn python main.py（cwd=工具目录；PYTHONUTF8=1；
  *   SCRIPT_TOOL_WORK_DIR=会话工作目录，D14；超时=调用参数 timeout 显式传入时优先、否则按协议 timeout_seconds；
  *   timeout=-1=挂起类型调用：只启动进程，不等待/不采集输出/不超时终止）→ stdout 完整透传至 data、stderr 完整透传至 message（超 16K 截断并附提示后缀），success=进程退出码===0。
  *
@@ -12,12 +13,10 @@
  * 执行内核独立参照实现，不 import dyn-tool-loader 内部函数。
  */
 
-import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
-import { readFile, rm, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import os from 'node:os';
-import path from 'node:path';
 
 import type { ToolResult } from './result';
 import { buildToolResult, truncateToolOutput } from './result';
@@ -30,7 +29,6 @@ import {
   SCRIPT_TOOL_CODES,
   SCRIPT_TOOL_TIMEOUT_MAX_SECONDS,
   scanScriptToolsDir,
-  type ScriptToolProtocol,
   type ScriptToolScanEntry,
 } from './script-tool-protocol';
 
@@ -90,15 +88,15 @@ export async function scriptTool(input: unknown, context: ToolRuntimeContext): P
     toolName = resolved.tool_name.trim();
   }
 
-  let params: Record<string, unknown> | undefined;
+  let params: string | undefined;
   if (resolved.params !== undefined) {
-    if (!resolved.params || typeof resolved.params !== 'object' || Array.isArray(resolved.params)) {
+    if (typeof resolved.params !== 'string') {
       return fail(
         SCRIPT_TOOL_CODES.PARAMS_INVALID,
-        'params 必须为 JSON 对象（键名与结构须符合目标工具 protocol.yaml 的 inputSchema 定义；顶层禁止使用保留字 context）',
+        'params 必须为字符串（CLI/argparse 风格参数串，形如 --expression "sin(x)" --x-min -10 --width-px 3840；键名 kebab-case、布尔参数使用明确开关形式；顶层禁止使用保留字 context）',
       );
     }
-    params = resolved.params as Record<string, unknown>;
+    params = resolved.params.trim();
   }
 
   // timeout：调用超时秒数（可选）。仅约束为数字，取值一概不拦截：-1=挂起类型调用；正整数=超时秒数；
@@ -111,7 +109,7 @@ export async function scriptTool(input: unknown, context: ToolRuntimeContext): P
       return fail(SCRIPT_TOOL_CODES.PARAMS_INVALID, 'action=调用 时 tool_name 必填（取值为经验库内工具目录名，可先【查看协议】获取）');
     }
     if (!params) {
-      return fail(SCRIPT_TOOL_CODES.PARAMS_INVALID, 'action=调用 时 params 必填（对象；调用前应先【查看协议】确认参数结构）');
+      return fail(SCRIPT_TOOL_CODES.PARAMS_INVALID, 'action=调用 时 params 必填（CLI/argparse 风格字符串，只填参数本身；调用前应先【查看协议】确认参数结构）');
     }
     return executeScriptToolCall(toolName, params, timeoutOverride, context);
   }
@@ -231,7 +229,7 @@ async function executeScriptToolView(toolName: string | undefined): Promise<Tool
 
 async function executeScriptToolCall(
   toolName: string,
-  params: Record<string, unknown>,
+  params: string,
   timeoutOverride: number | undefined,
   context: ToolRuntimeContext,
 ): Promise<ToolResult> {
@@ -262,8 +260,8 @@ async function executeScriptToolCall(
     );
   }
 
-  // C4：手工校验 params（对象性已由入口校验；此处按协议 required/类型/enum 基础校验）
-  const paramsCheck = validateParamsAgainstProtocol(params, hit.protocol);
+  // C4：校验 params string（CLI/argparse 风格基础校验；字段级约束由工具侧入口 argparse 承担）
+  const paramsCheck = validateParamsString(params);
   if (!paramsCheck.ok) {
     return fail(
       SCRIPT_TOOL_CODES.PARAMS_INVALID,
@@ -271,16 +269,8 @@ async function executeScriptToolCall(
     );
   }
 
-  // C5：组装 input.json（内容 = params 原样，D13；写入系统临时目录，uuid 命名防并发冲突）
-  const inputPath = path.join(os.tmpdir(), `script-tool-input-${randomUUID()}.json`);
-  try {
-    await writeFile(inputPath, JSON.stringify(params ?? {}), 'utf-8');
-  } catch (error) {
-    return fail(
-      SCRIPT_TOOL_CODES.INPUT_WRITE_ERROR,
-      `input.json 写入失败（${inputPath}）：${ensureErrorMessage(error)}`,
-    );
-  }
+  // C5：params string 直接作为启动命令 CLI 参数携带（移除 input.json 落地与 --input 传参；支持引号包裹含空格的值）
+  const paramsArgs = tokenizeParamsString(params);
 
   // C6/C7：spawn 执行 + 收尾解析
   // 超时优先级（本轮决策）：调用参数 timeout 显式传入时完全优先（含 -1 挂起语义）；未传时回落协议
@@ -289,7 +279,7 @@ async function executeScriptToolCall(
   const effectiveTimeoutSeconds =
     timeoutOverride !== undefined && !suspend ? timeoutOverride : hit.protocol.timeoutSeconds;
   return executeScriptToolProcess({
-    inputPath,
+    paramsArgs,
     toolName,
     toolDir: hit.toolDir,
     mainPyPath: hit.mainPyPath,
@@ -300,78 +290,68 @@ async function executeScriptToolCall(
 }
 
 // ============================================================
-// C4：按协议 parameters 手工校验 params（无 ajv 运行时校验，项目现状）
+// C4：params string 校验（CLI/argparse 风格基础校验）与 CLI 参数分词
 // ============================================================
 
-function describeValueType(value: unknown): string {
-  if (value === null) {
-    return 'null';
+/**
+ * params string 基础校验：非空且至少含一个 --key 形式参数名。
+ * 字段级约束（required/类型/enum）由工具侧入口 argparse 在进程内校验并回报错误，
+ * 调用侧不再按协议逐字段预校验（params 为字符串形态，无法可靠反解字段结构）。
+ */
+function validateParamsString(params: string): { ok: true } | { ok: false; error: string } {
+  const trimmed = params.trim();
+  if (!trimmed) {
+    return { ok: false, error: 'params 为空字符串：至少需要一个 --key value 参数' };
   }
-  if (Array.isArray(value)) {
-    return 'array';
-  }
-  if (typeof value === 'number') {
-    return Number.isInteger(value) ? 'integer' : 'number';
-  }
-  return typeof value;
-}
-
-function valueMatchesSchemaType(value: unknown, type: string): boolean {
-  const actual = describeValueType(value);
-  if (type === 'number') {
-    return actual === 'number' || actual === 'integer';
-  }
-  if (type === 'integer') {
-    return actual === 'integer';
-  }
-  return actual === type;
-}
-
-function validateParamsAgainstProtocol(
-  params: Record<string, unknown>,
-  protocol: ScriptToolProtocol,
-): { ok: true } | { ok: false; error: string } {
-  const schema = protocol.inputSchema;
-  const properties =
-    schema.properties && typeof schema.properties === 'object' && !Array.isArray(schema.properties)
-      ? (schema.properties as Record<string, unknown>)
-      : {};
-  const required = Array.isArray(schema.required)
-    ? schema.required.filter((item): item is string => typeof item === 'string')
-    : [];
-
-  const errors: string[] = [];
-
-  for (const requiredKey of required) {
-    if (!Object.prototype.hasOwnProperty.call(params, requiredKey)) {
-      errors.push(`缺少必填字段：${requiredKey}`);
-    }
-  }
-
-  for (const [key, value] of Object.entries(params)) {
-    const propSchema = properties[key];
-    if (!propSchema || typeof propSchema !== 'object' || propSchema === null) {
-      continue; // 协议未声明的字段：不做类型约束（与项目无运行时 schema 校验的现状一致）
-    }
-    const typedPropSchema = propSchema as Record<string, unknown>;
-    if (typeof typedPropSchema.type === 'string' && typedPropSchema.type) {
-      if (!valueMatchesSchemaType(value, typedPropSchema.type)) {
-        errors.push(`字段 ${key} 类型不符：期望 ${typedPropSchema.type}，实际 ${describeValueType(value)}`);
-      }
-    }
-    if (Array.isArray(typedPropSchema.enum)) {
-      const serialized = JSON.stringify(value);
-      const matched = typedPropSchema.enum.some((allowed) => JSON.stringify(allowed) === serialized);
-      if (!matched) {
-        errors.push(`字段 ${key} 取值不在 enum 值域内：${serialized}`);
-      }
-    }
-  }
-
-  if (errors.length > 0) {
-    return { ok: false, error: errors.join('；') };
+  if (!/--[A-Za-z0-9][A-Za-z0-9-]*/.test(trimmed)) {
+    return { ok: false, error: 'params 不是合法 CLI/argparse 风格参数串：未找到 --key 形式的参数名' };
   }
   return { ok: true };
+}
+
+/**
+ * 将 params string 按 shell 风格分词为 argv 数组：支持单引号/双引号包裹含空格的值，
+ * 引号仅作分组定界符不保留在 token 中；未闭合引号按普通字符处理。
+ * 示例：--title "y = sin(x)" → ['--title', 'y = sin(x)']
+ */
+function tokenizeParamsString(params: string): string[] {
+  const tokens: string[] = [];
+  let current = '';
+  let quote: "'" | '"' | null = null;
+  let hasToken = false;
+
+  const push = () => {
+    if (hasToken) {
+      tokens.push(current);
+      current = '';
+      hasToken = false;
+    }
+  };
+
+  for (const ch of params) {
+    if (quote) {
+      if (ch === quote) {
+        quote = null;
+      } else {
+        current += ch;
+      }
+      hasToken = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      hasToken = true;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+      push();
+      continue;
+    }
+    current += ch;
+    hasToken = true;
+  }
+  push();
+  return tokens;
 }
 
 // ============================================================
@@ -416,7 +396,7 @@ function buildScriptToolEnv(runDir: string | undefined): NodeJS.ProcessEnv {
 }
 
 async function executeScriptToolProcess(options: {
-  inputPath: string;
+  paramsArgs: string[];
   toolName: string;
   toolDir: string;
   mainPyPath: string;
@@ -424,26 +404,17 @@ async function executeScriptToolProcess(options: {
   suspend: boolean;
   context: ToolRuntimeContext;
 }): Promise<ToolResult> {
-  const cleanupInput = async () => {
-    try {
-      await rm(options.inputPath, { force: true });
-    } catch {
-      // 临时文件清理失败不影响结果返回（用后即删约定）
-    }
-  };
-
   const python = resolveScriptToolPythonCommand();
 
   return new Promise<ToolResult>((resolve) => {
     if (options.context.signal?.aborted) {
-      void cleanupInput();
       resolve(fail(SCRIPT_TOOL_CODES.ABORTED, '经验库工具执行已被中止（进入前已中止）'));
       return;
     }
 
     const child = spawn(
       python.command,
-      [...python.prefixArgs, options.mainPyPath, options.inputPath],
+      [...python.prefixArgs, options.mainPyPath, ...options.paramsArgs],
       {
         cwd: options.toolDir,
         env: buildScriptToolEnv(options.context.runDir),
@@ -453,7 +424,7 @@ async function executeScriptToolProcess(options: {
     );
 
     // 挂起类型调用（timeout=-1）：只负责启动进程——立即返回自洽 ToolResult（success=true），
-    // 不等待进程结束、不采集 stdout/stderr、不设超时 kill、不挂 abort 监听、不清理 input.json（子进程尚未读取）。
+    // 不等待进程结束、不采集 stdout/stderr、不设超时 kill、不挂 abort 监听（无 input.json 待清理）。
     // error 事件挂空监听：解释器缺失等异步启动失败时防止未处理 'error' 事件导致主进程崩溃（结果已返回不再改写）；
     // stdout/stderr 置流动模式丢弃数据：防止管道缓冲写满造成背压阻塞挂起进程。
     if (options.suspend) {
@@ -474,7 +445,7 @@ async function executeScriptToolProcess(options: {
             timeout: -1,
             pid: child.pid,
             main_py_path: options.mainPyPath,
-            input_path: options.inputPath,
+            params_args: options.paramsArgs,
           },
         }),
       );
@@ -531,7 +502,6 @@ async function executeScriptToolProcess(options: {
       }
       settled = true;
       cleanup();
-      void cleanupInput();
       resolve(result);
     };
 

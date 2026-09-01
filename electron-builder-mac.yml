@@ -7,7 +7,7 @@ files:
   - dist/**/*
   - package.json
 extraResources:
-  - from: resources/python-mac
+  - from: resources/python
     to: python
     filter:
       - "**/*"
@@ -15,4 +15,4 @@ extraResources:
     to: skills
 mac:
   target: dmg
-  icon: resources/icon-mac.png
+  icon: resources/icon.png

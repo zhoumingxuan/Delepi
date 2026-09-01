@@ -7,7 +7,7 @@ files:
   - dist/**/*
   - package.json
 extraResources:
-  - from: resources/python-linux
+  - from: resources/python
     to: python
     filter:
       - "**/*"

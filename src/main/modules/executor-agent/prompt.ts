@@ -106,9 +106,9 @@ export function buildScriptToolParameters(): Record<string, unknown> {
                     '操作类型，枚举值，单选；【查看协议】就是查看【tool_name】的【协议调用说明】；【调用】就是直接发起这个工具调用',
             },
             params: {
-                type: 'object',
+                type: 'string',
                 description:
-                    '调用包含的参数，严格依据获取的【协议调用说明】填写',
+                    '调用此工具的参数，格式必须符合（CLI/argparse 风格字符串）且只包含main.py所需的启动参数；严格依据获取的【协议调用说明】填写',
             },
             timeout: {
                 type: 'number',

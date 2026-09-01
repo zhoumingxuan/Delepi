@@ -69,7 +69,7 @@ ${options.sessionDirectoryText.trim()}
 - 工具目录：在经验库（script-tools）下为每个工具建立独立目录，目录内必须有 main.py 与 protocol.yaml 两个文件。
   - **注意:每个工具的适配唯一的【闭环工作流类型】，与其他工具互不耦合；在此前提条件下，工具必须适配【更多、更广泛的场景】，从而形成通用工具的目的**
 - protocol.yaml：工具的协议文件；仅允许 8 个字段：name、title、description、inputSchema、timeout_seconds、progress_name、applicable_conditions、python_deps。
-- main.py：工具的唯一执行入口文件；必须读取命令行参数指定的 input.json（内容为入参 JSON 原样）取得任务入参。
+- main.py：工具的唯一执行入口文件；必须允许直接接收 【CLI/argparse 风格】参数来获取启动参数。
 - 新增工具触发条件：反复试错直到最终成功的操作，沉淀为一个通用工具；不停模糊查找执行路径、多次重复操作的过程，简化成一个直接性路径，沉淀为一个通用工具。
 - 修改工具触发条件：工具存在适配场景缺口，或工具 BUG 已在实际运行中暴露时，修改该工具。
 - 删除工具触发条件：工具数量超限（上限 32 个，经验库经验此时已几乎饱和）时，删除创建时间最早且适用范围最低的工具，同时尽量避免删除重要工具。
