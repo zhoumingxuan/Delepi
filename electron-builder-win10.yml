@@ -7,7 +7,7 @@ files:
   - dist/**/*
   - package.json
 extraResources:
-  - from: resources/python
+  - from: resources/python-win10
     to: python
     filter:
       - "**/*"
