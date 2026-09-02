@@ -21,7 +21,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App as AntApp, Flex, theme } from 'antd';
+import { Alert, App as AntApp, Flex, theme } from 'antd';
 import { ChatArea } from './ChatArea';
 import { ChatHeader } from './ChatHeader';
 import { ConfigDrawer } from './ConfigDrawer';
@@ -59,6 +59,9 @@ export function ChatShell() {
     isConversationRunning,
     /** ★ M2/T1：新建会话在途标记（创建窗口内目标会话身份未定，发送/停止动作需锁定） */
     creatingConversation,
+    /** ★ D3 修复：当前会话 error 状态（sendMessage catch 活跃会话命中时写入），错误条消费 */
+    error,
+    clearError,
     /** Phase 3 P3-3 滚动状态相关 */
     showScrollToBottom,
     setShowScrollToBottom,
@@ -514,6 +517,21 @@ const { check, canCheck } = useConfigReadiness({
           onMenuClick={handleMenuClick}
           onSettingsClick={handleSettingsClick}
         />
+
+        {/* ★ D3 修复：error state 可见出口（当前会话错误条）
+            仅当存在错误且处于具体会话（error 生命周期：仅 sendMessage catch 活跃会话写入，
+            切换/新建会话时 setError(null) 清空）时显示；chat:error 事件路径经 messageApi
+            toast 单点提示（useChat 已抑制其 setError），不与本错误条重复双弹 */}
+        {error && conversationId ? (
+          <Alert
+            type="error"
+            showIcon
+            closable
+            message={error}
+            onClose={clearError}
+            style={{ margin: '4px 32px 0', flexShrink: 0 }}
+          />
+        ) : null}
 
         <Flex
           vertical

@@ -463,6 +463,41 @@ function snapshotMessageToToolSnapshot(
   };
 }
 
+/**
+ * ★ A-3 修复：渲染组装层 segments 元素级净化（与读库净化 A-2、渲染消费 A-1 语义一致，
+ *   形成防御纵深）。先判结构后读字段：
+ * - null/非对象（含数组）元素丢弃
+ * - type 非 reasoning/tool_call 的元素丢弃
+ * - reasoning 段 text 非 string 归一为空字符串（保留该段，id 缺失时以索引兜底）
+ * - tool_call 段保留原 toolCallId（ChatMessageContent 按 toolCallId 精确匹配 toolCalls，
+ *   语义不变）；仅 toolCallId 缺失/非 string（确认无法与任何 toolCalls 项关联）时丢弃；
+ *   结构合法但当前消息 toolCalls 尚未累积到该项时不丢弃——F6 全量 segments 事件与
+ *   chat:tool-call 事件到达顺序存在竞态，toolCalls 累积后渲染端即可按 toolCallId 命中
+ */
+function sanitizeSegmentsForRender(segments: unknown): AssistantMessageSegment[] {
+  if (!Array.isArray(segments)) return [];
+  const sanitized: AssistantMessageSegment[] = [];
+  segments.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+    const segment = item as Record<string, unknown>;
+    if (segment.type === 'reasoning') {
+      const id =
+        typeof segment.id === 'string' && segment.id ? segment.id : `segment-${index}`;
+      const text = typeof segment.text === 'string' ? segment.text : '';
+      sanitized.push({ id, type: 'reasoning', text });
+      return;
+    }
+    if (segment.type === 'tool_call') {
+      const toolCallId = segment.toolCallId;
+      if (typeof toolCallId !== 'string' || toolCallId === '') return;
+      const id =
+        typeof segment.id === 'string' && segment.id ? segment.id : `segment-${index}`;
+      sanitized.push({ id, type: 'tool_call', toolCallId });
+    }
+  });
+  return sanitized;
+}
+
 function collectCompletedToolCallIds(messages: ChatMessage[]): Set<string> {
   return new Set(
     messages
@@ -770,11 +805,14 @@ export function useChat(options?: UseChatOptions) {
   const conversationLoadSeqRef = useRef(0);
 
   /**
-   * P1-C2 跳过加载的会话 ID 集合
-   * createConversation 后 setConversationId 时跳过首次 useEffect 加载（避免重复）
-   * 对齐 E:\ai_fr skipConversationLoadIdsRef L631
+   * ★ W4/D1 修复：非静默加载在途计数（messageLoading 悬挂修复）
+   * - 非静默 load 开始 +1 并置位 messageLoading=true；结束（含异常与 loadSeq 过期
+   *   提前 return 路径，finally 恒执行）时 -1，计数归 0 才关闭 loading。
+   * - 效果：任意会话非静默 loadConversationMessages 完成/异常后 messageLoading 必然复位
+   *   （无永久 true 悬挂）；silent 加载不计数、不置位、不复位（silent 语义不变）；
+   *   其他会话非静默加载在途时计数 >0，不会被无关 finally 提前熄灭。
    */
-  const skipConversationLoadIdsRef = useRef<Set<string>>(new Set());
+  const nonSilentLoadCountRef = useRef(0);
 
   /**
    * P1-C2 200ms 节流定时器
@@ -1000,17 +1038,20 @@ const scheduleProjection = useCallback(() => {
       if (window.electronAPI) {
         const conv = await window.electronAPI.conversations.create();
         setConversations((prev) => [conv, ...prev]);
-        // ★ P1-C2：创建后加入 skip 集合
-        //   下次 setConversationId 触发 useEffect 加载时跳过（避免刚创建就重复加载空消息）
-        //   对齐 E:\ai_fr chat-shell.tsx L1183 skipConversationLoadIdsRef.current.add(data.conversation.id)
+        // ★ P1-C2（D5 修复）：createConversation 不再写入 skipConversationLoadIdsRef——
+        //   该 ref 全文件无任何读取/消费点（死代码已移除），useChat 不存在按 conversationId
+        //   触发加载的 effect；禁止在此新增按 conversationId 的加载 effect（将放大对账覆盖窗口）
         if (conv && conv.id) {
-          skipConversationLoadIdsRef.current.add(conv.id);
-          completedToolCallIdsRef.current.clear();
+          // ★ D6 修复：移除 completedToolCallIdsRef.current.clear()——该 clear 在活跃
+          //   镜像期（applyConversationEvent 活跃投影）与当时活跃会话 entry 的
+          //   completedToolCallIds 为同一 Set 对象引用，清空会连带清空非新建会话（通常 A）
+          //   entry 的防重集合；新会话的防重集合由下方 createRuntimeState 新建空 entry 自带
           conversationIdRef.current = conv.id;
           stickToBottomRef.current = true;
           setConversationId(conv.id);
-          // ★ 修复 2（增强）：新对话没有消息，不清空 messages
-          //   同时为该会话建立空的 per-conversation 运行态条目
+          // ★ D7 修复：注释与实际行为对齐——新会话没有历史消息，setMessages([]) 清空当前
+          //   投影列表（旧会话消息保留在 per-conversation store entry，切回旧会话时由
+          //   switchConversation 水合恢复），同时为该会话建立空的 per-conversation 运行态条目
           setMessages([]);
           // setToolSnapshots 不再清空（累积所有对话的快照）
           // ★ M06：职责由 per-conversation 运行态条目承载（新建空 entry 替代 Map 写入）
@@ -1054,6 +1095,10 @@ const scheduleProjection = useCallback(() => {
           return filtered;
         });
         if (conversationIdRef.current === id) {
+          // ★ D4 修复：删除当前活跃会话时同步 conversationIdRef.current = null，
+          //   消除 ref 残留已删会话 id（残留期内该 id 的事件仍满足 applyConversationEvent
+          //   活跃判定而投影到列表态 messages）造成的状态不一致
+          conversationIdRef.current = null;
           setConversationId(null);
           setMessages([]);
         }
@@ -1233,7 +1278,11 @@ const scheduleProjection = useCallback(() => {
       const loadSeq = ++conversationLoadSeqRef.current;
       // ★ 对齐 ai_fr：非静默加载时立即开启 messageLoading 过渡态
       // 对齐 E:\ai_fr chat-shell.tsx L1133 if (!options?.silent) setMessageLoading(true)
-      if (!options?.silent) setMessageLoading(true);
+      // ★ W4/D1 修复：非静默加载计数 +1（与 finally 计数配对收敛；silent 加载不计数）
+      if (!options?.silent) {
+        nonSilentLoadCountRef.current += 1;
+        setMessageLoading(true);
+      }
       try {
         if (window.electronAPI) {
           // ★ S4（M5）恢复单源：conv:get-messages 收敛 { messages }
@@ -1323,10 +1372,19 @@ const scheduleProjection = useCallback(() => {
         console.error('[useChat] 加载对话消息失败:', err);
       } finally {
         // ★ 对齐 ai_fr：finally 块确保 loading 状态必然关闭
-        // 仅当活跃会话未变 + 非静默模式时才关闭，避免覆盖后续加载的 loading 状态
-        // 对齐 E:\ai_fr chat-shell.tsx L1169-1170
-        if (conversationIdRef.current === id && !options?.silent) {
-          setMessageLoading(false);
+        // ★ W4/D1 修复：以非静默加载在途计数收敛——本 load 结束（含异常与 loadSeq 过期
+        //   return 路径）时计数 -1，归 0 才关闭。不再使用
+        //   "conversationIdRef.current === id && !silent"（非静默加载在途切走会话时 ref
+        //   漂移致条件永不满足 → messageLoading 永久悬挂）；也不能无脑 !silent 关闭
+        //   （会提前熄灭并发中其他会话的非静默加载）。silent 加载不计数不关闭（语义不变）。
+        if (!options?.silent) {
+          nonSilentLoadCountRef.current = Math.max(
+            0,
+            nonSilentLoadCountRef.current - 1,
+          );
+          if (nonSilentLoadCountRef.current === 0) {
+            setMessageLoading(false);
+          }
         }
       }
     },
@@ -1640,8 +1698,22 @@ const scheduleProjection = useCallback(() => {
         const friendlyErrMsg = errMsg.includes('CONVERSATION_RUNNING')
           ? '该会话正在回复中，请等待完成或先停止后再发送'
           : errMsg;
-        setError(friendlyErrMsg);
+        // ★ W3/D2 修复：错误写入与归一化一律按目标会话路由——
+        //   1) error state 仅当目标会话 === 当前活跃会话时写入（错误文案不污染其他会话视图；
+        //      切换/新建时已有 setError(null) 生命周期收敛，D3 由 ChatShell 错误条呈现）；
+        //   2) loading 消息/工具快照归一化经 applyConversationEvent 写入目标会话 entry
+        //      （目标会话为活跃会话时由路由器镜像投影），禁止无 convId 直改当前投影
+        //      （避免串会话误归一化）。
+        if (convId && convId === conversationIdRef.current) {
+          setError(friendlyErrMsg);
+        }
         if (convId) {
+          applyConversationEvent(convId, (entry) => {
+            entry.messages = markRunningMessagesAbortedInList(entry.messages);
+            entry.toolSnapshots = markRunningToolSnapshotsAbortedInList(
+              entry.toolSnapshots,
+            );
+          });
           setConversationStreaming(convId, false);
           setConversationPendingSend(convId, false);
           pendingSendRef.current.delete(convId);
@@ -1651,8 +1723,7 @@ const scheduleProjection = useCallback(() => {
         //   对齐 ai_fr sendMessage catch 中的 markLatestAssistant('error')
         //   IPC.chat.send() 抛错时不会触发 chat:error 事件（chat:error 仅在流式过程中触发）
         //   因此 catch 块需自行把已经 push 的 loading 消息归一化为 abort
-        setMessages((prev) => markRunningMessagesAbortedInList(prev));
-        setToolSnapshots((prev) => markRunningToolSnapshotsAbortedInList(prev));
+        //   （convId 为空 = 创建会话失败路径：乐观消息尚未写入任何 entry，无需归一化）
       } finally {
         // ★ BUG3 修复：前序 chat:send promise settle 收口（成功返回与 catch 的 ERR_ABORTED
         //   等抛错路径均覆盖）。无论标记是否存在一律清理该会话"取消待收口"标记（防残留
@@ -1669,6 +1740,7 @@ const scheduleProjection = useCallback(() => {
       isConversationSending,
       isConversationRunning,
       createConversation,
+      applyConversationEvent,
       setConversationSending,
       notifyCancelPendingSettleReissue,
     ],
@@ -1767,7 +1839,7 @@ const scheduleProjection = useCallback(() => {
           next[targetIdx] = {
             ...next[targetIdx],
             thinking: typeof data.thinking === 'string' ? data.thinking : next[targetIdx].thinking,
-            segments: data.segments.map((segment) => ({ ...segment })),  // 深拷贝避免引用共享
+            segments: sanitizeSegmentsForRender(data.segments),  // A-3 元素级净化（含深拷贝，避免引用共享）
             status: 'loading',
           };
           entry.messages = next;
@@ -1780,7 +1852,11 @@ const scheduleProjection = useCallback(() => {
         //   对齐 E:\ai_fr openai.ts appendReasoningSegment 行为
         //   若最后一段已是 reasoning，则将 delta 追加到该段 text；否则新建一条 reasoning 段
         //   segments 字段被 ChatMessageContent 用于 Think 组件按段折叠展开
-        const existingSegments = next[targetIdx].segments || [];
+        // ★ A-3 修复：兜底重建前对既有 segments 做元素级净化（剔除 null/畸形元素、reasoning
+        //   text 归一），保证 lastSegment 判定与 text 追加不因畸形元素抛错/误判
+        const existingSegments = sanitizeSegmentsForRender(
+          next[targetIdx].segments || [],
+        );
         const updatedSegments: AssistantMessageSegment[] = existingSegments.length
           ? [...existingSegments]
           : [];
@@ -2014,7 +2090,13 @@ const scheduleProjection = useCallback(() => {
       });
 
       // ★ 仅活跃对话更新 error 提示状态
-      if (data.conversationId === conversationIdRef.current) {
+      // ★ D3 修复：error 可见出口去重——messageApi 可用时错误已由下方顶部 toast 呈现
+      //   （P1-E2 分支），不再写入 error state（否则与 ChatShell 错误条重复双弹）；
+      //   messageApi 缺失的退化场景退回 setError，由 ChatShell 错误条兜底呈现。
+      if (
+        data.conversationId === conversationIdRef.current &&
+        !messageApiRef.current
+      ) {
         setError(data.error || '对话出错');
       }
 

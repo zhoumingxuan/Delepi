@@ -786,8 +786,16 @@ export const ChatMessageContent = memo(function ChatMessageContent({
   return (
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
       {segments.map((segment, index) => {
+        // ★ A-1 修复：元素级结构防御（先判结构后读字段）——null/非对象元素跳过渲染，
+        //   保证 render 期永不因 segments 元素结构抛 TypeError（畸形数据经读库净化 A-2 /
+        //   渲染组装净化 A-3 后理论不可达，此处为最终消费兜底防御，二者并存）
+        if (!segment || typeof segment !== 'object') {
+          return null;
+        }
         if (segment.type === 'reasoning') {
-          const text = segment.text.trim();
+          // ★ A-1 修复：reasoning 段 text 非 string（缺失/null/数字等旧数据）归一 '' 再 trim
+          const text =
+            typeof segment.text === 'string' ? segment.text.trim() : '';
 
           if (!text) {
             return null;

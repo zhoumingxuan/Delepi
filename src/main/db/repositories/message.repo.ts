@@ -147,6 +147,50 @@ export function listStoredMessages(conversationId: string): StoredMessageRecord[
   }));
 }
 
+/**
+ * ★ A-2 修复：segments 读库净化（元素级结构校验，先判结构后读字段）
+ * - 非数组/undefined → undefined（保持无 segments 字段时的原透传语义）
+ * - 元素 null/非对象（含数组）→ 丢弃
+ * - type==='reasoning'：text 非 string 归一为空字符串（保留该段，id 缺失时以索引兜底）
+ * - type==='tool_call'：保留原 toolCallId（与 toolCalls 数组精确匹配语义不变，
+ *   ChatMessageContent 按 toolCallId 匹配 toolCalls）；丢弃前已确认该段无法与任何
+ *   toolCalls 项关联（toolCallId 缺失/非 string/不在净化后的 toolCalls 中）才丢弃
+ * - type 非 reasoning/tool_call → 丢弃
+ */
+function sanitizeAssistantSegments(
+  rawSegments: unknown,
+  toolCalls: Array<{ callId: string }> | undefined,
+): AssistantMessageSegment[] | undefined {
+  if (!Array.isArray(rawSegments)) return undefined;
+  const callIdSet = new Set((toolCalls ?? []).map((item) => item.callId));
+  const sanitized: AssistantMessageSegment[] = [];
+  rawSegments.forEach((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return;
+    const segment = item as Record<string, unknown>;
+    if (segment.type === 'reasoning') {
+      const id =
+        typeof segment.id === 'string' && segment.id ? segment.id : `segment-${index}`;
+      const text = typeof segment.text === 'string' ? segment.text : '';
+      sanitized.push({ id, type: 'reasoning', text });
+      return;
+    }
+    if (segment.type === 'tool_call') {
+      const toolCallId = segment.toolCallId;
+      if (
+        typeof toolCallId !== 'string' ||
+        toolCallId === '' ||
+        !callIdSet.has(toolCallId)
+      ) {
+        return;
+      }
+      const id =
+        typeof segment.id === 'string' && segment.id ? segment.id : `segment-${index}`;
+      sanitized.push({ id, type: 'tool_call', toolCallId });
+    }
+  });
+  return sanitized;
+}
+
 export function listRendererMessages(conversationId: string): RendererChatMessage[] {
   return listStoredMessages(conversationId).map((message) => {
     const payload = message.payload;
@@ -198,6 +242,24 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
       ? ((payload as Record<string, unknown>).segments as AssistantMessageSegment[])
       : undefined;
 
+    // ★ A-2 修复：toolCalls 映射前置为变量（输出结构不变），供 segments 净化做 tool_call
+    //   关联判定（tool_call 段与 toolCalls 同源 payload 静态对照，无渲染端竞态）
+    const toolCalls = rawToolCalls?.map((toolCallValue) => {
+      const toolCallObject = toolCallValue as {
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      };
+      return {
+        callId: toolCallObject.id ?? '',
+        name: toolCallObject.function?.name ?? '',
+        arguments: toolCallObject.function?.arguments ?? '',
+        status: 'success' as const,
+        isDelegatedExecutor: toolCallObject.function?.name === 'delegate_executor',
+      };
+    });
+    // ★ A-2 修复：segments 读库净化后透传（元素级结构校验，替代原样透传 rawSegments）
+    const sanitizedSegments = sanitizeAssistantSegments(rawSegments, toolCalls);
+
     return {
       id: message.id,
       role: message.role,
@@ -218,20 +280,10 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
       thinking: typeof payload.thinking === 'string' ? payload.thinking : '',
       // ★ F5 新增：返回 segments 字段（与 RendererChatMessage.segments 对齐）
       //   前端 ChatMessageContent 优先使用 message.segments，不再走 buildLegacySegments 兜底
-      segments: rawSegments,
-      toolCalls: rawToolCalls?.map((toolCallValue) => {
-        const toolCallObject = toolCallValue as {
-          id?: string;
-          function?: { name?: string; arguments?: string };
-        };
-        return {
-          callId: toolCallObject.id ?? '',
-          name: toolCallObject.function?.name ?? '',
-          arguments: toolCallObject.function?.arguments ?? '',
-          status: 'success' as const,
-          isDelegatedExecutor: toolCallObject.function?.name === 'delegate_executor',
-        };
-      }),
+      // ★ A-2 修复：返回净化后的 segments（元素级结构校验，null/非对象/未知 type 已剔除，
+      //   reasoning text 归一为空字符串，tool_call 段与 toolCalls 关联校验后透传）
+      segments: sanitizedSegments,
+      toolCalls,
       toolCall,
       status: 'success',
       createdAt: message.createdAt,
