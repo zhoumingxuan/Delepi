@@ -34,7 +34,7 @@ export const SCRIPTS_TOOLS_DIR = path.join(
   SCRIPTS_TOOLS_DIR_NAME,
 );
 
-/** 经验库工具目录数量上限（超出时扫描期自动剔除创建时间最旧的工具，R2） */
+/** 经验工具库目录数量上限（超出时扫描期自动剔除创建时间最旧的工具，R2） */
 export const MAX_SCRIPT_TOOLS = 32;
 
 /** 工具进度名称映射 */

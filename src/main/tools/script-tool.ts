@@ -408,7 +408,7 @@ async function executeScriptToolProcess(options: {
 
   return new Promise<ToolResult>((resolve) => {
     if (options.context.signal?.aborted) {
-      resolve(fail(SCRIPT_TOOL_CODES.ABORTED, '经验库工具执行已被中止（进入前已中止）'));
+      resolve(fail(SCRIPT_TOOL_CODES.ABORTED, '经验工具库执行已被中止（进入前已中止）'));
       return;
     }
 
@@ -436,7 +436,7 @@ async function executeScriptToolProcess(options: {
       resolve(
         buildToolResult({
           success: true,
-          message: `经验库工具（${options.toolName}）已按挂起类型启动（timeout=-1）：只启动进程，不等待结束、不采集输出、不超时终止。PID: ${
+          message: `经验工具库（${options.toolName}）已按挂起类型启动（timeout=-1）：只启动进程，不等待结束、不采集输出、不超时终止。PID: ${
             child.pid ?? '未知'
           }；当前任务结束前请务必清理`,
           data: {
@@ -517,21 +517,21 @@ async function executeScriptToolProcess(options: {
       finish(
         fail(
           SCRIPT_TOOL_CODES.SPAWN_ERROR,
-          `经验库工具（${options.toolName}）进程启动失败：${ensureErrorMessage(error)}（请检查 Python 环境与 main.py）`,
+          `经验工具库（${options.toolName}）进程启动失败：${ensureErrorMessage(error)}（请检查 Python 环境与 main.py）`,
         ),
       );
     });
 
     child.once('close', (code) => {
       if (aborted) {
-        finish(fail(SCRIPT_TOOL_CODES.ABORTED, `经验库工具（${options.toolName}）执行已被中止`));
+        finish(fail(SCRIPT_TOOL_CODES.ABORTED, `经验工具库（${options.toolName}）执行已被中止`));
         return;
       }
       if (timedOut) {
         finish(
           fail(
             SCRIPT_TOOL_CODES.TIMEOUT,
-            `经验库工具（${options.toolName}）执行超时（${options.timeoutSeconds} 秒）已被终止；可调整调用参数 timeout 或 protocol.yaml 的 timeout_seconds（上限 ${SCRIPT_TOOL_TIMEOUT_MAX_SECONDS} 秒）`,
+            `经验工具库（${options.toolName}）执行超时（${options.timeoutSeconds} 秒）已被终止；可调整调用参数 timeout 或 protocol.yaml 的 timeout_seconds（上限 ${SCRIPT_TOOL_TIMEOUT_MAX_SECONDS} 秒）`,
           ),
         );
         return;
@@ -549,7 +549,7 @@ async function executeScriptToolProcess(options: {
       if (stderrText) {
         message = truncateToolOutput(stderrText);
       } else if (!success) {
-        message = `经验库工具（${options.toolName}）进程非零退出（code=${code ?? 'null'}）`;
+        message = `经验工具库（${options.toolName}）进程非零退出（code=${code ?? 'null'}）`;
       } else {
         message = '';
       }

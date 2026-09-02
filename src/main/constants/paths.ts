@@ -39,10 +39,10 @@ export const SCRIPTS_TOOLS_DIR_NAME = 'script-tools';
 /** manifest 文件名 */
 export const MANIFEST_FILE_NAME = 'manifest.json';
 
-/** 经验库工具协议文件名（固定名，protocol.yaml） */
+/** 经验工具库协议文件名（固定名，protocol.yaml） */
 export const SCRIPT_TOOL_PROTOCOL_FILE_NAME = 'protocol.yaml';
 
-/** 经验库工具统一调用入口文件名（固定名，main.py） */
+/** 经验工具库统一调用入口文件名（固定名，main.py） */
 export const SCRIPT_TOOL_ENTRY_FILE_NAME = 'main.py';
 
 // ============================================================

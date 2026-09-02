@@ -506,7 +506,7 @@ function buildScriptToolsInventoryBlock(entries: ScriptToolScanEntry[]): string 
     };
   });
   return `
-  # 经验库工具以及适用条件清单（**必须通过script_tool调用**）
+  # 经验工具库以及适用条件清单（**必须通过script_tool调用**）
   \`\`\`json
   ${JSON.stringify(lines)}
   \`\`\`
