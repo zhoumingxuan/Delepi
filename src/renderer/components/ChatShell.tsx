@@ -20,7 +20,7 @@
  * - useSettings / useFileUpload hooks 接口签名
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Alert, App as AntApp, Flex, theme } from 'antd';
 import { ChatArea } from './ChatArea';
 import { ChatHeader } from './ChatHeader';
@@ -57,8 +57,6 @@ export function ChatShell() {
     /** Phase 3 P1 + P3：守卫 + 状态相关 */
     isConversationSending,
     isConversationRunning,
-    /** ★ M2/T1：新建会话在途标记（创建窗口内目标会话身份未定，发送/停止动作需锁定） */
-    creatingConversation,
     /** ★ D3 修复：当前会话 error 状态（sendMessage catch 活跃会话命中时写入），错误条消费 */
     error,
     clearError,
@@ -100,6 +98,10 @@ export function ChatShell() {
   const latestConversationIdRef = useRef<string | null>(conversationId);  // 上传等待期间检测会话是否被切换
 
   const [inputValue, setInputValue] = useState('');
+  // ★ R1 草稿会话级隔离：按会话 ID 缓存未发送草稿（键 null = 无会话列表态）
+  const draftsRef = useRef<Map<string | null, string>>(new Map());
+  // 草稿保存/恢复的切换边界判定基准（上一会话 ID）
+  const prevDraftConversationIdRef = useRef<string | null>(conversationId);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [hoveredConversationId, setHoveredConversationId] = useState<string | null>(null);
@@ -137,6 +139,29 @@ const { check, canCheck } = useConfigReadiness({
     () => conversations.find((c) => c.id === conversationId) ?? null,
     [conversations, conversationId],
   );
+
+  // ============================================================
+  // ★ R1 草稿会话级隔离：conversationId 变化 = 会话切换边界 ——
+  //   离开会话：保存当前输入草稿到 draftsRef[离开会话ID]（空草稿不落 Map）
+  //   进入会话：恢复 draftsRef[进入会话ID]（无草稿 → 空串）
+  //   useLayoutEffect（paint 前换装）：避免旧会话草稿闪现一帧
+  //   幂等：prevId === conversationId 直接返回（StrictMode 双执行 / 依赖重跑安全）
+  // ============================================================
+  useLayoutEffect(() => {
+    const prevId = prevDraftConversationIdRef.current;
+    if (prevId === conversationId) return;
+    // 会话已删除（含删除活跃会话触发的 →null 切换）不保存其草稿，防已删会话草稿残留
+    const prevStillExists = prevId === null || conversations.some((c) => c.id === prevId);
+    if (prevStillExists) {
+      if (inputValue.trim().length > 0) {
+        draftsRef.current.set(prevId, inputValue);
+      } else {
+        draftsRef.current.delete(prevId); // 空草稿不落 Map：Map 体量上界=有草稿的会话数
+      }
+    }
+    setInputValue(draftsRef.current.get(conversationId) ?? '');
+    prevDraftConversationIdRef.current = conversationId;
+  }, [conversationId, inputValue, conversations]);
 
   // ============================================================
   // P5 适配：useFileUpload 需要知道当前会话 ID 才能调用 file:upload
@@ -234,10 +259,6 @@ const { check, canCheck } = useConfigReadiness({
     // ★ BUG3 修复：发送文本统一取 sendText（正常= inputValue；queued 重发=原文本快照）
     const sendText = queued ? queued.text : inputValue;
 
-    // ── ★ M2：新建会话在途（conv:create 未返回）期间目标身份未定 → 拒绝发送 ──
-    // ★ BUG3 修复：queued 重发目标身份已由暂存快照锚定（必为已存在会话），不受新建在途影响
-    if (!queued && creatingConversation) return;
-
     // ── 配置就绪守卫：未就绪则弹出 ConfigCheckModal 阻断发送 ──
     if (canCheck) {
       const result = check();
@@ -270,10 +291,7 @@ const { check, canCheck } = useConfigReadiness({
     // ★ M3：flightKey 直接复用进入时捕获的 targetConversationId（与守卫/发送同源，杜绝二次读取状态漂移）
     const flightConversationId = targetConversationId; // 捕获进入 handleSend 时的会话 id：finally 释放必须用此捕获值，防会话切换后误删他话
     const flightKey = flightConversationId ?? NO_CONVERSATION_FLIGHT_KEY;
-    if (
-      sendInFlightConversationIdsRef.current.has(NO_CONVERSATION_FLIGHT_KEY) ||
-      sendInFlightConversationIdsRef.current.has(flightKey)
-    ) {
+    if (sendInFlightConversationIdsRef.current.has(flightKey)) {
       // ★ BUG3 修复：命中防重入时按"取消待收口"标记区分——
       //   a) 标记存在（用户已取消、前序 chat:send promise 尚未 settle，flightKey 未释放
       //      窗口）：暂存本次待发原文本，flightKey 释放后自动重发（不静默丢弃）；
@@ -289,6 +307,8 @@ const { check, canCheck } = useConfigReadiness({
     }
     sendInFlightConversationIdsRef.current.add(flightKey);
     try {
+      // ★ R3：目标会话解析结果提升到 try 顶部（原 let convId 声明于附件分支块内，作用域仅限块内）
+      let resolvedConversationId = targetConversationId;
       const uploadedItems = pendingFiles.filter((i) => i.uploadStatus === 'uploaded' && i.uploadedFile);
       const errorItems = pendingFiles.filter((i) => i.uploadStatus === 'error');
       const pendingItems = pendingFiles.filter((i) => i.uploadStatus === 'pending');
@@ -305,22 +325,22 @@ const { check, canCheck } = useConfigReadiness({
       }));
       if (pendingItems.length > 0) {
         // ── 场景a核心：发送时序前置串行化（创建会话 → 上传落盘 → 发送）──
-        let convId = targetConversationId; // ★ M3：上传等待期间不重读会话状态，使用进入时捕获值
-        if (!convId) {
-          const conv = await createConversation(); // 复用 useChat 既有函数（L837-868，非新增创建策略）
+        // ★ M3：上传等待期间不重读会话状态，使用进入时捕获值（无会话时=分支内解析出的新会话 ID）
+        if (!resolvedConversationId) {
+          const conv = await createConversation(); // 复用 useChat 既有函数（在途去重/创建失败返回 null）
           if (!conv) {
             setPendingUploadStatus(pendingItems.map((i) => i.localKey), 'pending'); // 回滚可重试状态
             messageApi.error('创建会话失败，文件未发送');
             return;
           }
-          convId = conv.id;
+          resolvedConversationId = conv.id;
         }
         // 先标记 uploading：conversationId 变化 effect 内 setUploadConversationId 的
         // pending 重试（useFileUpload L496-510）只筛 'pending'，标记后不会重复上传
         const pendingKeys = pendingItems.map((i) => i.localKey);
         setPendingUploadStatus(pendingKeys, 'uploading');
         const result = await uploadFilesForSend(
-          convId,
+          resolvedConversationId,
           pendingItems.map((i) => ({
             localKey: i.localKey,
             file: i.file,
@@ -329,7 +349,7 @@ const { check, canCheck } = useConfigReadiness({
           })),
         );
         // 上传等待期间用户切换了会话 → 中止本次发送（避免文件落在 A 会话、消息发到 B 会话）
-        if (latestConversationIdRef.current !== convId) {
+        if (latestConversationIdRef.current !== resolvedConversationId) {
           messageApi.warning('会话已切换，本次发送已取消');
           return;
         }
@@ -350,10 +370,15 @@ const { check, canCheck } = useConfigReadiness({
       // 发送即清空输入框附件（clearLocalOnly 仅清本地 state，不触发 file:delete，保留磁盘文件）——原 L232-233 语义原样保留
       clearLocalOnly();
       setInputValue(''); // ★修复：对齐 ai_fr chat-shell.tsx L2171-2173——消息受理即清空输入框。闭包 inputValue 已捕获原文本，下行 sendMessage 发送内容不受影响
-      // ★ M1+M3：第三参显式传入进入时捕获的目标会话 ID——sendMessage 内部五重守卫与
-      //   IPC 投递均按该 ID 判定/路由，不再依赖 await 后的 conversationIdRef.current
+      // ★ M1+M3/R3：第三参显式传入已解析的目标会话 ID（进入时捕获值，或附件分支新建的会话 ID）——
+      //   sendMessage 内部五重守卫与 IPC 投递均按该 ID 判定/路由，不再依赖 await 后的 conversationIdRef.current
       // ★ BUG3 修复：发送文本统一取 sendText（queued 重发=原文本快照，正常= inputValue 不变）
-      await sendMessage(sendText, attachments, targetConversationId);
+      const sent = await sendMessage(sendText, attachments, resolvedConversationId);
+      if (!sent && !queued) {
+        // ★ 受理失败（守卫拦截 / 创建在途去重 / 投递失败）：恢复草稿，杜绝文本静默丢失
+        //   （替代原 creatingConversation 在途拦截对输入文本的隐式保护副作用）
+        setInputValue(sendText);
+      }
     } finally {
       sendInFlightConversationIdsRef.current.delete(flightKey); // 释放进入时捕获的键：禁用 finally 时刻的 conversationId 状态变量（会话切换后已变值会误删他话）
       // ★ BUG3 修复：flightKey 已释放（=前序 chat:send promise settle 之后；渲染层 abort
@@ -380,7 +405,6 @@ const { check, canCheck } = useConfigReadiness({
     check,
     canCheck,
     conversationId,
-    creatingConversation,
     isConversationCancelPendingSettle,
     createConversation,
     fileUploadingCount,
@@ -436,6 +460,7 @@ const { check, canCheck } = useConfigReadiness({
 
   const handleRemoveConversation = useCallback(
     (id: string) => {
+      draftsRef.current.delete(id); // ★ R1：删除会话同步清理其草稿（非活跃删除无切换边界，须显式清理）
       void deleteConversation(id);
     },
     [deleteConversation],
@@ -563,8 +588,6 @@ const { check, canCheck } = useConfigReadiness({
             onCancel={handleAbort}
             loading={isStreaming}
             showCancel={showCancel}
-            /** ★ M4：目标会话级提交锁（当前会话 running/sending 或新建会话在途） */
-            submitLocked={showCancel || creatingConversation}
             /** ★ M4：提交被拦截反馈（组件内 300ms 节流后回调） */
             onBlocked={handleSendBlocked}
             canSend={canSend}

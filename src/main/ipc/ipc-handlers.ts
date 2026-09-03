@@ -301,17 +301,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       throw new Error(ERR_CONVERSATION_RUNNING);
     }
 
-    // 校验主模型 API Key 非空
-    const mainModelApiKey = configManager.getSettings().mainModelApiKey;
-    if (!mainModelApiKey || mainModelApiKey.trim() === '') {
-      throw new Error('主模型 API Key 未配置，请在设置中配置 API Key');
-    }
-
     const messageId = uuidv4();
 
     // AbortController 已由 beginConversationRun 创建
 
+    // ★ 缺陷②根因修复（闸门全路径释放）：API Key 校验移入 try——原实现位于
+    //   beginConversationRun 成功之后、try 之前，mainModelApiKey 为空时 throw
+    //   不经过 finally，闸门条目永久泄漏，该会话后续所有发送被
+    //   ERR_CONVERSATION_RUNNING 拒绝（showCancel=false 无停止按钮，仅重启可恢复）。
+    //   移入 try 后该早期退出路径与其余退出路径统一由 finally 的
+    //   finishConversationRun 释放闸门；校验仍先于 ensureConversation /
+    //   persistUploadedFiles / runMainAgent，可观察语义顺序不变。
+    //   注意：begin 与 try 之间禁止再插入任何可抛出的语句（此处仅 null 判定，
+    //   防止新的闸门旁路泄漏）。
     try {
+      // 校验主模型 API Key 非空
+      const mainModelApiKey = configManager.getSettings().mainModelApiKey;
+      if (!mainModelApiKey || mainModelApiKey.trim() === '') {
+        throw new Error('主模型 API Key 未配置，请在设置中配置 API Key');
+      }
+
       // 确保对话存在
       ensureConversation(conversationId);
       const uploadedFiles = await persistUploadedFiles(conversationId, params.files);
@@ -372,11 +381,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
       throw error;
     } finally {
-      finishConversationRun(conversationId);
-      emitConversationUpdated(
-        mainWindow,
-        setConversationRunning(conversationId, false),
-      );
+      // ★ 缺陷①③根因修复：闸门释放与 is_running 复位收敛到 run 真实 settle 出口，
+      //   且以实例归属校验为前置——runMainAgent 返回/抛出（含 ERR_ABORTED）后
+      //   finally 才执行，此处即本 run 的真实退出点；finishConversationRun 返回
+      //   false = 条目已被替换/释放（本 run 已无闸门所有权），此时不得触碰
+      //   is_running 与列表态（旧 run 退出不得踩踏新 run 的控制器与状态）。
+      if (finishConversationRun(conversationId, abortController)) {
+        emitConversationUpdated(
+          mainWindow,
+          setConversationRunning(conversationId, false),
+        );
+      }
     }
   });
 
@@ -384,6 +399,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    * chat:abort — 中止当前对话
    */
   ipcMain.on(IPC_CHAT.ABORT, (_event, conversationId: string) => {
+    // ★ 缺陷①③根因修复说明：abortConversationRun 现仅触发控制器 abort，不再删除
+    //   闸门条目（条目由 run 真实 settle 时经实例归属校验释放）——取消-settle 窗口内
+    //   同会话新 chat:send 被 beginConversationRun 并发拒绝，杜绝旧 run 退出错杀
+    //   新 run 控制器/踩踏其 is_running；渲染层"取消后立刻重发"由取消待收口队列在
+    //   settle 时刻（flightKey 与闸门同点释放）自动重发，体验不变。
+    //   finally 的立即复位 is_running + conv:updated 推送 + MAIN_AGENT_ABORTED_EVENT
+    //   语义保持不变：渲染层 showCancel 即刻解锁（发送不再退化为停止手势）与消息
+    //   abort 归一化依赖该时序，不得移除（已排除路径第 1/3 项）。
     try {
       abortConversationRun(conversationId);
     }

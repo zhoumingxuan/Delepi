@@ -43,12 +43,6 @@ interface SenderBoxProps {
   onCancel?: (() => void) | undefined;
   loading?: boolean | undefined;
   showCancel?: boolean | undefined;
-  /**
-   * ★ M4（一个对话一个 is_running 标志位）：目标会话级提交锁。
-   * 上游按“当前目标会话 ID”计算（该会话 running/sending，或新建会话在途），
-   * 锁定时提交被拦截并回调 onBlocked('locked')，不再静默吞回车/吞点击。
-   */
-  submitLocked?: boolean | undefined;
   /** ★ M4：提交被拦截时的反馈回调（组件内 300ms 节流，避免高频提示） */
   onBlocked?: ((reason: 'locked' | 'empty') => void) | undefined;
   canSend?: boolean | undefined;
@@ -83,7 +77,6 @@ export const SenderBox = memo(function SenderBox({
   onCancel,
   loading = false,
   showCancel = false,
-  submitLocked = false,
   onBlocked,
   canSend = false,
   pendingFiles = [],
@@ -184,9 +177,10 @@ export const SenderBox = memo(function SenderBox({
 
   // ── Submit ─────────────────────────────────────────────────────
   const handleSubmit = useCallback(() => {
-    // ★ M4：目标会话锁定（showCancel/loading/submitLocked 任一为真）→ 拦截并反馈
-    //   （三者均由上游按目标会话 ID 计算，非全局标志）
-    if (showCancel || loading || submitLocked) {
+    // ★ 守卫收敛（仅两条规则）：
+    //   规则 1：运行中/发送中禁发（showCancel = 活跃会话 sending ∪ running，含主进程权威 isRunning）
+    //   规则 2：空消息禁发（无文本且无附件）
+    if (showCancel) {
       notifyBlocked('locked');
       return;
     }
@@ -196,7 +190,7 @@ export const SenderBox = memo(function SenderBox({
       return;
     }
     onSend?.(value);
-  }, [onSend, showCancel, loading, submitLocked, value, pendingFiles.length, notifyBlocked]);
+  }, [onSend, showCancel, value, pendingFiles.length, notifyBlocked]);
 
   // ── Enter key ──────────────────────────────────────────────────
   const handleKeyDown = useCallback(
@@ -206,12 +200,7 @@ export const SenderBox = memo(function SenderBox({
         !event.shiftKey &&
         !event.nativeEvent.isComposing
       ) {
-        if (
-          !showCancel &&
-          !loading &&
-          !submitLocked &&
-          (value.trim() || pendingFiles.length > 0)
-        ) {
+        if (!showCancel && (value.trim() || pendingFiles.length > 0)) {
           event.preventDefault();
           handleSubmit();
           // ★ M5：返回 false 抑制 @ant-design/x Sender 内部 onInternalKeyDown 的
@@ -220,10 +209,10 @@ export const SenderBox = memo(function SenderBox({
           return false;
         }
         // ★ M4：锁定时反馈（原为静默吞回车）；空内容静默（与原行为一致）
-        if (showCancel || loading || submitLocked) notifyBlocked('locked');
+        if (showCancel) notifyBlocked('locked');
       }
     },
-    [handleSubmit, showCancel, loading, submitLocked, value, pendingFiles.length, notifyBlocked],
+    [handleSubmit, showCancel, value, pendingFiles.length, notifyBlocked],
   );
 
   return (
@@ -412,7 +401,7 @@ export const SenderBox = memo(function SenderBox({
                 }}
                 // ★ M4：disabled 联动目标会话级锁——锁定态保持可点击（点击后被拦并反馈），
                 //   非锁定态按 canSend 判定
-                disabled={showCancel || submitLocked ? false : !canSend}
+                disabled={showCancel ? false : !canSend}
               />
             </>
           )}

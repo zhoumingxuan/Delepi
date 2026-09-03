@@ -133,10 +133,18 @@ export function setConversationRunning(
   return getConversationById(conversationId);
 }
 
+/**
+ * ★ 缺陷③根因修复（is_running 写入不跨 run 生效）：touchConversation 拆分职责，
+ *   仅更新 updated_at（列表排序语义保持不变，不更新 is_running）——is_running 的
+ *   写入出口收敛到 run 生命周期边界（chat:send 启动的 setConversationRunning(true)、
+ *   run 真实 settle 出口的 setConversationRunning(false) 与 chat:abort 复位），
+ *   僵尸 run 收尾（runMainAgent 第 10 步 touchConversation）不再能把运行中新 run
+ *   的 is_running 覆写为 0。
+ */
 export function touchConversation(conversationId: string): void {
   const db = getDb();
   db.prepare(`
-    UPDATE conversations SET updated_at = ?, is_running = 0 WHERE id = ?
+    UPDATE conversations SET updated_at = ? WHERE id = ?
   `).run(nowIso(), conversationId);
 }
 

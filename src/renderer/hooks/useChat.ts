@@ -746,14 +746,12 @@ export function useChat(options?: UseChatOptions) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [streamingConversationIds, setStreamingConversationIds] = useState<Set<string>>(new Set());
   /**
-   * ★ M2/T1 修复（一个对话一个 is_running 标志位）：新建会话在途标记。
-   * conv:create 的 await 返回前为 true：
-   * - 抑制创建窗口内的重复建会话（双击“新建对话”）；
-   * - 上游（ChatShell/SenderBox）据此锁定发送/停止动作的目标身份，
-   *   消除“窗口内 conversationIdRef.current 仍指向旧会话 A”的身份漂移判定。
-   * 注意：这是“创建动作在途”标记，不是任何会话的 running 状态，不参与发送五重守卫。
+   * ★ M2/T1 修复收敛：新建会话在途去重 ref（同步 ref，非渲染状态）。
+   * conv:create 的 await 返回前为 true：同步拦截创建窗口内的重复建会话——双击“新建对话”
+   * 产生孤儿会话的唯一防线（preload 与主进程 conv:create 均无去重，conversation.repo 无幂等约束）。
+   * 渲染层不再暴露 creatingConversation state：窗口期行为由“R2 基准判定（createConversation 内）
+   * ＋ 既有防线（flightKey / sendMessage 五重守卫 / 主进程并发拒绝）”承载。
    */
-  const [creatingConversation, setCreatingConversation] = useState(false);
   const creatingConversationRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
@@ -823,8 +821,10 @@ export function useChat(options?: UseChatOptions) {
 
   /**
    * ★ BUG-1（激活对账）三重去重状态：
-   * - fingerprint：上次对账触发时活跃会话的列表指纹（conversationId|isRunning|updatedAt），未变则跳过
-   * - lastAt：上次对账触发时间戳（激活对账最小间隔 ≥2s 节流）
+   * - fingerprint：上次对账触发时活跃会话的【主进程权威态】指纹（conversationId|isRunning|updatedAt，
+   *   来源 conv:list 权威记录而非渲染层本地列表——缺陷④：本地列表自比对在卡死态下指纹冻结、
+   *   永久跳过对账；权威比对可检测主进程权威态与本地态偏差并纠正）
+   * - lastAt：上次对账触发时间戳（激活对账最小间隔 ≥2s 节流，同时节流权威探针 conv:list）
    * - inFlight：激活对账进行中标记（同一会话进行中的对账加载未完成不重复发起）
    */
   const activationReconcileStateRef = useRef({
@@ -1022,7 +1022,7 @@ const scheduleProjection = useCallback(() => {
 
   // 创建对话
   // ★ M2/T1/T3 修复（一个对话一个 is_running 标志位）：
-  // - 在途标记：await conv:create 返回前 creatingConversation=true，重复触发直接返回 null，
+  // - 在途去重：await conv:create 返回前 creatingConversationRef=true，重复触发直接返回 null，
   //   防止双击“新建对话”产生两个会话；
   // - 删除原“全局清空 pendingConversationSendIds / sendingConversationIds 两 Set”的副作用：
   //   A 会话运行中创建 B 时，该全局清空会把 A（乃至全部会话）的 per-conversation 发送守卫
@@ -1033,7 +1033,8 @@ const scheduleProjection = useCallback(() => {
   const createConversation = useCallback(async () => {
     if (creatingConversationRef.current) return null; // 在途去重（同步 ref，拦 await 前的连击）
     creatingConversationRef.current = true;
-    setCreatingConversation(true);
+    // ★ R2：await 前同步捕获“发起创建时的基准位置”（发起那一刻的活跃会话身份）
+    const baselineConversationId = conversationIdRef.current;
     try {
       if (window.electronAPI) {
         const conv = await window.electronAPI.conversations.create();
@@ -1046,23 +1047,29 @@ const scheduleProjection = useCallback(() => {
           //   镜像期（applyConversationEvent 活跃投影）与当时活跃会话 entry 的
           //   completedToolCallIds 为同一 Set 对象引用，清空会连带清空非新建会话（通常 A）
           //   entry 的防重集合；新会话的防重集合由下方 createRuntimeState 新建空 entry 自带
-          conversationIdRef.current = conv.id;
-          stickToBottomRef.current = true;
-          setConversationId(conv.id);
-          // ★ D7 修复：注释与实际行为对齐——新会话没有历史消息，setMessages([]) 清空当前
-          //   投影列表（旧会话消息保留在 per-conversation store entry，切回旧会话时由
-          //   switchConversation 水合恢复），同时为该会话建立空的 per-conversation 运行态条目
-          setMessages([]);
-          // setToolSnapshots 不再清空（累积所有对话的快照）
-          // ★ M06：职责由 per-conversation 运行态条目承载（新建空 entry 替代 Map 写入）
+          // ★ M06：职责由 per-conversation 运行态条目承载——store entry 无条件建立：
+          //   目标会话运行态承载（后台运行/乐观消息写入均需要 entry），与界面无关
           conversationRuntimeStoreRef.current.set(conv.id, createRuntimeState(conv.id));
-          assistantMessageIdRef.current = null;
-          setShowScrollToBottom(false);
-          // ★ T3 修复：原 setPendingConversationSendIds(new Set()) +
-          //   setSendingConversationIds(new Set()) 的全局清空副作用已删除——
-          //   per-conversation 守卫仅由该会话自身终态事件清理
-          //  （chat:done / chat:error / chat:aborted），禁止跨会话全局清空
-          setError(null);
+          // ★ R2 基准判定：仅当 await 期间用户未离开发起位置时，才切换活跃会话（携带全套视图态收口）；
+          //   用户已切换（conversationIdRef.current !== baselineConversationId）→ 新会话只入库进列表，
+          //   不抢界面、不清投影、不动错误条（当前所在会话的视图态由 switchConversation 全权负责）
+          if (conversationIdRef.current === baselineConversationId) {
+            conversationIdRef.current = conv.id;
+            stickToBottomRef.current = true;
+            setConversationId(conv.id);
+            // ★ D7 修复：注释与实际行为对齐——新会话没有历史消息，setMessages([]) 清空当前
+            //   投影列表（旧会话消息保留在 per-conversation store entry，切回旧会话时由
+            //   switchConversation 水合恢复），同时为该会话建立空的 per-conversation 运行态条目
+            setMessages([]);
+            // setToolSnapshots 不再清空（累积所有对话的快照）
+            assistantMessageIdRef.current = null;
+            setShowScrollToBottom(false);
+            // ★ T3 修复：原 setPendingConversationSendIds(new Set()) +
+            //   setSendingConversationIds(new Set()) 的全局清空副作用已删除——
+            //   per-conversation 守卫仅由该会话自身终态事件清理
+            //  （chat:done / chat:error / chat:aborted），禁止跨会话全局清空
+            setError(null);
+          }
         }
         return conv;
       }
@@ -1072,7 +1079,6 @@ const scheduleProjection = useCallback(() => {
       return null;
     } finally {
       creatingConversationRef.current = false;
-      setCreatingConversation(false);
     }
     return null;
   }, [createRuntimeState]);
@@ -1565,7 +1571,7 @@ const scheduleProjection = useCallback(() => {
       text: string,
       attachments: SendAttachment[] = [],
       targetConversationId?: string | null,
-    ) => {
+    ): Promise<boolean> => {
       const trimmed = text.trim();
       // ============================================================
       // Phase 3 P3-1 发送五重守卫（任一不满足则静默 return）
@@ -1573,17 +1579,17 @@ const scheduleProjection = useCallback(() => {
       // 守卫 1：hasText（trim 后非空）或 hasAttachments（已有附件）
       const hasText = trimmed.length > 0;
       const hasAttachments = attachments.length > 0;
-      if (!hasText && !hasAttachments) return;
+      if (!hasText && !hasAttachments) return false;
       // 守卫 2：!isConversationPendingSend(activeConversationId)（P0-3 per-conversation）
       // ★ M1：目标会话显式传入优先（ChatShell 在任何 await 前捕获的会话 ID）；
       //   未传时回退 conversationIdRef.current（既有语义）。五重守卫一律按该目标会话 ID
       //   判定，B 的发送不会被 A 的运行状态拦截，A 的运行也不会被 B 误中止。
       const activeConvId = targetConversationId ?? conversationIdRef.current;
-      if (isConversationPendingSend(activeConvId) || (activeConvId ? pendingSendRef.current.has(activeConvId) : false)) return;
+      if (isConversationPendingSend(activeConvId) || (activeConvId ? pendingSendRef.current.has(activeConvId) : false)) return false;
       // 守卫 3：!isConversationSending(activeConversationId)
-      if (isConversationSending(activeConvId)) return;
+      if (isConversationSending(activeConvId)) return false;
       // 守卫 5：!isConversationRunning(activeConversationId)
-      if (isConversationRunning(activeConvId)) return;
+      if (isConversationRunning(activeConvId)) return false;
 
       // P0-3：convId 提前声明，用于 per-conversation pending/streaming 状态设置
       // ★ M1：convId 与守卫同源（目标会话 ID），消除 await 期间 ref 漂移导致的错投递
@@ -1604,12 +1610,16 @@ const scheduleProjection = useCallback(() => {
       try {
         // 确保有对话
         if (!convId) {
-          const conv = await createConversation();
+          const conv = await createConversation(); // R2 基准判定在函数内统一生效
           if (!conv) {
-            throw new Error('创建对话失败');
+            // 去重命中（creatingConversationRef 在途）或创建失败（失败已在 createConversation catch 内提示）
+            messageApiRef.current?.error('会话创建未完成，请稍候重试');
+            // 此前无任何守卫副作用：pendingSend 未置位（convId=null 跳过）、乐观消息未写入、
+            // streaming/sending 未置位 → 返回 false 由上游恢复草稿
+            return false;
           }
           convId = conv.id;
-          setConversationId(convId);
+          // 界面切换判定由 createConversation 的 R2 基准分支统一承载（原无条件 setConversationId 已删除）
         }
 
         // 添加用户消息（status='local' 本地乐观插入，P1-1）
@@ -1691,6 +1701,7 @@ const scheduleProjection = useCallback(() => {
         // - chat:error → unsubError 中清理
         // - chat:aborted → unsubAborted 中清理
         // 避免在流式还在进行时守卫过早重置导致守卫失效
+        return true; // ★ U5：已受理并完成 chat:send 投递
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
         // ★ M1：主进程 chat:send 并发拒绝错误码（ERR_CONVERSATION_RUNNING='CONVERSATION_RUNNING'，
@@ -1724,6 +1735,7 @@ const scheduleProjection = useCallback(() => {
         //   IPC.chat.send() 抛错时不会触发 chat:error 事件（chat:error 仅在流式过程中触发）
         //   因此 catch 块需自行把已经 push 的 loading 消息归一化为 abort
         //   （convId 为空 = 创建会话失败路径：乐观消息尚未写入任何 entry，无需归一化）
+        return false; // ★ U5：异常路径（含 chat:send 投递失败）一律视为未受理，由上游恢复草稿
       } finally {
         // ★ BUG3 修复：前序 chat:send promise settle 收口（成功返回与 catch 的 ERR_ABORTED
         //   等抛错路径均覆盖）。无论标记是否存在一律清理该会话"取消待收口"标记（防残留
@@ -2432,44 +2444,82 @@ const scheduleProjection = useCallback(() => {
   //   做一次幂等对账（严禁无条件全量重载、严禁与 streaming 竞争的直写 setMessages）：
   //   - 消息对账走 loadConversationMessages(id, { silent: true })，复用其内部
   //     P1-C2 loadSeq 串行化 + conversationIdRef 闭包守卫（原有守卫链，不另起炉灶）
-  //   - 同步刷新会话列表 loadConversations()（isRunning/updatedAt 指纹来源）
+  //   - ★ 缺陷④根因修复（对账指纹改权威比对）：先取 conv:list 权威列表（受②③
+  //     节流；不读 messages 表），以【权威记录】计算指纹并与上次对账指纹 + 本地态
+  //     双重比对——权威未变且本地与权威一致 → 跳过（不写状态、不重载消息，非每次
+  //     focus 强制全量刷新）；权威变化或本地偏差（如卡死 isRunning=true 而权威
+  //     is_running=0）→ 应用权威列表 + 静默重载消息（卡死态自愈）。
+  //     原实现以渲染层自身（可能陈旧的）列表计算指纹自比对，且取消链路
+  //     setConversationRunning 不更新 updated_at → 取消前后指纹同值，列表一旦
+  //     停留 isRunning=true，每次 focus 指纹相同直接 return，永久跳过权威刷新。
   //   防重复三重去重：
-  //   ① 状态指纹：活跃会话列表 isRunning/updatedAt 与上次对账触发时一致 → 跳过
-  //   ② 最小间隔节流：距上次对账触发 <2s → 跳过
+  //   ① 状态指纹（权威化）：权威态指纹与上次对账一致 且 本地态与权威一致 → 跳过
+  //   ② 最小间隔节流：距上次对账触发 <2s → 跳过（同步节流权威探针，防 focus 风暴）
   //   ③ in-flight 去重：上次激活对账加载未完成 → 跳过
   // ============================================================
   useEffect(() => {
     const ACTIVATION_RECONCILE_MIN_INTERVAL_MS = 2000;
     const reconcileOnActivate = () => {
       const state = activationReconcileStateRef.current;
-      // 去重②：激活对账最小间隔节流（≥2s）
+      // 去重②：激活对账最小间隔节流（≥2s；同时节流权威探针 conv:list，防 focus 风暴）
       if (Date.now() - state.lastAt < ACTIVATION_RECONCILE_MIN_INTERVAL_MS) return;
       // 去重③：in-flight 去重——同一会话进行中的对账未完成不重复发起
       if (state.inFlight) return;
       const conversationId = conversationIdRef.current;
-      // 去重①：状态指纹——活跃会话 isRunning/updatedAt 未变则跳过
-      const activeConversation = conversationId
-        ? conversationsRef.current.find((c) => c.id === conversationId)
-        : undefined;
-      const fingerprint = activeConversation
-        ? `${conversationId}|${String(activeConversation.isRunning)}|${String(activeConversation.updatedAt)}`
-        : 'no-active-conversation';
-      if (fingerprint === state.fingerprint) return;
-      state.fingerprint = fingerprint;
-      state.lastAt = Date.now();
-      state.inFlight = true;
-      // 会话列表刷新（列表态对账 + 下次激活指纹来源）
-      void loadConversations();
       if (!conversationId) {
+        // 无活跃会话：沿用 no-active-conversation 指纹去重（列表态无 per-run 卡死面）
+        if (state.fingerprint === 'no-active-conversation') return;
+        state.fingerprint = 'no-active-conversation';
+        state.lastAt = Date.now();
+        state.inFlight = true;
+        // 会话列表刷新（列表态对账）
+        void loadConversations();
         state.inFlight = false;
         return;
       }
-      // 幂等对账：复用 loadConversationMessages 守卫链（loadSeq 串行化 + conversationIdRef 守卫）
-      loadConversationMessages(conversationId, { silent: true })
-        .catch(() => undefined)
-        .finally(() => {
+      // ★ 缺陷④根因修复：对账指纹改用主进程权威比对（不再以渲染层自身列表自比对）。
+      //   每次对账先取权威列表（conv:list 轻量探针，受②③节流），以权威记录计算
+      //   指纹，与上次对账指纹 + 本地态双重比对后决策——
+      //   ① 权威指纹未变 且 本地态与权威一致 → 跳过（不写状态、不重载消息；
+      //      合法运行中 updatedAt/is_running 稳定，同样跳过，行为与原指纹去重等价）；
+      //   ② 权威指纹变化（后台完成/取消链路 DB is_running 复位等）或本地与权威
+      //      偏差（卡死 isRunning=true 而权威已复位）→ 应用权威列表 + 静默重载
+      //      消息（自愈）。取消链路 setConversationRunning 不更新 updated_at 的
+      //      "指纹冻结"缺陷因指纹来源改为权威 is_running 而消除。
+      state.lastAt = Date.now();
+      state.inFlight = true;
+      void (async () => {
+        try {
+          if (!window.electronAPI) return;
+          const authoritativeList = await window.electronAPI.conversations.list();
+          const authoritativeActive = authoritativeList.find(
+            (c) => c.id === conversationId,
+          );
+          const localActive = conversationsRef.current.find(
+            (c) => c.id === conversationId,
+          );
+          const fingerprint = authoritativeActive
+            ? `${conversationId}|${String(authoritativeActive.isRunning)}|${String(authoritativeActive.updatedAt)}`
+            : `${conversationId}|absent-in-authority`;
+          const localMatchesAuthority = Boolean(
+            localActive
+              && authoritativeActive
+              && localActive.isRunning === authoritativeActive.isRunning
+              && localActive.updatedAt === authoritativeActive.updatedAt,
+          );
+          // 去重①（权威化）：权威指纹与上次对账一致 且 本地态与权威一致 → 无偏差跳过
+          if (fingerprint === state.fingerprint && localMatchesAuthority) return;
+          state.fingerprint = fingerprint;
+          // 权威列表应用（列表态纠偏，与 loadConversations 整体替换同口径）
+          setConversations(authoritativeList);
+          // 幂等对账：复用 loadConversationMessages 守卫链（loadSeq 串行化 + conversationIdRef 守卫）
+          await loadConversationMessages(conversationId, { silent: true });
+        } catch {
+          // 权威探针/对账失败静默（下次激活经②节流重试）
+        } finally {
           activationReconcileStateRef.current.inFlight = false;
-        });
+        }
+      })();
     };
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') reconcileOnActivate();
@@ -2526,8 +2576,6 @@ const scheduleProjection = useCallback(() => {
     conversations,
     /** ★ P0-1 per-conversation：基于 conversationId 的派生 streaming 状态 */
     isStreaming: Boolean(conversationId && streamingConversationIds.has(conversationId)),
-    /** ★ M2/T1：新建会话在途标记（conv:create 未返回期间为 true），供上游锁定发送目标身份 */
-    creatingConversation,
     error,
     sendMessage,
     abortChat,
