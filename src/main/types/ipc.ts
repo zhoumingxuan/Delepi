@@ -64,14 +64,15 @@ export interface ConfigSaveParams {
  * - name: 原始文件名（必填）
  * - size: 文件字节数（必填，仅作为元数据返回）
  * - contentType: MIME 类型（可选，缺省 application/octet-stream）
- * - data: 文件二进制内容（ArrayBuffer，IPC 序列化兼容）
+ * - data: 文件二进制内容。H1 防御：优先 Base64 字符串（string，IPC 结构化克隆纯字符串，
+ *   规避 ArrayBuffer 序列化断点）；主进程同时兼容 ArrayBuffer / Uint8Array / number[]（向后兼容）
  */
 export interface FileUploadParams {
   conversationId: string;
   name: string;
   size: number;
   contentType?: string;
-  data: ArrayBuffer | Uint8Array | number[];
+  data: string | ArrayBuffer | Uint8Array | number[];
 }
 
 /** file:upload 返回：单个上传后的 ChatUploadedFile */

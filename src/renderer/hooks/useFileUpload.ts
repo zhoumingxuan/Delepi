@@ -1,19 +1,23 @@
 /**
- * useFileUpload Hook
- * 文件上传本地状态管理 + 主进程落盘异步调用
+ * useFileUpload Hook —— 「粘贴即落盘、无中间态」直通模型
  *
- * Phase 1 样式基础：
- * - 从原 ChatShell.tsx 中抽取
- * - 删除对 var(--color-*) 的依赖
- * - 接口与 SenderBox 的 PendingFile 保持一致
+ * 核心理念（2026-09-04 上传链路整体重构）：剪贴板粘贴 = 一次本地文件复制粘贴
+ * （剪贴板 → 读取 → Base64 → IPC → 本地落盘 → 附件就绪）。
  *
- * Phase 3 P5 适配层（适配 file:upload 独立 IPC 通道）：
- * - addPendingFiles 后异步触发 file:upload，主进程落盘到 conversations/{id}/uploads/
- * - 每个 pendingFile 维护 uploadStatus：pending/uploading/uploaded/error
- * - uploaded 后写入 uploadedFile（包含 storageKey + id），供 sendMessage 复用
- * - removePendingFile 时若已上传则同步触发 file:delete，避免磁盘孤儿文件
- * - clearPendingFiles 时对所有已上传文件触发 file:delete（最佳努力）
- * - 暴露 uploadingCount 给 useChat 的 P3-1 守卫 4 使用
+ * - 状态机三态：saving（读取+Base64+IPC+主进程写盘的物理异步窗口）/ ready（落盘完成，
+ *   uploadedFile 元数据在手，可直接随消息发送）/ error（失败即报终态，红条 title +
+ *   批次聚合 toast + 主进程持久日志三层反馈）
+ * - 无会话粘贴：粘贴时刻经 options.ensureConversation 前置创建会话后立即落盘，
+ *   不存在「等待会话」的挂起中间态（hook 侧在途 promise 去重；创建期间用户切走则
+ *   本批丢弃并 toast）
+ * - 唯一上传触发点：addPendingFiles 内同步循环逐项 performSave（不依赖任何 state
+ *   提交时序 —— R1-safe：全部要素在更新器外派生、更新器只做纯合并、触发遍历使用
+ *   更新器外部的数组）
+ * - saving 期间被用户点 × 的项经 removedWhileSavingRef 显式登记，settle 成功后
+ *   最佳努力 file:delete 孤儿回收（按构造安全：该 storageKey 在项被移除前从未达到
+ *   ready，消息只消费 ready 项，物理上不可能被任何消息引用）
+ * - 卸载清理仅 revokeObjectURL（渲染端在卸载时刻无法权威判定文件是否已被消息引用，
+ *   完全退出 file:delete 消费；孤儿处置归 R6 搁置口径 + 会话级 cleanup-orphans 兜底）
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -22,9 +26,10 @@ import { isImageContentType } from '@shared/utils/image-type';
 import { getFileContentType } from '@shared/utils/file-mime';
 import type { PendingFile } from '../components/SenderBox';
 
-export type PendingUploadStatus = 'pending' | 'uploading' | 'uploaded' | 'error';
+/** 附件三态：saving=落盘物理窗口；ready=已落盘就绪；error=失败即报 */
+export type PendingUploadStatus = 'saving' | 'ready' | 'error';
 
-/** 同步主进程 file:upload 返回的 ChatUploadedFile 元数据 */
+/** 主进程 file:upload 返回的 ChatUploadedFile 元数据（ready 时持有，含 storageKey） */
 export interface UploadedFileMeta {
   id: string;
   name: string;
@@ -34,49 +39,74 @@ export interface UploadedFileMeta {
   uploadedAt: string;
 }
 
-/** 带主进程上传状态的 PendingFile（在 SenderBox.PendingFile 基础上扩展） */
+/** 带落盘状态的 PendingFile（在 SenderBox.PendingFile 基础上扩展） */
 export interface UploadPendingFile extends PendingFile {
-  /** 上传状态：pending(刚加入待传)/uploading(主进程落盘中)/uploaded(成功)/error(失败) */
+  /** 落盘状态：saving(读取+IPC+写盘物理窗口)/ready(落盘完成，元数据在手)/error(失败即报) */
   uploadStatus: PendingUploadStatus;
   /** MIME 类型：由文件声明或 file-mime 探测得到，不改变原始文件内容 */
   contentType?: string | undefined;
-  /** 上传成功后主进程返回的元数据，包含 storageKey */
+  /** ready 时必有：主进程返回的元数据，包含 storageKey */
   uploadedFile?: UploadedFileMeta | undefined;
-  /** 上传失败的错误信息 */
+  /** error 时必有：失败原因（附件条 title + 批次聚合 toast 消费） */
   uploadError?: string | undefined;
+}
+
+export interface UseFileUploadOptions {
+  /** 无会话粘贴时的前置会话创建器：返回新会话 id；失败/在途且未产出返回 null */
+  ensureConversation: () => Promise<string | null>;
+  /** 用户可见反馈（预筛跳过 / 会话创建失败 / 批次聚合失败 toast） */
+  notify: (level: 'warning' | 'error', text: string) => void;
 }
 
 export interface UseFileUploadReturn {
   pendingFiles: UploadPendingFile[];
   addPendingFiles: (files: File[]) => void;
   removePendingFile: (localKey: string) => void;
-  clearPendingFiles: () => void;
-  /**
-   * P7 切换会话：仅清空本地 pendingFiles state，**不**触发 file:delete（保留磁盘文件）
-   * 用于切会话时的清理：避免清空时误删磁盘文件，也避免 new conversation 看到旧 session 的待发送文件
-   * 与 clearPendingFiles 的差异：
-   * - clearPendingFiles: 卸载/发送后清理，对已上传文件触发 file:delete
-   * - clearLocalOnly: 切会话时清理，仅清本地 state，不触发 file:delete（磁盘文件保留）
-   */
+  /** 仅清空本地 pendingFiles state（revoke + 清空），不触发 file:delete（磁盘保留，R6 口径） */
   clearLocalOnly: () => void;
-  pendingFilesRef: React.MutableRefObject<UploadPendingFile[]>;
-  /** 当前正在上传的文件数量（P3-1 守卫 4 使用） */
-  uploadingCount: number;
-  /**
-   * 同步当前会话 ID 到上传通道（用于 file:upload 路由）
-   * 由 ChatShell 在 conversationId 变化时调用，确保上传指向正确的会话
-   */
+  /** 当前落盘物理窗口内的文件数量（ChatShell 场景c 守卫与 canSend 派生使用） */
+  savingCount: number;
+  /** 同步当前会话 ID（file:upload 路由目标）；A→B / A→null 清空本地列表，null→B 不清 */
   setConversationId: (id: string | null) => void;
-  setPendingUploadStatus: (localKeys: string[], status: 'uploading' | 'pending') => void;
-  uploadFilesForSend: (convId: string, items: AcceptedUploadItem[]) => Promise<{ uploaded: UploadedFileMeta[]; failed: string[] }>;
 }
 
 /**
- * 序列化单个 File 为 IPC 可传输的 ArrayBuffer
- * - 用于 file:upload 通道替代 multipart/form-data
+ * 直通落盘的最小 item 信息（模块内部类型，外部零引用）：
+ * - 包含 localKey/file/contentType/fileName，全部在 setPendingFiles 更新器外派生，
+ *   避免 setState 闭包后从 ref 同步读取
+ */
+type AcceptedUploadItem = {
+  localKey: string;
+  file: File;
+  contentType: string;
+  fileName: string;
+};
+
+/** performSave 单项结果：ok=true 携带落盘元数据；ok=false 携带失败原因（批次聚合 toast 消费） */
+type SaveOutcome = { ok: true; meta: UploadedFileMeta } | { ok: false; error: string };
+
+/**
+ * 读取单个 File 为 ArrayBuffer（MIME 探测与 Base64 编码共用）
  */
 async function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
   return file.arrayBuffer();
+}
+
+/**
+ * ArrayBuffer → Base64 字符串（H1 防御核心）
+ * - file:upload 通道 IPC 传输数据由 ArrayBuffer 改为 Base64 字符串：
+ *   纯字符串经结构化克隆传输不存在二进制序列化断点；主进程 fileInputToBuffer
+ *   以 Buffer.from(data, 'base64') 解码，并兼容旧 ArrayBuffer 入参（向后兼容）；
+ * - 分块拼接规避 String.fromCharCode 单次展开参数上限。
+ */
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
 }
 
 async function detectFileContentType(file: File): Promise<string> {
@@ -84,88 +114,82 @@ async function detectFileContentType(file: File): Promise<string> {
   return getFileContentType(file.name, new Uint8Array(headerBuffer));
 }
 
-/**
- * triggerUpload 接受的最小 item 信息：
- * - 包含 localKey/file/contentType/fileName，避免在 setState 闭包后从 ref 同步读取
- * - 解决 P0-7：addPendingFiles 中 setPendingFiles 之后立即调用 triggerUpload 时 ref 还未同步的问题
- */
-export type AcceptedUploadItem = {
-  localKey: string;
-  file: File;
-  contentType: string;
-  fileName: string;
-};
-
-export function useFileUpload(): UseFileUploadReturn {
+export function useFileUpload(options: UseFileUploadOptions): UseFileUploadReturn {
   const [pendingFiles, setPendingFiles] = useState<UploadPendingFile[]>([]);
-  const [uploadingCount, setUploadingCount] = useState(0);
+  const [savingCount, setSavingCount] = useState(0);
   const pendingFilesRef = useRef<UploadPendingFile[]>([]);
   const conversationIdRef = useRef<string | null>(null);
+  const ensureInflightRef = useRef<Promise<string | null> | null>(null);
+  // saving 期间被用户点 × 删除的 localKey（settle 后孤儿回收专用；显式登记按构造安全，
+  // 不依赖 pendingFilesRef 缺席探测 —— ref 镜像在 commit 前可能滞后，缺席探测有误删在列项的风险）
+  const removedWhileSavingRef = useRef<Set<string>>(new Set());
 
-  // 同步 pendingFiles 到 ref
+  // options 解构（ChatShell 侧两个回调均 useCallback 稳定；依赖解构项而非 options 对象本体）
+  const { ensureConversation: ensureConversationFn, notify } = options;
+
+  // 同步 pendingFiles 到 ref（仅镜像自身；严禁把 ref 当作最新列表的权威判源）
   useEffect(() => {
     pendingFilesRef.current = pendingFiles;
   }, [pendingFiles]);
 
-  // 卸载时释放 ObjectURL + 最佳努力清理已上传文件
+  // 卸载清理：仅释放 ObjectURL（不再触发 file:delete —— 卸载时刻渲染端无法权威判定
+  // 文件是否已被消息引用，任何卸载期删除都携带误删已发送附件的风险；孤儿归 R6 口径）
   useEffect(() => {
-    const finalConvId = conversationIdRef.current;
     return () => {
       for (const item of pendingFilesRef.current) {
         try {
-          URL.revokeObjectURL(item.previewUrl);
+          if (item.previewUrl) URL.revokeObjectURL(item.previewUrl);
         } catch {
           // ignore
-        }
-        // 最佳努力：卸载时尝试删除已上传文件，避免磁盘孤儿
-        if (
-          finalConvId &&
-          item.uploadStatus === 'uploaded' &&
-          item.uploadedFile?.storageKey &&
-          window.electronAPI?.file?.delete
-        ) {
-          window.electronAPI.file
-            .delete({ conversationId: finalConvId, storageKey: item.uploadedFile.storageKey })
-            .catch(() => {
-              // ignore
-            });
         }
       }
     };
   }, []);
 
   /**
-   * 内部函数：将单个 AcceptedUploadItem 标记为 uploading 并异步调用 file:upload
-   * 完成后更新 uploadStatus 和 uploadedFile
-   *
-   * 实现说明（P0-7 修复）：
-   * - 旧版本接收 localKey，从 pendingFilesRef.current.find 同步读取 item
-   * - 问题：addPendingFiles 中 setPendingFiles 之后 ref 还未同步（useEffect 在 commit 阶段才触发），
-   *   导致 find 返回 undefined，提前 return
-   * - 修复：改为接收完整 item（localKey/file/contentType/fileName），
-   *   调用方在 setState 之前已持有 item 引用，避免依赖 ref 同步性
+   * 前置会话就绪（无会话粘贴时在粘贴时刻创建会话）：
+   * - 已有会话 → 直接返回 conversationIdRef.current；
+   * - 在途 promise 去重：无会话连续快速粘贴两次复用同一次创建；
+   * - 创建期间用户已切走（ref 已被切会话 effect 写为其他 id）→ 返回 null（本批丢弃）。
    */
-  const performUpload = useCallback(
-    async (convId: string, item: AcceptedUploadItem): Promise<UploadedFileMeta | null> => {
-      const { localKey, file, fileName } = item;                 // 原 L165
-      const fileType: string = item.contentType || file.type;    // 原 L166
-      setPendingFiles((prev) =>                                  // 原 L168-172
-        prev.map((p) => (p.localKey === localKey ? { ...p, uploadStatus: 'uploading' } : p)),
-      );
-      setUploadingCount((c) => c + 1);                           // 原 L173
+  const ensureConversation = useCallback(async (): Promise<string | null> => {
+    if (conversationIdRef.current) return conversationIdRef.current;
+    if (!ensureInflightRef.current) {
+      ensureInflightRef.current = ensureConversationFn().then((id) => {
+        ensureInflightRef.current = null;
+        if (id && conversationIdRef.current === null) conversationIdRef.current = id;
+        return id !== null && conversationIdRef.current === id ? id : null;
+      });
+    }
+    return ensureInflightRef.current;
+  }, [ensureConversationFn]);
+
+  /**
+   * 唯一上传路径：saving → file:upload IPC → ready / error（纯更新器，R1-safe）
+   * - settle 更新使用纯 prev.map（项已被移除则 map 不命中即 no-op）；
+   * - 失败三层反馈：error 态 + uploadError（附件条 title）、console、log:renderer ERROR 转发；
+   * - saving 期间被点 × 的项（removedWhileSavingRef 显式登记）settle 成功后最佳努力
+   *   file:delete 孤儿回收。
+   */
+  const performSave = useCallback(
+    async (convId: string, item: AcceptedUploadItem): Promise<SaveOutcome> => {
+      const { localKey, file, fileName } = item;
+      const fileType: string = item.contentType || file.type;
+      setSavingCount((c) => c + 1);
       try {
-        const arrayBuffer = await fileToArrayBuffer(file);       // 原 L177
-        if (!window.electronAPI?.file?.upload) {                 // 原 L178-180
+        const arrayBuffer = await fileToArrayBuffer(file);
+        const dataBase64 = arrayBufferToBase64(arrayBuffer);   // H1：IPC 传输数据为 Base64 字符串
+        if (!window.electronAPI?.file?.upload) {
           throw new Error('file:upload 通道不可用');
         }
-        const result = await window.electronAPI.file.upload({    // 原 L181-187
+        const result = await window.electronAPI.file.upload({
           conversationId: convId,
           name: fileName,
           size: file.size,
           contentType: fileType || 'application/octet-stream',
-          data: arrayBuffer,
+          data: dataBase64,
         });
-        const uploaded = result?.file;                           // 原 L188-191
+        const uploaded = result?.file;
         if (!uploaded || !uploaded.storageKey) {
           throw new Error('上传响应缺少 storageKey');
         }
@@ -177,88 +201,71 @@ export function useFileUpload(): UseFileUploadReturn {
           storageKey: uploaded.storageKey,
           uploadedAt: uploaded.uploadedAt,
         };
-        setPendingFiles((prev) =>                                // 原 L192-210（uploadedFile 字段用 meta 展开）
-          prev.map((item) =>
-            item.localKey === localKey
-              ? { ...item, uploadStatus: 'uploaded', uploadedFile: { ...meta }, uploadError: undefined }
-              : item,
-          ),
-        );
-        return meta;                                             // ★新增：向调用方回传元数据
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);   // 原 L212-221
-        // eslint-disable-next-line no-console
-        console.error('[useFileUpload] upload failed:', msg);
         setPendingFiles((prev) =>
-          prev.map((item) =>
-            item.localKey === localKey ? { ...item, uploadStatus: 'error', uploadError: msg } : item,
+          prev.map((entry) =>
+            entry.localKey === localKey
+              ? { ...entry, uploadStatus: 'ready', uploadedFile: { ...meta }, uploadError: undefined }
+              : entry,
           ),
         );
-        return null;                                             // ★新增：失败回传 null（不 throw，由调用方汇总）
+        // settle 孤儿回收：仅回收「saving 期间被用户点 ×」的项（显式登记命中才回收；
+        // 该 storageKey 从未达到 ready，物理上不可能进入任何消息 attachments）
+        if (removedWhileSavingRef.current.delete(localKey)) {
+          window.electronAPI?.file
+            ?.delete?.({ conversationId: convId, storageKey: meta.storageKey })
+            ?.catch(() => {
+              // ignore：最佳努力回收失败不影响状态机
+            });
+        }
+        return { ok: true, meta };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        // eslint-disable-next-line no-console
+        console.error('[useFileUpload] save failed:', msg);
+        // R3：渲染端失败转发主进程持久日志（ERROR 级含 err.message/stack），打包版亦可查
+        try {
+          window.electronAPI?.log
+            ?.write({
+              level: 'ERROR',
+              stage: 'useFileUpload.performSave',
+              message: `file:upload 失败 name=${fileName} conversationId=${convId} localKey=${localKey}`,
+              err: {
+                message: msg,
+                stack: err instanceof Error ? err.stack : undefined,
+              },
+            })
+            ?.catch(() => {
+              // 日志通道自身失败不放大故障
+            });
+        } catch {
+          // ignore：日志转发失败不影响上传状态机
+        }
+        setPendingFiles((prev) =>
+          prev.map((entry) =>
+            entry.localKey === localKey ? { ...entry, uploadStatus: 'error', uploadError: msg } : entry,
+          ),
+        );
+        return { ok: false, error: msg };
       } finally {
-        setUploadingCount((c) => Math.max(0, c - 1));            // 原 L222-224
+        setSavingCount((c) => Math.max(0, c - 1));
       }
     },
     [],
   );
 
-  const triggerUpload = useCallback(
-    (item: AcceptedUploadItem) => {
-      const convId = conversationIdRef.current;
-      if (!convId) {
-        // 没有会话时保持 status='pending'，由发送流程 uploadFilesForSend 或 setConversationId 触发重试
-        return;
-      }
-      void performUpload(convId, item);
-    },
-    [performUpload],
-  );
-
   /**
-   * 发送流程专用：批量改写指定文件的 uploadStatus。
-   * - 置 'uploading'：在 createConversation 之前调用，防止 conversationId 变化 effect 内
-   *   setUploadConversationId 的 pending 重试（L496-510）与发送流程的显式上传重复上传同一文件
-   * - 置 'pending'：发送流程异常中断时回滚（恢复可重试状态）
+   * 直通入口：粘贴/拖拽/+按钮收集的文件 → 预筛 → 会话就绪 → saving 入列 → 逐项 performSave
+   * R1-safe 四段：①prepare 在更新器外派生；②预筛基于渲染闭包快照 pendingFiles 判断；
+   * ③更新器只做纯合并 + 基于 prev 的权威去重/上限兜底；④触发遍历使用更新器外部数组。
    */
-  const setPendingUploadStatus = useCallback((localKeys: string[], status: 'uploading' | 'pending') => {
-    const keySet = new Set(localKeys);
-    setPendingFiles((prev) =>
-      prev.map((p) =>
-        keySet.has(p.localKey) && (status === 'uploading' ? p.uploadStatus === 'pending' : p.uploadStatus === 'uploading')
-          ? { ...p, uploadStatus: status }
-          : p,
-      ),
-    );
-  }, []);
-
-  /**
-   * 发送流程专用：显式指定会话 ID 并行上传并等待全部完成。
-   * 返回值不依赖 pendingFiles state 时序（元数据直接来自 performUpload 回传）。
-   */
-  const uploadFilesForSend = useCallback(
-    async (convId: string, items: AcceptedUploadItem[]): Promise<{ uploaded: UploadedFileMeta[]; failed: string[] }> => {
-      const uploaded: UploadedFileMeta[] = [];
-      const failed: string[] = [];
-      const results = await Promise.all(items.map((item) => performUpload(convId, item)));
-      results.forEach((result, index) => {
-        if (result) uploaded.push(result);
-        else failed.push(items[index].fileName);
-      });
-      return { uploaded, failed };
-    },
-    [performUpload],
-  );
-
   const addPendingFiles = useCallback(
     async (files: File[]) => {
       if (!files.length) return;
 
-      const acceptedItems: AcceptedUploadItem[] = [];
-      const rejected: string[] = [];
-
-      // MIME 字节签名探测：只用于识别类型和预览，不改变原始文件内容。
+      // ── ① prepare：MIME 字节签名探测 + localKey 生成（全部在更新器外派生）──
       type PreparedFile = {
         originalKey: string;
+        localKey: string;
         file: File;
         contentType: string;
         isImage: boolean;
@@ -283,135 +290,158 @@ export function useFileUpload(): UseFileUploadReturn {
 
         preparedList.push({
           originalKey: `${file.name}:${file.size}`,
+          // localKey 在 setPendingFiles 更新器外部生成 —— React 19（react-dom
+          // dispatchSetStateInternal）在 fiber.lanes!==0 时推迟更新器到渲染期执行，
+          // 更新器内部构造的数据对紧随其后的同步遍历不可见。localKey/file/
+          // contentType 等全部要素在更新器外先行确定，更新器与触发遍历共用同一份外部数据。
+          localKey: `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
           file,
           contentType: preparedContentType,
           isImage: previewIsImage,
         });
       }
 
+      const acceptedItems: AcceptedUploadItem[] = preparedList.map((p) => ({
+        localKey: p.localKey,
+        file: p.file,
+        contentType: p.contentType,
+        fileName: p.file.name,
+      }));
+
+      // ── ② 预筛：同名同大小去重 + MAX_UPLOAD_COUNT 预检（基于渲染闭包快照
+      //    pendingFiles 判断——严禁把 ref 镜像当最新列表）；预筛跳过的项不创建
+      //    ObjectURL（零泄漏）、不触发上传 ──
+      const existingKeys = new Set(
+        pendingFiles.map((item) => `${item.file.name}:${item.file.size}`),
+      );
+      const acceptedCandidates: UploadPendingFile[] = [];
+      const skippedKeys = new Set<string>();
+      let duplicateSkipped = 0;
+      let limitSkipped = 0;
+      for (const p of preparedList) {
+        if (existingKeys.has(p.originalKey)) {
+          skippedKeys.add(p.localKey);
+          duplicateSkipped += 1;
+          continue;
+        }
+        if (pendingFiles.length + acceptedCandidates.length >= MAX_UPLOAD_COUNT) {
+          skippedKeys.add(p.localKey);
+          limitSkipped += 1;
+          continue;
+        }
+        existingKeys.add(p.originalKey);
+        acceptedCandidates.push({
+          localKey: p.localKey,
+          file: p.file,
+          previewUrl: p.isImage ? URL.createObjectURL(p.file) : '',
+          isImage: p.isImage,
+          contentType: p.contentType,
+          uploadStatus: 'saving',
+        });
+      }
+
+      // 预筛拒绝 toast（升级用户可见反馈——修复现状仅 console.warn 的 R3 盲区）
+      if (duplicateSkipped > 0 || limitSkipped > 0) {
+        const skippedTotal = duplicateSkipped + limitSkipped;
+        const reasons: string[] = [];
+        if (duplicateSkipped > 0) reasons.push(`同名重复 ${duplicateSkipped} 个`);
+        if (limitSkipped > 0) reasons.push(`已达上限 ${MAX_UPLOAD_COUNT} 个（超出 ${limitSkipped} 个）`);
+        // eslint-disable-next-line no-console
+        console.warn('[useFileUpload] skipped:', skippedTotal, reasons.join('；'));
+        notify('warning', `跳过 ${skippedTotal} 个文件：${reasons.join('；')}`);
+      }
+      if (!acceptedCandidates.length) return;
+
+      // ── ③ 会话就绪：无会话粘贴在粘贴时刻前置创建会话（不存在挂起等待）──
+      let convId = conversationIdRef.current;
+      if (!convId) {
+        convId = await ensureConversation();
+        if (!convId) {
+          notify('error', '会话创建失败，附件未添加，请重试粘贴');
+          return;
+        }
+        if (conversationIdRef.current !== convId) {
+          // 创建期间用户切走会话（ref 已被切会话 effect 改写）→ 本批丢弃
+          notify('warning', '会话已切换，附件未添加');
+          return;
+        }
+      }
+
+      // ── ④ 纯更新器合并：项以 saving 入列；更新器内基于 prev 权威去重 + 上限兜底
+      //    （纯函数无副作用，被 React 推迟或重复调用均不影响外部已构造的 acceptedItems）──
       setPendingFiles((prev) => {
-        const existingKeys = new Set(
+        if (!acceptedCandidates.length) return prev;
+        const prevKeys = new Set(
           prev.map((item) => `${item.file.name}:${item.file.size}`),
         );
-        const accepted: UploadPendingFile[] = [];
-
-        for (const p of preparedList) {
-          if (prev.length + accepted.length >= MAX_UPLOAD_COUNT) {
-            rejected.push(`已达上限 ${MAX_UPLOAD_COUNT} 个文件`);
-            break;
-          }
-          if (existingKeys.has(p.originalKey)) continue;
-          existingKeys.add(p.originalKey);
-
-          const previewUrl = p.isImage ? URL.createObjectURL(p.file) : '';
-          const localKey = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-          // P0-7: 收集完整 item 信息（含 file/contentType/fileName）供 triggerUpload 使用，
-          // 避免依赖 pendingFilesRef 同步性
-          acceptedItems.push({
-            localKey,
-            file: p.file,
-            contentType: p.contentType,
-            fileName: p.file.name,
-          });
-          accepted.push({
-            localKey,
-            file: p.file,
-            previewUrl,
-            isImage: p.isImage,
-            contentType: p.contentType,
-            uploadStatus: 'pending',
-          });
+        const merged: UploadPendingFile[] = [];
+        for (const candidate of acceptedCandidates) {
+          if (prev.length + merged.length >= MAX_UPLOAD_COUNT) break;
+          const key = `${candidate.file.name}:${candidate.file.size}`;
+          if (prevKeys.has(key)) continue;
+          prevKeys.add(key);
+          merged.push(candidate);
         }
-
-        if (rejected.length) {
-          // eslint-disable-next-line no-console
-          console.warn('[useFileUpload] rejected:', rejected);
-        }
-
-        return [...prev, ...accepted];
+        return merged.length ? [...prev, ...merged] : prev;
       });
 
-      // 触发异步上传（必须在 setPendingFiles 之外，避免闭包时序问题）
-      // P0-7：直接传入已构造的 item（不需要再从 ref 查找）
+      // ── ⑤ 唯一触发点：遍历更新器外部的数组逐项直通落盘（不依赖 state 提交时序；
+      //    预筛跳过的项不触发；同 tick 并发重复项由更新器权威去重丢弃但其 IPC 已发出，
+      //    孤儿继承现状行为归 R6 口径）──
+      const tasks: Array<Promise<SaveOutcome>> = [];
       for (const item of acceptedItems) {
-        triggerUpload(item);
+        if (skippedKeys.has(item.localKey)) continue;
+        tasks.push(performSave(convId, item));
+      }
+
+      // ── ⑥ 批次汇总：失败即报（单次聚合 toast，首个失败原因）──
+      const results = await Promise.allSettled(tasks);
+      let failedCount = 0;
+      let firstError = '';
+      for (const result of results) {
+        if (result.status === 'fulfilled' && !result.value.ok) {
+          failedCount += 1;
+          if (!firstError) firstError = result.value.error;
+        }
+      }
+      if (failedCount > 0) {
+        notify('warning', `${failedCount} 个文件保存失败：${firstError || '未知错误'}`);
       }
     },
-    [triggerUpload],
+    [ensureConversation, performSave, pendingFiles, notify],
   );
 
-  const removePendingFile = useCallback((localKey: string) => {
-    // 从 ref 同步读取待删除文件信息
-    const target = pendingFilesRef.current.find((item) => item.localKey === localKey);
-    if (target?.previewUrl) {
-      try {
-        URL.revokeObjectURL(target.previewUrl);
-      } catch {
-        // ignore
-      }
-    }
-    const storageKeyToDelete: string | undefined =
-      target?.uploadStatus === 'uploaded' && target.uploadedFile?.storageKey
-        ? target.uploadedFile.storageKey
-        : undefined;
-
-    setPendingFiles((prev) => prev.filter((item) => item.localKey !== localKey));
-
-    // 已上传 → 异步触发 file:delete（最佳努力）
-    const convId = conversationIdRef.current;
-    if (storageKeyToDelete && convId && window.electronAPI?.file?.delete) {
-      window.electronAPI.file
-        .delete({ conversationId: convId, storageKey: storageKeyToDelete })
-        .catch((err) => {
-          // eslint-disable-next-line no-console
-          console.warn('[useFileUpload] delete orphan file failed:', err);
-        });
-    }
-  }, []);
-
-  /**
-   * 清空所有 pending 文件
-   * - keepUploaded=false（默认）：对已上传文件触发 file:delete（卸载/发送后清理）
-   * - keepUploaded=true：仅清本地 state,磁盘文件保留（一般不直接使用,优先用 clearLocalOnly）
-   */
-  const clearPendingFiles = useCallback((options?: { keepUploaded?: boolean }) => {
-    const convId = conversationIdRef.current;
-    const keepUploaded = options?.keepUploaded === true;
-    const toDeletes: Array<{ conversationId: string; storageKey: string }> = [];
-    for (const item of pendingFilesRef.current) {
-      if (item.previewUrl) {
+  const removePendingFile = useCallback(
+    (localKey: string) => {
+      // 按 localKey 单项查找（ref 的安全用途：单项查找而非最新列表判源）
+      const target = pendingFilesRef.current.find((item) => item.localKey === localKey);
+      if (target?.previewUrl) {
         try {
-          URL.revokeObjectURL(item.previewUrl);
+          URL.revokeObjectURL(target.previewUrl);
         } catch {
           // ignore
         }
       }
-      if (
-        !keepUploaded &&
-        convId &&
-        item.uploadStatus === 'uploaded' &&
-        item.uploadedFile?.storageKey
-      ) {
-        toDeletes.push({ conversationId: convId, storageKey: item.uploadedFile.storageKey });
+      // saving 项：显式登记，settle 成功后由 performSave 最佳努力孤儿回收
+      if (target?.uploadStatus === 'saving') {
+        removedWhileSavingRef.current.add(localKey);
       }
-    }
-    setPendingFiles([]);
-    // 最佳努力：批量删除已上传文件(仅在 keepUploaded=false 时)
-    for (const payload of toDeletes) {
-      if (window.electronAPI?.file?.delete) {
-        window.electronAPI.file
-          .delete(payload)
-          .catch(() => {
-            // ignore
+      setPendingFiles((prev) => prev.filter((item) => item.localKey !== localKey));
+      // 仅 ready 项立即删除磁盘文件：发送受理在 sendMessage 之前已 clearLocalOnly
+      // 清空列表，故列表内 ready 项必未随任何消息发送（未被引用安全证明）
+      const convId = conversationIdRef.current;
+      if (target?.uploadStatus === 'ready' && target.uploadedFile?.storageKey && convId) {
+        window.electronAPI?.file
+          ?.delete?.({ conversationId: convId, storageKey: target.uploadedFile.storageKey })
+          ?.catch(() => {
+            // ignore：最佳努力删除失败不影响状态机
           });
       }
-    }
-  }, []);
+    },
+    [],
+  );
 
-  /**
-   * P7 切换会话：仅清空本地 state,不触发 file:delete
-   * 与 clearPendingFiles 的区别：仅清本地 state，磁盘文件保留
-   */
+  /** 切会话/发送受理时清理：仅清本地 state + revoke，不触发 file:delete（磁盘保留，R6 口径） */
   const clearLocalOnly = useCallback(() => {
     for (const item of pendingFilesRef.current) {
       if (item.previewUrl) {
@@ -425,40 +455,24 @@ export function useFileUpload(): UseFileUploadReturn {
     setPendingFiles([]);
   }, []);
 
-  const setConversationId = useCallback((id: string | null) => {
-    const previous = conversationIdRef.current;
-    conversationIdRef.current = id;
-
-    // 当 conversationId 从 null 切换到具体 id 时（新建/切换会话），
-    // 重试所有 pending 状态的文件上传
-    if (id && id !== previous) {
-      // P0-7：从 ref 构造 AcceptedUploadItem 后传入 triggerUpload（不再传 localKey）
-      const pendingItems = pendingFilesRef.current
-        .filter((item) => item.uploadStatus === 'pending')
-        .map(
-          (item): AcceptedUploadItem => ({
-            localKey: item.localKey,
-            file: item.file,
-            contentType: item.contentType || item.file.type,
-            fileName: item.file.name,
-          }),
-        );
-      for (const item of pendingItems) {
-        triggerUpload(item);
-      }
-    }
-  }, [triggerUpload]);
+  const setConversationId = useCallback(
+    (id: string | null) => {
+      const previous = conversationIdRef.current;
+      conversationIdRef.current = id;
+      // A→B / A→null：清空旧会话本地列表（revoke + 清空，不发 file:delete）；
+      // null→B（粘贴前置建会话后的激活同步/无会话态新建）不清——首次挂载列表必空，
+      // 前置建会话场景列表正承载本批 saving 项，规则天然安全
+      if (previous !== null && id !== previous) clearLocalOnly();
+    },
+    [clearLocalOnly],
+  );
 
   return {
     pendingFiles,
     addPendingFiles,
     removePendingFile,
-    clearPendingFiles,
     clearLocalOnly,
-    pendingFilesRef,
-    uploadingCount,
+    savingCount,
     setConversationId,
-    setPendingUploadStatus,
-    uploadFilesForSend,
   };
 }

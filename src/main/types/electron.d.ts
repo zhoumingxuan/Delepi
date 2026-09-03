@@ -83,6 +83,19 @@ export interface ElectronAPI {
     /** 保存内置技能模板覆写（content=null 恢复默认并删除覆写文件；fileName 白名单校验在主进程） */
     saveBuiltinOverride: (params: unknown) => Promise<{ success: boolean; error?: string }>;
   };
+  /**
+   * 渲染端日志转发（R3 修复配套）：渲染→主 invoke，主进程 writeMainLog 写入
+   * userData/logs/main.log 持久日志。渲染端上传失败等异常经此通道落 ERROR 记录，
+   * 不再止于打包版不可见的 console.error。旧版 preload 未暴露时调用方以 ?. 防御。
+   */
+  log: {
+    write: (params: {
+      level: 'INFO' | 'WARN' | 'ERROR';
+      stage: string;
+      message: string;
+      err?: { message: string; stack?: string };
+    }) => Promise<void>;
+  };
   on: (channel: string, listener: (...args: unknown[]) => void) => () => void;
 }
 

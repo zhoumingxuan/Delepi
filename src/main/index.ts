@@ -6,11 +6,10 @@
 import { app, BrowserWindow, Menu } from 'electron';
 import path from 'path';
 import { mkdir, readdir, rm } from 'node:fs/promises';
-import { mkdirSync, appendFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { getDb } from './db/sqlite-adapter';
 import { resetInterruptedRuntimeState } from './db';
-import { registerIpcHandlers } from './ipc/ipc-handlers';
+import { registerIpcHandlers, writeMainLog } from './ipc/ipc-handlers';
 import { configManager } from './modules/config/config-manager';
 import { pythonManager } from './modules/python';
 import {
@@ -24,31 +23,9 @@ import { ensureDir, resolveConversationsRootDir } from './utils/storage-paths';
 console.log('[sandbox-diag] argv =', JSON.stringify(process.argv));
 console.log('[sandbox-diag] ELECTRON_DISABLE_SANDBOX =', process.env.ELECTRON_DISABLE_SANDBOX ?? '(unset)');
 
-/**
- * 启动链/运行期日志：写入 userData/logs/main.log（含时间戳与环节名）。
- * - 同步落盘，保证崩溃/异常场景下日志已写入；
- * - 日志写入失败（目录不可写等）绝不影响应用主流程。
- */
-function writeMainLog(level: 'INFO' | 'WARN' | 'ERROR', stage: string, message: string, err?: unknown): void {
-  try {
-    const logDir = path.join(app.getPath('userData'), 'logs');
-    mkdirSync(logDir, { recursive: true });
-    const ts = new Date().toISOString();
-    const detail =
-      err instanceof Error
-        ? `${err.message}${err.stack ? `\n${err.stack}` : ''}`
-        : err !== undefined
-          ? String(err)
-          : '';
-    appendFileSync(
-      path.join(logDir, 'main.log'),
-      `[${ts}] [${level}] [${stage}] ${message}${detail ? ` :: ${detail}` : ''}\n`,
-      'utf8',
-    );
-  } catch {
-    // 忽略：日志写入失败不影响应用主流程
-  }
-}
+// writeMainLog 已移至 ./ipc/ipc-handlers.ts 并导出（R3/R5 修复配套）：
+// IPC handler 层错误（如 file:upload catch）与 log:renderer 渲染端转发
+// 与本文件启动链/运行期日志共用同一持久日志出口 userData/logs/main.log。
 
 // 启动健壮性：全局异常日志记录（防止启动/运行期异常静默丢失）
 process.on('unhandledRejection', (reason) => {

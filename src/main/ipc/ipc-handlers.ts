@@ -7,11 +7,12 @@
  * ExecutorAgent 事件 → EventBus → IPC（executor 三通道）→ 前端
  */
 
-import { ipcMain, BrowserWindow, dialog, shell } from 'electron';
+import { app, ipcMain, BrowserWindow, dialog, shell } from 'electron';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdirSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 import type {
   ChatSendFileInput,
@@ -159,11 +160,50 @@ function resolveLocalOpenPath(target: unknown): string {
   return resolveStoragePath(trimmed);
 }
 
+/**
+ * 启动链/运行期日志：写入 userData/logs/main.log（含时间戳与环节名）。
+ * - 同步落盘，保证崩溃/异常场景下日志已写入；
+ * - 日志写入失败（目录不可写等）绝不影响应用主流程；
+ * - 自 main/index.ts 移入并导出（R3/R5 修复配套）：IPC handler 层错误与
+ *   log:renderer 渲染端转发共用同一持久日志出口；detail 提取兼容
+ *   Error 实例与 { message, stack } 普通对象（渲染端经 IPC 结构化克隆后无 Error 原型）。
+ */
+export function writeMainLog(level: 'INFO' | 'WARN' | 'ERROR', stage: string, message: string, err?: unknown): void {
+  try {
+    const logDir = path.join(app.getPath('userData'), 'logs');
+    mkdirSync(logDir, { recursive: true });
+    const ts = new Date().toISOString();
+    let detail = '';
+    if (err instanceof Error) {
+      detail = `${err.message}${err.stack ? `\n${err.stack}` : ''}`;
+    } else if (err !== undefined) {
+      const maybeErr = err as { message?: unknown; stack?: unknown };
+      if (maybeErr !== null && typeof maybeErr.message === 'string') {
+        detail = `${maybeErr.message}${typeof maybeErr.stack === 'string' ? `\n${maybeErr.stack}` : ''}`;
+      } else {
+        detail = String(err);
+      }
+    }
+    appendFileSync(
+      path.join(logDir, 'main.log'),
+      `[${ts}] [${level}] [${stage}] ${message}${detail ? ` :: ${detail}` : ''}\n`,
+      'utf8',
+    );
+  } catch {
+    // 忽略：日志写入失败不影响应用主流程
+  }
+}
+
 function fileInputToBuffer(file: {
   name?: string;
-  data?: ArrayBuffer | Uint8Array | number[];
+  data?: string | ArrayBuffer | Uint8Array | number[];
 }): Buffer {
   const data = file.data;
+
+  // H1 防御：渲染端改传 Base64 字符串（IPC 结构化克隆纯字符串，规避 ArrayBuffer 序列化断点）
+  if (typeof data === 'string') {
+    return Buffer.from(data, 'base64');
+  }
 
   if (data instanceof ArrayBuffer) {
     return Buffer.from(data);
@@ -177,7 +217,7 @@ function fileInputToBuffer(file: {
     return Buffer.from(data);
   }
 
-  throw new Error(`文件 ${file.name || '(未命名)'} 数据无效`);
+  throw new Error(`[ERR_FILE_UPLOAD_INVALID_DATA] 文件 ${file.name || '(未命名)'} 数据无效`);
 }
 
 type UploadFileMeta = {
@@ -1089,71 +1129,129 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // ===============================================================
 
   /**
+   * log:renderer — 渲染端日志转发（R3 修复配套）
+   * 渲染端上传失败等异常经此通道落 userData/logs/main.log 持久日志（ERROR 级含 err.message/stack），
+   * 不再止于打包版不可见的 console.error。参数做白名单校验，异常不外抛（日志通道自身绝不放大故障）。
+   */
+  ipcMain.handle(IPC_LOG.RENDERER, async (_event, params: unknown): Promise<void> => {
+    const payload = (params ?? {}) as {
+      level?: unknown;
+      stage?: unknown;
+      message?: unknown;
+      err?: unknown;
+    };
+    const level =
+      payload.level === 'INFO' || payload.level === 'WARN' || payload.level === 'ERROR'
+        ? payload.level
+        : 'INFO';
+    const stage = typeof payload.stage === 'string' && payload.stage.trim() ? payload.stage.trim().slice(0, 200) : 'renderer';
+    const message =
+      typeof payload.message === 'string' && payload.message.length ? payload.message : '(empty message)';
+    let err: unknown = payload.err;
+    if (err !== null && typeof err === 'object' && !('message' in (err as object))) {
+      err = undefined; // 无法提取 message 的对象不落 detail，避免 '[object Object]' 噪声
+    }
+    writeMainLog(level, stage, message, err);
+  });
+
+  /**
    * file:upload — 落盘单个文件到 conversations/{id}/uploads/{fileId}.ext
    * 原始展示名写入同名 .json 元数据，storageKey 不再携带用户上传文件名。
    * 文件数限制：基于现有 uploads/ 有效 meta 条目数 +1 不超过 MAX_UPLOAD_COUNT=10
    */
   ipcMain.handle(IPC_FILE.UPLOAD, async (_event, params: FileUploadParams): Promise<FileUploadResult> => {
-    const conversationId = params.conversationId;
-    const originalName = params.name || '';
-
-    // 客户端上传直接写入当前会话 uploads/ 目录
-    const uploadDir = resolveConversationUploadDir(conversationId);
-    await mkdir(uploadDir, { recursive: true });
-
-    // 文件数限制（基于 uploads/ 现有有效 meta 条目，与 file:list 同口径）
-    const entries = await readdir(uploadDir).catch(() => [] as string[]);
-    let existingFileCount = 0;
-    for (const entryName of entries) {
-      if (await readUploadFileMeta(path.join(uploadDir, entryName))) {
-        existingFileCount += 1;
+    try {
+      // R5：入口非空校验（对齐 ipc-channels.ts 注释承诺；可预期错误带稳定错误码）
+      const conversationId =
+        typeof params?.conversationId === 'string' ? params.conversationId.trim() : '';
+      const originalName =
+        typeof params?.name === 'string' ? params.name.trim() : '';
+      const data = params?.data;
+      const dataEmpty =
+        data === undefined ||
+        data === null ||
+        (typeof data === 'string' && data.length === 0) ||
+        (data instanceof ArrayBuffer && data.byteLength === 0) ||
+        (ArrayBuffer.isView(data) && data.byteLength === 0) ||
+        (Array.isArray(data) && data.length === 0);
+      if (!conversationId) {
+        throw new Error('[ERR_FILE_UPLOAD_INVALID_PARAMS] conversationId 不能为空');
       }
-    }
-    if (existingFileCount >= MAX_UPLOAD_COUNT) {
-      throw new Error(`最多上传 ${MAX_UPLOAD_COUNT} 个文件。`);
-    }
+      if (!originalName) {
+        throw new Error('[ERR_FILE_UPLOAD_INVALID_PARAMS] name 不能为空');
+      }
+      if (dataEmpty) {
+        throw new Error('[ERR_FILE_UPLOAD_INVALID_PARAMS] data 不能为空');
+      }
 
-    const fileId = uuidv4();
-    const uploadedAt = new Date().toISOString();
+      // 客户端上传直接写入当前会话 uploads/ 目录
+      const uploadDir = resolveConversationUploadDir(conversationId);
+      await mkdir(uploadDir, { recursive: true });
 
-    // 先转 buffer；客户端上传按原始文件内容落盘，不做图片压缩。
-    const rawBuffer = fileInputToBuffer({
-      name: originalName,
-      data: params.data,
-    });
+      // 文件数限制（基于 uploads/ 现有有效 meta 条目，与 file:list 同口径）
+      const entries = await readdir(uploadDir).catch(() => [] as string[]);
+      let existingFileCount = 0;
+      for (const entryName of entries) {
+        if (await readUploadFileMeta(path.join(uploadDir, entryName))) {
+          existingFileCount += 1;
+        }
+      }
+      if (existingFileCount >= MAX_UPLOAD_COUNT) {
+        throw new Error(`[ERR_FILE_UPLOAD_LIMIT_EXCEEDED] 最多上传 ${MAX_UPLOAD_COUNT} 个文件。`);
+      }
 
-    const declaredContentType =
-      typeof params.contentType === 'string' && params.contentType.trim()
-        ? params.contentType.trim()
-        : '';
-    const detectedContentType = getFileContentType(originalName, rawBuffer);
-    const finalContentType = declaredContentType || detectedContentType;
-    const storedName = buildUploadFileStoredName(fileId, originalName);
-    const targetPath = path.join(uploadDir, storedName);
+      const fileId = uuidv4();
+      const uploadedAt = new Date().toISOString();
 
-    await writeFile(targetPath, rawBuffer, { flag: 'wx' });
-    await writeFile(
-      resolveUploadMetaPath(targetPath),
-      JSON.stringify({
-        id: fileId,
+      // 先转 buffer；客户端上传按原始文件内容落盘，不做图片压缩。
+      // H1 防御：data 为 Base64 字符串时在此解码（兼容旧 ArrayBuffer/Uint8Array/number[] 入参）。
+      const rawBuffer = fileInputToBuffer({
         name: originalName,
-        size: rawBuffer.byteLength,
-        contentType: finalContentType,
-        uploadedAt,
-      } satisfies UploadFileMeta, null, 2),
-      'utf8',
-    );
+        data,
+      });
 
-    return {
-      file: {
-        id: fileId,
-        name: originalName,
-        size: rawBuffer.byteLength,
-        contentType: finalContentType,
-        storageKey: buildConversationUploadStorageKey(conversationId, storedName),
-        uploadedAt,
-      },
-    };
+      const declaredContentType =
+        typeof params.contentType === 'string' && params.contentType.trim()
+          ? params.contentType.trim()
+          : '';
+      const detectedContentType = getFileContentType(originalName, rawBuffer);
+      const finalContentType = declaredContentType || detectedContentType;
+      const storedName = buildUploadFileStoredName(fileId, originalName);
+      const targetPath = path.join(uploadDir, storedName);
+
+      await writeFile(targetPath, rawBuffer, { flag: 'wx' });
+      await writeFile(
+        resolveUploadMetaPath(targetPath),
+        JSON.stringify({
+          id: fileId,
+          name: originalName,
+          size: rawBuffer.byteLength,
+          contentType: finalContentType,
+          uploadedAt,
+        } satisfies UploadFileMeta, null, 2),
+        'utf8',
+      );
+
+      return {
+        file: {
+          id: fileId,
+          name: originalName,
+          size: rawBuffer.byteLength,
+          contentType: finalContentType,
+          storageKey: buildConversationUploadStorageKey(conversationId, storedName),
+          uploadedAt,
+        },
+      };
+    } catch (err) {
+      // R5：任何一层失败均写入主进程持久日志（ERROR 级）后 rethrow，杜绝静默失败
+      writeMainLog(
+        'ERROR',
+        'file:upload',
+        `上传失败 name=${typeof params?.name === 'string' ? params.name : '(unknown)'} conversationId=${typeof params?.conversationId === 'string' ? params.conversationId : '(unknown)'}`,
+        err,
+      );
+      throw err;
+    }
   });
 
   /**

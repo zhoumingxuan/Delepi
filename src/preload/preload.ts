@@ -6,7 +6,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 
 const electronAPI = {
@@ -69,6 +69,7 @@ const electronAPI = {
     /**
      * 上传单个文件到对话 uploads 目录（主进程落盘）
      * P5 文件上传独立 IPC 通道，对齐 E:\ai_fr app/api/uploads/route.ts POST
+     * H1 防御：data 为 Base64 字符串（主进程兼容 ArrayBuffer/Uint8Array/number[] 旧格式）
      * @param params FileUploadParams: { conversationId, name, size, contentType, data }
      * @returns FileUploadResult: { file: ChatUploadedFile }
      */
@@ -130,6 +131,19 @@ const electronAPI = {
      */
     showOpenDialog: (options: unknown) =>
       ipcRenderer.invoke(IPC_DIALOG.SHOW_OPEN, options),
+  },
+  log: {
+    /**
+     * 渲染端日志转发（渲染→主，invoke）：主进程 writeMainLog 写入 userData/logs/main.log
+     * R3 修复配套：渲染端上传失败等异常经此通道落 ERROR 记录（含 err.message/stack）
+     * @param params { level, stage, message, err? }
+     */
+    write: (params: {
+      level: 'INFO' | 'WARN' | 'ERROR';
+      stage: string;
+      message: string;
+      err?: { message: string; stack?: string };
+    }) => ipcRenderer.invoke(IPC_LOG.RENDERER, params),
   },
 
   /**

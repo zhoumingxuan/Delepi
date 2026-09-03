@@ -107,12 +107,15 @@ export const IPC_FILE = {
   OPEN: 'file:open',
   /**
    * 上传单个文件到对话 uploads 目录（主进程落盘）
-   * 参数 FileUploadParams：{ conversationId, name, size, contentType, data: ArrayBuffer }
+   * 参数 FileUploadParams：{ conversationId, name, size, contentType, data: string(Base64) | ArrayBuffer | Uint8Array | number[] }
    * 返回 FileUploadResult：{ file: ChatUploadedFile }
    * 对齐 E:\ai_fr app/api/uploads/route.ts POST（去除鉴权层）
-   * - 校验 conversationId 非空、name 非空、data 非空
-   * - 文件数限制 MAX_UPLOAD_COUNT=10（基于 uploads 目录现有文件数 +1）
-   * - 落盘 conversations/{conversationId}/uploads/{fileId}-{sanitizedName}.{ext}
+   * - H1 防御：data 优先为 Base64 字符串（IPC 结构化克隆纯字符串传输，规避 ArrayBuffer 序列化断点），
+   *   主进程 fileInputToBuffer 同时兼容 Base64 string 与 ArrayBuffer/Uint8Array/number[]（向后兼容）
+   * - R5：入口校验 conversationId 非空、name 非空、data 非空；整体 try/catch，
+   *   失败写入 userData/logs/main.log（ERROR 级）后 rethrow；可预期错误带稳定错误码（ERR_FILE_UPLOAD_*）
+   * - 文件数限制 MAX_UPLOAD_COUNT=10（基于 uploads 目录现有有效 meta 条目数 +1）
+   * - 落盘 conversations/{conversationId}/uploads/{fileId}.{ext}（原始展示名写入同名 .json 元数据）
    */
   UPLOAD: 'file:upload',
   /**
@@ -187,6 +190,17 @@ export const IPC_TOOLS = {
   DYN_LIST: 'tools:dyn-list',
 } as const;
 
+// --- 渲染端日志转发 IPC 通道 ---
+export const IPC_LOG = {
+  /**
+   * 渲染端日志转发（渲染→主，invoke）
+   * 参数：{ level: 'INFO' | 'WARN' | 'ERROR', stage: string, message: string, err?: { message, stack } }
+   * 主进程写入 userData/logs/main.log 持久日志（writeMainLog）
+   * R3 修复：渲染端上传失败等异常不再止于 console.error（打包版不可见），统一落主进程持久日志
+   */
+  RENDERER: 'log:renderer',
+} as const;
+
 // --- 对话框 IPC 通道 ---
 export const IPC_DIALOG = {
   /** 打开文件选择对话框（渲染→主，invoke） */
@@ -203,5 +217,6 @@ export type IpcChannel =
   | (typeof IPC_PYTHON)[keyof typeof IPC_PYTHON]
   | (typeof IPC_SKILLS)[keyof typeof IPC_SKILLS]
   | (typeof IPC_TOOLS)[keyof typeof IPC_TOOLS]
+  | (typeof IPC_LOG)[keyof typeof IPC_LOG]
   | (typeof IPC_DIALOG)[keyof typeof IPC_DIALOG];
 

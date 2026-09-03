@@ -71,16 +71,30 @@ export function ChatShell() {
 
   const { config, loading: configLoading, saveConfig, saveAllConfig, reloadConfig } =
     useSettings();
+  // ============================================================
+  // ★ 上传链路直通重构（粘贴即落盘）：无会话粘贴前置建会话 + 批次级用户反馈注入
+  // ============================================================
+  // 无会话粘贴 → 前置创建会话（复用 useChat.createConversation：在途去重/R2 基准判定均沿用）
+  const ensureConversationForUpload = useCallback(async (): Promise<string | null> => {
+    const conv = await createConversation();
+    return conv?.id ?? null;
+  }, [createConversation]);
+  // 粘贴批次级用户反馈（预筛跳过 / 会话创建失败 / 批次聚合失败 toast，接 messageApi）
+  const notifyUpload = useCallback(
+    (level: 'warning' | 'error', text: string) => {
+      if (level === 'error') messageApi.error(text);
+      else messageApi.warning(text);
+    },
+    [messageApi],
+  );
   const {
     pendingFiles,
     addPendingFiles,
     removePendingFile,
     clearLocalOnly,
-    uploadingCount: fileUploadingCount,
+    savingCount: fileSavingCount,
     setConversationId: setUploadConversationId,
-    setPendingUploadStatus,        // ★新增：发送流程预标记/回滚 pendingFiles 上传状态
-    uploadFilesForSend,            // ★新增：发送流程显式指定会话上传并等待完成
-  } = useFileUpload();
+  } = useFileUpload({ ensureConversation: ensureConversationForUpload, notify: notifyUpload });
 
   // 无会话 id（conversationId === null）发送流程的哨兵键：null 在途期间发送流程会异步创建会话，
   // 期间二次点击可能重复建会话/重复发送，故该键在途时保持与原全局锁一致的全局拦截语义
@@ -95,7 +109,6 @@ export function ChatShell() {
   // ★ BUG3 修复：handleSend 最新引用（排队重发经此调用，规避 useCallback 自引用依赖；
   //   渲染期同步赋值，模式对齐 messageApiRef/conversationsRef）
   const handleSendRef = useRef<((senderTextOrQueued?: string | { text: string; conversationId: string | null }) => Promise<void>) | null>(null);
-  const latestConversationIdRef = useRef<string | null>(conversationId);  // 上传等待期间检测会话是否被切换
 
   const [inputValue, setInputValue] = useState('');
   // ★ R1 草稿会话级隔离：按会话 ID 缓存未发送草稿（键 null = 无会话列表态）
@@ -110,10 +123,6 @@ const [configDrawerActiveTab, setConfigDrawerActiveTab] = useState<'model' | 'py
 const [showConfigCheckModal, setShowConfigCheckModal] = useState(false);
 const [configCheckMissingItems, setConfigCheckMissingItems] = useState<ConfigMissingItem[]>([]);
 
-// ★ 方案A：同步最新会话 ID 到 ref（上传等待期间检测会话是否被切换，见 handleSend）
-useEffect(() => {
-  latestConversationIdRef.current = conversationId;
-}, [conversationId]);
 
 const { check, canCheck } = useConfigReadiness({
   config,
@@ -165,21 +174,19 @@ const { check, canCheck } = useConfigReadiness({
 
   // ============================================================
   // P5 适配：useFileUpload 需要知道当前会话 ID 才能调用 file:upload
-  // conversationId 变化（包括新建会话、切换会话）时同步给 useFileUpload
-  // 切会话时清空旧会话的本地预览（clearLocalOnly 仅清本地 state，不触发 file:delete，
+  // conversationId 变化（包括新建会话、切换会话）时同步给 useFileUpload；
+  // 切会话清理由 hook 内 setConversationId 规则承担（A→B/A→null 清空本地列表，
   // 磁盘文件保留；已随消息发送的文件不再拉回输入框）
   // ============================================================
   useEffect(() => {
     setUploadConversationId(conversationId);
-    // 切会话时:清空旧会话的本地预览(保留磁盘文件)
-    clearLocalOnly();
-  }, [conversationId, setUploadConversationId, clearLocalOnly]);
+  }, [conversationId, setUploadConversationId]);
 
   // ============================================================
-  // P5 适配：上传中文件数取自 useFileUpload（覆盖 useChat 的 uploadingCount）
-  // 避免出现「useChat 的 uploadingCount 始终为 0 + useFileUpload 异步上传中」的不一致
+  // P5 适配：落盘窗口中的文件数取自 useFileUpload.savingCount
+  // 避免出现「useChat 的 uploadingCount 始终为 0 + useFileUpload 直通落盘中」的不一致
   // ============================================================
-  const uploading = fileUploadingCount > 0;
+  const uploading = fileSavingCount > 0;
 
   // ============================================================
   // Phase 3 P3-3 滚动状态
@@ -192,7 +199,7 @@ const { check, canCheck } = useConfigReadiness({
   // ============================================================
   const activeConversationRunning = isConversationRunning(conversationId);
   const activeConversationSending = isConversationSending(conversationId);
-  // ★ P5 适配：uploading 已通过 useEffect 块从 useFileUpload.fileUploadingCount 计算
+  // ★ P5 适配：uploading 已通过 useEffect 块从 useFileUpload.fileSavingCount 计算
   const showCancel = activeConversationSending || activeConversationRunning;
   // ============================================================
   // Phase 5 BUG-1：配置完成性校验
@@ -242,9 +249,9 @@ const { check, canCheck } = useConfigReadiness({
   // - handleAbort：转发到 useChat.abortChat
   // ============================================================
   // ============================================================
-  // P5 适配：仅发送已上传完成的文件（uploadStatus === 'uploaded'）
-  // - 未上传完成的文件（pending/uploading/error）不参与本次发送
-  // - sendMessage 第二参数改为 SendAttachment[]（来自 file:upload 已落盘的元数据）
+  // P5 适配：仅发送已落盘就绪的文件（uploadStatus === 'ready'）
+  // - 落盘窗口内的文件（saving）由场景c 拦截发送；error 项不随消息发送（场景d 提示）
+  // - sendMessage 第二参数为 SendAttachment[]（来自 file:upload 已落盘元数据，粘贴时已产生）
   // ============================================================
   const handleSend = useCallback(async (senderTextOrQueued?: string | { text: string; conversationId: string | null }) => {
     // ★ BUG3 修复：queued 非空=取消窗口内排队重发（text/conversationId 均为暂存时的原快照）；
@@ -278,7 +285,7 @@ const { check, canCheck } = useConfigReadiness({
       return;
     }
     // ── 场景c：文件上传中 → 明确提示（原为 canSend=false 静默 return）──
-    if (fileUploadingCount > 0 || pendingFiles.some((f) => f.uploadStatus === 'uploading')) {
+    if (fileSavingCount > 0 || pendingFiles.some((f) => f.uploadStatus === 'saving')) {
       messageApi.warning('文件上传中，请稍候再发送');
       return;
     }
@@ -307,70 +314,25 @@ const { check, canCheck } = useConfigReadiness({
     }
     sendInFlightConversationIdsRef.current.add(flightKey);
     try {
-      // ★ R3：目标会话解析结果提升到 try 顶部（原 let convId 声明于附件分支块内，作用域仅限块内）
-      let resolvedConversationId = targetConversationId;
-      const uploadedItems = pendingFiles.filter((i) => i.uploadStatus === 'uploaded' && i.uploadedFile);
+      // ★ R3：目标会话解析结果提升到 try 顶部（粘贴即落盘后不再有发送时建会话/补传分支）
+      const resolvedConversationId = targetConversationId;
+      const readyItems = pendingFiles.filter((i) => i.uploadStatus === 'ready' && i.uploadedFile);
       const errorItems = pendingFiles.filter((i) => i.uploadStatus === 'error');
-      const pendingItems = pendingFiles.filter((i) => i.uploadStatus === 'pending');
       // ── 场景d：上传失败文件 → 明确提示，不随消息发送（对齐 ai_fr 失败提示策略）──
       if (errorItems.length > 0) {
         messageApi.warning(`${errorItems.length} 个文件上传失败，将不随消息发送`);
       }
-      let attachments = uploadedItems.map((item) => ({
+      const attachments = readyItems.map((item) => ({
         id: item.uploadedFile!.id,
         name: item.uploadedFile!.name,
         size: item.uploadedFile!.size,
         contentType: item.uploadedFile!.contentType,
         storageKey: item.uploadedFile!.storageKey,
       }));
-      if (pendingItems.length > 0) {
-        // ── 场景a核心：发送时序前置串行化（创建会话 → 上传落盘 → 发送）──
-        // ★ M3：上传等待期间不重读会话状态，使用进入时捕获值（无会话时=分支内解析出的新会话 ID）
-        if (!resolvedConversationId) {
-          const conv = await createConversation(); // 复用 useChat 既有函数（在途去重/创建失败返回 null）
-          if (!conv) {
-            setPendingUploadStatus(pendingItems.map((i) => i.localKey), 'pending'); // 回滚可重试状态
-            messageApi.error('创建会话失败，文件未发送');
-            return;
-          }
-          resolvedConversationId = conv.id;
-        }
-        // 先标记 uploading：conversationId 变化 effect 内 setUploadConversationId 的
-        // pending 重试（useFileUpload L496-510）只筛 'pending'，标记后不会重复上传
-        const pendingKeys = pendingItems.map((i) => i.localKey);
-        setPendingUploadStatus(pendingKeys, 'uploading');
-        const result = await uploadFilesForSend(
-          resolvedConversationId,
-          pendingItems.map((i) => ({
-            localKey: i.localKey,
-            file: i.file,
-            contentType: i.contentType || i.file.type,
-            fileName: i.file.name,
-          })),
-        );
-        // 上传等待期间用户切换了会话 → 中止本次发送（避免文件落在 A 会话、消息发到 B 会话）
-        if (latestConversationIdRef.current !== resolvedConversationId) {
-          messageApi.warning('会话已切换，本次发送已取消');
-          return;
-        }
-        attachments = [
-          ...attachments,
-          ...result.uploaded.map((u) => ({
-            id: u.id,
-            name: u.name,
-            size: u.size,
-            contentType: u.contentType,
-            storageKey: u.storageKey,
-          })),
-        ];
-        if (result.failed.length > 0) {
-          messageApi.warning(`${result.failed.length} 个文件上传失败，将不随消息发送`);
-        }
-      }
       // 发送即清空输入框附件（clearLocalOnly 仅清本地 state，不触发 file:delete，保留磁盘文件）——原 L232-233 语义原样保留
       clearLocalOnly();
       setInputValue(''); // ★修复：对齐 ai_fr chat-shell.tsx L2171-2173——消息受理即清空输入框。闭包 inputValue 已捕获原文本，下行 sendMessage 发送内容不受影响
-      // ★ M1+M3/R3：第三参显式传入已解析的目标会话 ID（进入时捕获值，或附件分支新建的会话 ID）——
+      // ★ M1+M3/R3：第三参显式传入已解析的目标会话 ID（进入时捕获值；粘贴即落盘后发送流程不再建会话/补传）——
       //   sendMessage 内部五重守卫与 IPC 投递均按该 ID 判定/路由，不再依赖 await 后的 conversationIdRef.current
       // ★ BUG3 修复：发送文本统一取 sendText（queued 重发=原文本快照，正常= inputValue 不变）
       const sent = await sendMessage(sendText, attachments, resolvedConversationId);
@@ -406,10 +368,7 @@ const { check, canCheck } = useConfigReadiness({
     canCheck,
     conversationId,
     isConversationCancelPendingSettle,
-    createConversation,
-    fileUploadingCount,
-    setPendingUploadStatus,
-    uploadFilesForSend,
+    fileSavingCount,
     messageApi,
   ]);
 

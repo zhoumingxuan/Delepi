@@ -16,7 +16,7 @@ import type {
   ClipboardEvent as ReactClipboardEvent,
 } from 'react';
 import { memo, useState, useCallback, useRef } from 'react';
-import { Button, Flex, Typography, Upload, theme } from 'antd';
+import { Button, Flex, Spin, Typography, Upload, theme } from 'antd';
 import {
   PaperClipOutlined,
   CloseOutlined,
@@ -36,6 +36,17 @@ export interface PendingFile {
   isImage: boolean;
 }
 
+/**
+ * 附件条可见的上传状态（R3 修复配套：附件条渲染 uploadStatus/uploadError）
+ * UploadPendingFile（useFileUpload）扩展字段的子集；旧调用方不传时按无状态渲染，向后兼容。
+ */
+export interface PendingFileUploadState {
+  /** 上传状态：saving=落盘物理窗口/ready=已落盘就绪/error=失败即报（缺省=调用方未接入，按既有无状态渲染） */
+  uploadStatus?: 'saving' | 'ready' | 'error';
+  /** 上传失败的错误信息（uploadStatus='error' 时经 title 提示） */
+  uploadError?: string;
+}
+
 interface SenderBoxProps {
   value?: string | undefined;
   onChange?: ((value: string) => void) | undefined;
@@ -46,7 +57,7 @@ interface SenderBoxProps {
   /** ★ M4：提交被拦截时的反馈回调（组件内 300ms 节流，避免高频提示） */
   onBlocked?: ((reason: 'locked' | 'empty') => void) | undefined;
   canSend?: boolean | undefined;
-  pendingFiles?: PendingFile[] | undefined;
+  pendingFiles?: (PendingFile & PendingFileUploadState)[] | undefined;
   onAddFiles?: ((files: File[]) => void) | undefined;
   onRemoveFile?: ((localKey: string) => void) | undefined;
 }
@@ -247,6 +258,8 @@ export const SenderBox = memo(function SenderBox({
                   item.isImage && item.previewUrl ? (
                     <div
                       key={item.localKey}
+                      // R3：error 态 title 携带 uploadError，失败原因对用户可见
+                      title={item.uploadStatus === 'error' ? item.uploadError || '上传失败' : undefined}
                       style={{
                         position: 'relative',
                         width: 72,
@@ -258,7 +271,8 @@ export const SenderBox = memo(function SenderBox({
                           width: 72,
                           height: 72,
                           overflow: 'hidden',
-                          border: `1px solid ${token.colorBorderSecondary}`,
+                          // R3：error 态红色描边提示上传失败
+                          border: `1px solid ${item.uploadStatus === 'error' ? token.colorError : token.colorBorderSecondary}`,
                           borderRadius: token.borderRadiusLG,
                           background: token.colorFillAlter,
                         }}
@@ -271,9 +285,26 @@ export const SenderBox = memo(function SenderBox({
                             width: '100%',
                             height: '100%',
                             objectFit: 'cover',
+                            opacity: item.uploadStatus === 'error' ? 0.55 : 1,
                           }}
                         />
                       </div>
+                      {item.uploadStatus === 'saving' && (
+                        // R3：saving 态 Spin 遮罩，落盘窗口状态对用户可见
+                        <div
+                          style={{
+                            position: 'absolute',
+                            inset: 0,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            background: 'rgba(0, 0, 0, 0.35)',
+                            borderRadius: token.borderRadiusLG,
+                          }}
+                        >
+                          <Spin size="small" />
+                        </div>
+                      )}
                       <Button
                         type="text"
                         size="small"
@@ -298,16 +329,19 @@ export const SenderBox = memo(function SenderBox({
                       key={item.localKey}
                       align="center"
                       gap={8}
+                      // R3：error 态 title 携带 uploadError，失败原因对用户可见
+                      title={item.uploadStatus === 'error' ? item.uploadError || '上传失败' : undefined}
                       style={{
                         maxWidth: 180,
                         minWidth: 0,
                         padding: '6px 10px',
-                        border: `1px solid ${token.colorBorderSecondary}`,
+                        // R3：error 态红色描边提示上传失败
+                        border: `1px solid ${item.uploadStatus === 'error' ? token.colorError : token.colorBorderSecondary}`,
                         borderRadius: token.borderRadiusLG,
                         background: token.colorBgContainer,
                       }}
                     >
-                      <FileOutlined />
+                      {item.uploadStatus === 'saving' ? <Spin size="small" /> : <FileOutlined />}
                       <Text
                         ellipsis
                         style={{ flex: 1, minWidth: 0, maxWidth: 110 }}
