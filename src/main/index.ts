@@ -5,7 +5,7 @@
 
 import { app, BrowserWindow, Menu } from 'electron';
 import path from 'path';
-import { mkdir, readdir, rm } from 'node:fs/promises';
+import { cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { getDb } from './db/sqlite-adapter';
 import { resetInterruptedRuntimeState } from './db';
@@ -18,6 +18,7 @@ import {
   RENDERER_PATH_SEGMENT,
   RENDERER_INDEX_FILE,
   SCRIPTS_TOOLS_DIR,
+  SCRIPTS_TOOLS_DIR_NAME,
 } from './constants';
 import { ensureDir, resolveConversationsRootDir } from './utils/storage-paths';
 console.log('[sandbox-diag] argv =', JSON.stringify(process.argv));
@@ -233,6 +234,53 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
     }
   }
 }
+/**
+ * 启动一次性迁移：script-tools 沉淀经验库载体从“旧安装目录/项目根位置”迁至 userData（重装不覆盖治本）。
+ * 背景：旧版 SCRIPTS_TOOLS_DIR = path.join(app.isPackaged ? process.resourcesPath : process.cwd(), SCRIPTS_TOOLS_DIR_NAME)，
+ * 打包态位于安装目录 resources/script-tools；NSIS assisted 重装/覆盖安装会经旧卸载器将 $INSTDIR 整目录删除
+ * （沉淀内容随之丢失），而 userData（app.getPath('userData')）不在卸载器删除范围，
+ * 故新版常量统一指向 userData，本函数在启动时把既有旧载体一次性复制到新位置。
+ * - 旧源解析：打包态 path.join(process.resourcesPath, SCRIPTS_TOOLS_DIR_NAME)；
+ *   开发态 path.join(process.cwd(), SCRIPTS_TOOLS_DIR_NAME)（与旧版常量解析式一致）。
+ * - 触发条件：旧源存在且含条目、且 userData 目标（SCRIPTS_TOOLS_DIR）不存在 → fs.cp recursive 全量复制；
+ *   目标已存在（无论空否）一律跳过（防止覆盖已在新载体沉淀的内容）；只增不删：源内容绝不被删除。
+ * - 异常处理：本函数不吞错，任何异常向上抛出，由调用方 writeMainLog('ERROR') 记录，绝不阻断启动。
+ * - 执行顺序约束：必须位于 ensureScriptToolsDir（ensureDir(SCRIPTS_TOOLS_DIR)）之前——
+ *   迁移触发条件依赖“目标不存在”，若先创建空目标目录将导致迁移永远被跳过。
+ * @returns 动作标识：migrated | skipped_no_source | skipped_empty_source | skipped_target_exists | skipped_same_path
+ */
+async function migrateLegacyScriptToolsDirOnce(): Promise<string> {
+  const legacySourceDir = path.join(
+    app.isPackaged ? process.resourcesPath : process.cwd(),
+    SCRIPTS_TOOLS_DIR_NAME,
+  );
+  // 防御：源与目标解析为同一路径（极端布局）时无可迁移，直接跳过。
+  if (path.resolve(legacySourceDir) === path.resolve(SCRIPTS_TOOLS_DIR)) {
+    return 'skipped_same_path';
+  }
+  // 触发条件①：旧源存在且含条目（readdir 抛错视为旧源不存在/不可读，无迁移对象）
+  let sourceEntries: string[];
+  try {
+    sourceEntries = await readdir(legacySourceDir);
+  } catch {
+    return 'skipped_no_source';
+  }
+  if (sourceEntries.length === 0) {
+    return 'skipped_empty_source';
+  }
+  // 触发条件②：userData 目标不存在才迁移；已存在（无论空否）则跳过，防止覆盖/干扰新载体沉淀。
+  try {
+    await readdir(SCRIPTS_TOOLS_DIR);
+    return 'skipped_target_exists';
+  } catch {
+    // 目标不存在（readdir 失败）→ 允许执行迁移（若实为权限类异常，下方 cp 会真实失败并交由调用方记日志）
+  }
+  // 执行全量复制：fs.cp recursive 复制整个目录树（保目录结构与内容）；force:false + errorOnExist:true 防覆盖；
+  // 迁移只增不删：仅向目标新增内容，旧源内容物理保留。
+  await mkdir(path.dirname(SCRIPTS_TOOLS_DIR), { recursive: true });
+  await cp(legacySourceDir, SCRIPTS_TOOLS_DIR, { recursive: true, force: false, errorOnExist: true });
+  return 'migrated';
+}
 
 app.whenReady().then(async () => {
   writeMainLog('INFO', 'whenReady', '启动链开始');
@@ -254,6 +302,16 @@ app.whenReady().then(async () => {
     writeMainLog('INFO', 'resetInterruptedRuntimeState', 'OK');
   } catch (err) {
     writeMainLog('ERROR', 'resetInterruptedRuntimeState', '失败', err);
+  }
+
+  // 【重装不覆盖治本】script-tools 旧载体一次性迁移：必须位于 ensureScriptToolsDir（下方）之前执行——
+  // 迁移触发条件为“userData 目标不存在”，若先 ensureDir 创建空目标目录会导致迁移永远被跳过。
+  // 旧源存在且含条目、目标不存在才执行全量复制；只增不删、源保留；失败仅记日志绝不阻断启动。
+  try {
+    const migrateAction = await migrateLegacyScriptToolsDirOnce();
+    writeMainLog('INFO', 'migrateScriptToolsDirOnce', `OK action=${migrateAction} target=${SCRIPTS_TOOLS_DIR}`);
+  } catch (err) {
+    writeMainLog('ERROR', 'migrateScriptToolsDirOnce', '失败（不阻断启动；随后的 ensureScriptToolsDir 仍保证新载体目录创建）', err);
   }
 
   // 经验库根目录启动检查创建（script-tools 方案 R2）：不存在则创建；

@@ -32,9 +32,6 @@ import { getLatestCompletedContextCompression, runContextCompressionIfNeeded } f
 import { generateConversationTitle, truncateConversationTitle } from './title-generation';
 import { runDelegatedTask, computeTaskDurationSeconds } from '../executor-agent/executor-agent';
 import { buildToolResult, type ToolResult } from '../../tools/result';
-import {
-  isExecutorToolProgressText,
-} from '../../utils/executor-tool-progress';
 import { ensureErrorMessage } from '../../utils';
 import type { AssistantRuntimeConfig } from '../executor-agent/assistant-config';
 import { eventBus, type ExecutorAgentEvents } from '../event-bus/event-bus';
@@ -55,7 +52,7 @@ import {
   resolveStoragePath,
   resolveTaskWorkspaceDir,
 } from '../../utils/storage-paths';
-import type { ChatAttachment, ChatContentPart, StreamStatus } from '@shared/types/chat';
+import type { ChatAttachment, ChatContentPart } from '@shared/types/chat';
 import { runningAssistantMessages } from './running-assistant-message-map';
 import {
   setRunningAssistantMessage,
@@ -63,7 +60,7 @@ import {
   getRunningAssistantMessage,
   deleteRunningAssistantMessage,
 } from './running-assistant-message-map';
-import { setTaskSnapshot, clearSnapshotSession, upsertTaskSnapshotToolCall } from './snapshot-session-map';
+import { beginExecutorTaskRecord, clearExecutorTaskRecords } from '../executor-agent/executor-task-record-store';
 import {
   MAX_CONVERSATION_TITLE_LENGTH,
   DELEGATE_ARGUMENTS_RETRY_LIMIT,
@@ -383,9 +380,9 @@ function loadHistoryMessages(
 }
 
 async function resetConversationTasksDir(conversationId: string): Promise<void> {
-  // tasks_snapshot 内存集合重置时机与 tasks 目录完全相同（轮末唯一调用点）；
-  //   文件清理失败可吞错，内存清理必须无条件执行（改造后读侧唯一数据源）
-  clearSnapshotSession(conversationId);
+  // ★ 新版方案 §7.3-15：任务记录会话重置时机与 tasks 目录完全相同（轮末唯一调用点）；
+  //   文件清理失败可吞错，内存清理必须无条件执行；终态记录保留至此刻（供完成后回看）；幂等
+  clearExecutorTaskRecords(conversationId);
   try {
     const tasksDir = path.join(resolveConversationDir(conversationId), 'tasks');
     await rm(tasksDir, { recursive: true, force: true });
@@ -982,121 +979,39 @@ export async function runMainAgent(
         // 与正常路径 executor-agent runDelegatedTask 入口 taskStartedAt 语义一致。
         const delegatedTaskStartedAt = formatCurrentDateTime();
         // 委派给 ExecutorAgent
-        // v2.1 D2：executor:thinking / executor:tool-progress 两通道已停用删除，
-        //   运行态过程数据仅在内存快照（snapshot-session-map）与批次末落库 tool 消息中承载。
+        // ★ 新版方案：过程数据显示链路 = executor-task-record-store 内存记录 + executor:record-signal
+        //   渲染信号 + executor:get-task-record 增量拉取；批次末落库 tool 消息承载最终结果。
+
+        // ★ 新版方案 §7.3-8：executor 任务记录会话创建（abort 检查前——未启动即中止分支
+        //   亦需 markTerminal('aborted') 收敛）；modelMessages 将被 runDelegatedTask 经
+        //   adoptMessages 领养为 runtimeMessages（同一数组引用，真实视图与模型上下文共享）。
+        //   任务名解析规则沿用下方批末 completedEntry 既有先例（taskname 字段 trim）。
+        const recordSession = beginExecutorTaskRecord({
+          conversationId,
+          delegateCallId: toolCall.id,
+          taskId,
+          messageId: assistantMessageId,
+          taskName: (() => {
+            try {
+              const parsedRecordArguments = JSON.parse(toolCall.function.arguments) as {
+                taskname?: unknown;
+              };
+              return typeof parsedRecordArguments.taskname === 'string'
+                ? parsedRecordArguments.taskname.trim()
+                : '';
+            } catch {
+              return '';
+            }
+          })(),
+        });
 
         // 协议文件写入临时任务目录；真实交付文件写入固定 output/YYYY/MM 目录。
         const conversationDir = resolveConversationDir(conversationId);
         const finalOutputDir = resolveTaskWorkspaceDir(conversationId, toolCall.id);
         const outputDir = resolveMonthlyOutputDir();
 
-        // 快照持久化（对齐 ai_fr stream/route.ts writeSnapshot）
-        const snapshotToolCall = {
-          toolCallId: toolCall.id,
-          name: toolCall.function.name,
-          arguments: toolCall.function.arguments,
-        };
-        let latestThinking = '';
-        // S1-3 增量分类窗口缓冲：累积全文（thinking delta + 进度文本全量），
-        //   分类匹配在累积全文的最后一段上执行（非裸 delta，防 D1R5 增量模式分类退化）——
-        //   进度行在整段完整后才能命中锚定正则（^正在调用.+工具\.\.\.$ 等），裸 delta 碎片永不误命中
-        let executorThinkingClassifyBuffer = '';
-        // S1-5 思考全量累积（跨轮，仅 thinking 分支的 delta 追加；进度文本不混入）：
-        //   作为 sendToolSnapshot 的 thinking/result 入参 → snapshot.json thinking 字段存储全量
-        let executorThinkingAccumulated = '';
-        // ★ P0-C-1 分类尾段增量缓存：消除每 delta 两次全量 split（O(n)×2 → O(|尾段|+|delta|)）
-        let classifyTailRaw = '';              // 不变量 I1：≡ classifyBuffer 最后一个 \n{2,} 之后的原文（未定界尾段）
-        let classifyLastNonEmptyTail = '';     // 不变量 I2：≡ split(buffer).map(trim).filter(Boolean).pop() ?? ''
-        const SNAPSHOT_STREAM_EMIT_MIN_INTERVAL_MS = 200;    // ★ P0-C-2 流式 delta 快照推送最小间隔（终态/init 不节流）
-        let lastSignalEmitAt = 0;
-        let pendingSignal: {
-          conversationId: string; taskId: string; callId: string;
-          status: 'running' | 'completed' | 'failed'; messageId: string; updatedAt: string;
-        } | null = null;
-        let signalTimerId: ReturnType<typeof setTimeout> | null = null;
-        const emitSnapshotSignal = (status: 'running' | 'completed' | 'failed', immediate: boolean): void => {
-          const signal = { conversationId, taskId, callId: toolCall.id, status,
-            messageId: assistantMessageId, updatedAt: new Date().toISOString() };
-          if (immediate) {
-            if (signalTimerId !== null) { clearTimeout(signalTimerId); signalTimerId = null; }
-            pendingSignal = null; lastSignalEmitAt = Date.now();
-            eventBus.emit('executor:snapshot', signal); return;
-          }
-          const now = Date.now();
-          if (now - lastSignalEmitAt >= SNAPSHOT_STREAM_EMIT_MIN_INTERVAL_MS) {
-            lastSignalEmitAt = now; eventBus.emit('executor:snapshot', signal); return;   // leading
-          }
-          pendingSignal = signal;              // trailing：窗口末必补发
-          if (signalTimerId === null) {
-            signalTimerId = setTimeout(() => {
-              signalTimerId = null; lastSignalEmitAt = Date.now();
-              if (pendingSignal) { const s = pendingSignal; pendingSignal = null; eventBus.emit('executor:snapshot', s); }
-            }, SNAPSHOT_STREAM_EMIT_MIN_INTERVAL_MS - (now - lastSignalEmitAt));
-          }
-        };
-
-        const resolveSnapshotTaskStatus = (
-          result: string | undefined,
-          snapshotStatus: StreamStatus | undefined,
-          finishedAt: string | undefined,
-        ): 'init' | 'running' | 'finished' => {
-          if (finishedAt) return 'finished';
-          if (typeof result === 'string' && result.trim()) return 'running';
-          return 'init';
-        };
-
-        /**
-         * 唯一出口：跟踪 thinking + 推送 executor:snapshot + 写任务快照
-         * 对齐 ai_fr route.ts sendToolSnapshot（唯一出口职责）
-         */
-        const sendToolSnapshot = (
-          result?: string,
-          snapshotStatus?: StreamStatus,
-          isError?: boolean,
-          finishedAt?: string,
-          thinkingText?: string,
-        ) => {
-          // 思考内容跟踪：显式传入的思考文本优先；否则仅当推送文本不是进度文本时才视为思考
-          // S1-5 增量适配：S1-3 后 thinkingText 为累积全文（每 delta 触发一次本函数），
-          if (typeof thinkingText === 'string' && thinkingText.trim()) {
-            latestThinking = thinkingText;
-          }
-          // ★ M3 六字段信号三态漏斗：leading 200ms 立发 / 窗口末 trailing 必补发 / 终态 immediate 立发；
-          //   下方 setTaskSnapshot 内存快照写保持每 delta 照写（查询侧恒最新，被节流的仅是信号推送）
-          emitSnapshotSignal(
-            resolveSnapshotTaskStatus(result, snapshotStatus, finishedAt) === 'finished'
-              ? (isError ? ('failed' as const) : ('completed' as const))
-              : 'running',
-            !(finishedAt === undefined && snapshotStatus === undefined),
-          );
-          // 快照内存写入（tasks_snapshot 集合同键覆盖式更新，三态 init/running/finished；
-          //   重置时机与 tasks 目录重置完全相同，进程重启内存自动清空，无文件 IO）
-          // ★ 任务名称解析（模式照搬下方批末 completedEntry 既有先例）：从 delegate_executor
-          //   委派参数 toolCall.function.arguments 提取 taskname；非合法 JSON / 非字符串回退空串
-          let snapshotTaskName = '';
-          try {
-            const parsedSnapshotArguments = JSON.parse(toolCall.function.arguments) as {
-              taskname?: unknown;
-            };
-            snapshotTaskName = typeof parsedSnapshotArguments.taskname === 'string'
-              ? parsedSnapshotArguments.taskname.trim()
-              : '';
-          } catch {
-            snapshotTaskName = '';
-          }
-          setTaskSnapshot(conversationId, toolCall.id, {
-            thinking: latestThinking,
-            toolCall: snapshotToolCall,
-            createdAt: toolStartedAt,
-            status: resolveSnapshotTaskStatus(result, snapshotStatus, finishedAt),
-            taskName: snapshotTaskName,
-            ...(finishedAt ? { finishedAt } : {}),
-          });
-        };
-
         // ★ S2 出口①（文档 #5）：未启动即中止——失败消息化随批次末 insertMessages 入库（对齐 ai_fr route.ts:768-790）
-        //   落位说明：文档锚点为循环顶（:769 前），但 Delepi sendToolSnapshot 定义于本分支内（:931-984），
-        //   循环顶作用域不可达；按语义锚点落位（sendToolSnapshot 可用、runDelegatedTask 实质启动前）。
+        //   落位说明：按语义锚点落位（runDelegatedTask 实质启动前、闭包作用域内）。
         //   S4：委派任务表已随读取链全链摘除，本出口不再有表补偿写（零读写，对齐 ai_fr）。
         if (options.signal?.aborted) {
           const failureResult = buildDelegatedTaskFailureResult(undefined, true, delegatedTaskStartedAt);
@@ -1119,7 +1034,8 @@ export async function runMainAgent(
             tool_call_id: toolCall.id,
             content: failureResultText,
           });
-          sendToolSnapshot(failureResultText, 'error', true, toolFinishedAt);
+          // ★ 新版方案 §7.3-7：未启动即中止 → 记录会话终态收敛（aborted；records 仅含创建信号）
+          recordSession.markTerminal('aborted');
           batchResults.push({ callId: toolCall.id, status: 'aborted' });
           return { toolCall, status: 'aborted' as const };
         }
@@ -1132,8 +1048,6 @@ export async function runMainAgent(
           await mkdir(conversationDir, { recursive: true });
           await mkdir(finalOutputDir, { recursive: true });
           await mkdir(outputDir, { recursive: true });
-          // 唯一出口：任务开始写入 init 态快照（对齐 ai_fr route.ts 任务开始 sendToolSnapshot() 无参调用）
-          sendToolSnapshot();
 
           // 执行委派任务
           // finalOutputDir 通过 RunDelegatedTaskOptions 顶层字段传入；
@@ -1159,79 +1073,37 @@ export async function runMainAgent(
             // 已完成任务数组直接传下去（不做转换）：completedTasks.length>0 时传全量数组，否则 undefined
             // 与网站版 stream/route.ts L796-801 行为一致
             completedTasks: completedTasks.length > 0 ? completedTasks : undefined,
+            // ★ 新版方案 §7.1-1/§7.3-8：记录会话随 options 传入（executor 循环领养 modelMessages
+            //   作为 runtimeMessages）；onTurnEnd=轮收口回调（草稿 seal 用 executor 任务级
+            //   reasoning 权威全文，tool-progress 进度文本不进思考条目）
+            recordSession,
+            onTurnEnd: (turnInfo) => {
+              recordSession.sealThinkingTurn(turnInfo.reasoning);
+            },
             // ★ M14 委派任务重试复位：底层 streamChat 重试边界触发（M12 协议），
             //   四个累积器复位到任务起点基线（前缀去重逻辑跨 attempt 失效，
             //   attempt-1 已累积增量必须显式清空，否则渲染端 lastContent 双份累积）
             onStreamRetry: () => {
-              executorThinkingClassifyBuffer = '';
-              executorThinkingAccumulated = '';
-              classifyTailRaw = '';
-              classifyLastNonEmptyTail = '';
-              latestThinking = '';
+              // ★ 新版方案 §7.3-9：重试复位 → 记录草稿整体清空重建（R-draft-6，attempt-1 残留不双份累积）
+              recordSession.resetThinkingDraft();
             },
             onThinking: (text, info) => {
-              // 对齐 ai_fr route.ts onThinking 分流：进度文本仅推送 result 不更新 thinking；
-              // 真实思考文本：写入 payload.thinking
-              // 快照语义（thinking 跟踪 + 写 snapshot.json + executor:snapshot）统一由 sendToolSnapshot 负责
-              //
-              // S1-3 增量分类窗口：text 在流式模式下为 reasoning delta（增量推送），
-              //   分类匹配必须在累积全文上执行（非裸 delta）——裸 delta 碎片（如「正在调」「用xx工具...」）
-              //   永远无法命中锚定正则，会被整体误分类为 thinking 导致分类退化（D1R5）。
-              //   窗口取累积全文按 \n{2,} 切分后的最后一段（对齐主进程 splitExecutorIntermediate 段级分类模式）：
-              //   进度行整段完整后归类准确；碎片期间不误命中进度正则。
-              // 进度行前插段落分隔：\n{2,} 切分后独立成段，整段锚定正则可命中，不混入 thinking 累积
-              // 尾段已是完整进度行时，thinking delta 同样前插 \n\n 分隔，
-              // 避免 reasoning 文本与进度行粘连导致 isExecutorToolProgressText 锚定正则失配
-              const prevClassifyTail = classifyLastNonEmptyTail;   // ≡ 追加前全量 split().pop()（归纳等价，见方案 4.4）
-              const needSeparator =
-                info?.type === 'tool-progress' || isExecutorToolProgressText(prevClassifyTail);
-              executorThinkingClassifyBuffer += needSeparator ? `\n\n${text}` : text;
-              const mergedTail = classifyTailRaw + (needSeparator ? `\n\n${text}` : text);
-              const tailSegs = mergedTail.split(/\n{2,}/);
-              classifyTailRaw = tailSegs[tailSegs.length - 1] ?? '';
-              let nextTail = classifyLastNonEmptyTail;             // mergedTail 各段全空时回退旧值（≡ filter(Boolean).pop() 语义）
-              for (let i = tailSegs.length - 1; i >= 0; i -= 1) {
-                const t = tailSegs[i].trim();
-                if (t) { nextTail = t; break; }
-              }
-              classifyLastNonEmptyTail = nextTail;
-              const lastClassifyChunk = classifyLastNonEmptyTail;  // ≡ 追加后全量 split().pop()
-              if (isExecutorToolProgressText(lastClassifyChunk)) {
-                // 进度文本：仅推送 result，不更新 thinking（增量模式下 text 为完整进度块/进度 delta 碎片，
-                //   sendToolSnapshot 覆盖式更新任务快照状态）
-                sendToolSnapshot(text);
-              } else {
-                // 真实思考文本：thinkingText 第 5 参 → thinking + 快照
-                // S1-5 存储同步：快照 thinking 传累积全文（存储全量不截断）——
-                //   增量模式下若传裸 delta 会使 latestThinking/snapshot.json 只剩最后碎片；
-                //   累积全文覆盖式写入天然收敛到完整思考态（协议字段不变，仅值语义为全量）
-                executorThinkingAccumulated += text;
-                sendToolSnapshot(
-                  executorThinkingAccumulated,
-                  undefined, undefined, undefined,
-                  executorThinkingAccumulated,
-                );
+              // ★ 新版方案 §7.3-10：executor 任务级思考增量 → 记录草稿（仅 type='thinking'；
+              //   tool-progress 进度文本显式过滤——工具信息一律来自结构化 onToolCall/onToolResult 回调，
+              //   从数据源头杜绝进度文本冒充思考）
+              if (info?.type === 'thinking') {
+                recordSession.appendThinkingDelta(text);
               }
             },
             // ★ M6：onToolCall / onToolResult 接收子智能体工具的真实 callId（executor-agent.ts 已透传），
             //   直写内存快照（conversationId→toolCall.id→callId 三键精确定位）+六字段信号
-            onToolCall: (toolName, _args, callId) => {
-              upsertTaskSnapshotToolCall(conversationId, toolCall.id, {
-                callId,
-                name: toolName,
-                status: 'loading',
-                startedAt: new Date().toISOString(),
-              });
-              emitSnapshotSignal('running', false);
+            // ★ 新版方案 §7.3-11：工具开始 → 记录条目 running（argsPreview 截断构造）
+            onToolCall: (toolName, args, callId) => {
+              recordSession.beginToolCall({ callId, name: toolName, args });
             },
-            onToolResult: (toolName, success, _message, callId) => {
-              upsertTaskSnapshotToolCall(conversationId, toolCall.id, {
-                callId,
-                name: toolName,
-                status: success ? 'success' : 'error',
-                finishedAt: new Date().toISOString(),
-              });
-              emitSnapshotSignal('running', false);
+            // ★ 新版方案 §7.3-12：工具结束 → 记录条目终态 + resultPreview（幂等守卫在 store 内部）
+            onToolResult: (toolName, success, message, callId) => {
+              recordSession.endToolCall({ callId, success, message });
             },
           });
 
@@ -1242,13 +1114,9 @@ export async function runMainAgent(
 
           const toolResultContent = stringifyDelegatedTaskResultForMainAgent(execResult);
           const toolFinishedAt = new Date().toISOString();
-          // 唯一出口：成功/失败收尾快照（对齐 ai_fr route.ts sendToolSnapshot(executionResult, ...)）
-          sendToolSnapshot(
-            toolResultContent,
-            execResult.success ? 'success' : 'error',
-            !execResult.success,
-            toolFinishedAt,
-          );
+          // ★ 新版方案 §7.3-13：任务终态标记（execResult.success → completed / failed；
+          //   草稿强制 seal、running 工具条目收敛、records 冻结、终态信号立即冲刷）
+          recordSession.markTerminal(execResult.success ? 'completed' : 'failed');
 
           // 添加 tool 消息到对话
           turnMessages.push({
@@ -1325,8 +1193,8 @@ export async function runMainAgent(
           const failureResultText = stringifyDelegatedTaskResultForMainAgent(failureResult);
           const toolFinishedAt = new Date().toISOString();
 
-          // 唯一出口：失败收尾快照（对齐 ai_fr route.ts sendToolSnapshot(failureResultText, 'error', true, ...)）
-          sendToolSnapshot(failureResultText, 'error', true, toolFinishedAt);
+          // ★ 新版方案 §7.3-14：中止 → aborted；其余失败 → failed（草稿强制 seal、running 工具条目 → failed）
+          recordSession.markTerminal(options.signal?.aborted ? 'aborted' : 'failed');
 
           turnMessages.push({
             role: 'tool',

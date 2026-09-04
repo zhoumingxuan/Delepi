@@ -28,6 +28,11 @@ import { ConfigDrawer } from './ConfigDrawer';
 import { Sidebar } from './Sidebar';
 import { SenderBox } from './SenderBox';
 import { useChat } from '../hooks/useChat';
+import {
+  useExecutorTaskRecords,
+  EXECUTOR_RECORD_PANEL_ENABLED,
+} from '../hooks/useExecutorTaskRecords';
+import { ExecutorRecordDrawer } from './ExecutorRecordDrawer';
 import { useFileUpload } from '../hooks/useFileUpload';
 import { useSettings } from '../hooks/useSettings';
 import type { SidebarConversation } from './Sidebar';
@@ -52,8 +57,6 @@ export function ChatShell() {
     createConversation,
     deleteConversation,
     switchConversation,
-    /** Phase 3 P0-3：子智能体执行中间快照（按 taskId 索引） */
-    toolSnapshots,
     /** Phase 3 P1 + P3：守卫 + 状态相关 */
     isConversationSending,
     isConversationRunning,
@@ -68,6 +71,10 @@ export function ChatShell() {
     isConversationCancelPendingSettle,
     onCancelPendingSettleReissue,
   } = useChat({ messageApi: { error: (content: string) => messageApi.error(content) } });
+
+  // ★ 新版方案 §7.7：executor 任务记录显示侧数据 hook（订阅 executor:record-signal + 增量拉取；
+  //   挂载点与任务卡徽标分支统一受 EXECUTOR_RECORD_PANEL_ENABLED 纯显示开关控制）
+  const executorRecords = useExecutorTaskRecords({ conversationId });
 
   const { config, loading: configLoading, saveConfig, saveAllConfig, reloadConfig } =
     useSettings();
@@ -530,7 +537,17 @@ const { check, canCheck } = useConfigReadiness({
         >
           <ChatArea
             messages={messages}
-            toolSnapshots={toolSnapshots}
+            /**
+             * ★ 新版方案 §7.7：数据源切换为 executor 任务记录虚拟消息（旧 toolSnapshots 停传）；
+             * 受 EXECUTOR_RECORD_PANEL_ENABLED 控制——置 false 即整体停用新显示侧（回滚开关）
+             */
+            executorTaskMessages={
+              EXECUTOR_RECORD_PANEL_ENABLED ? executorRecords.executorTaskMessages : undefined
+            }
+            executorPanel={{
+              onOpenPanel: executorRecords.openTask,
+              activeDelegateCallId: executorRecords.activeDelegateCallId,
+            }}
             conversationId={conversationId}
             messageListRef={messageListRef}
             stickToBottomRef={stickToBottomRef}
@@ -576,6 +593,14 @@ const { check, canCheck } = useConfigReadiness({
         onGoToConfig={handleGoToConfig}
       />
 
+      {/* ★ 新版方案 §7.7：任务执行记录 dock 右栏（固定布局列，非 Drawer/Modal；
+          单点显示开关 EXECUTOR_RECORD_PANEL_ENABLED 控制，默认 true） */}
+      {EXECUTOR_RECORD_PANEL_ENABLED && executorRecords.activeTaskView ? (
+        <ExecutorRecordDrawer
+          taskView={executorRecords.activeTaskView}
+          onClose={executorRecords.closePanel}
+        />
+      ) : null}
 
     </div>
   );

@@ -6,39 +6,27 @@
  *   (onThinking / onChunk / onToolCall / onToolResult / onDone / onError / onTitle)
  *   → 更新消息状态 → React 重渲染
  *
- * Phase 3 P0 适配层：
- * - P0-1: 订阅 executor:thinking（子智能体 thinking / 工具进度）→ 按 taskId 聚合到 toolSnapshots
- *         ★ 修复主/子智能体消息混淆：不再写入主消息 toolCalls 字段
- *         旧数据无 source 字段时默认视为主智能体（向后兼容）
- * - P0-3: 订阅 executor:snapshot（子智能体执行中间快照）→ 按 taskId upsert 到 toolSnapshots
- *         buildConversationDisplayState 恢复时优先从快照恢复 in-flight 任务
- *
- * Phase 3 P0-2 适配层（★ 修复主/子智能体消息混淆）：
- * - 订阅 executor:tool-progress（子智能体工具调用进度）→ 按 taskId/callId 聚合到 toolSnapshots.toolCalls
- *   后端 main-agent.ts 的 onToolCall / onToolResult 回调 emit 此事件
- *   payload 含 source='executor' / 子智能体工具真实 callId
- *   旧数据无 source 字段时默认视为主智能体（向后兼容）
+ * ★ 新版方案 S6：executor 任务显示链路（快照订阅/轻量查询/状态投影）已整体迁出至
+ *   useExecutorTaskRecords（executor:record-signal + executor:get-task-record 新链路）；
+ *   本 hook 回归主智能体消息链路（chunk/thinking/tool-call/tool-result/done/error/
+ *   aborted/conv:updated 等订阅与多会话运行态存储），旧快照死代码已删除。
  *
  * Phase 3 P1 + P3 适配层（后端已接入）：
  * - P1-1: 本地乐观插入 user message（status='local'）+ chat:user-message-created 替换
- * - P1-2: assistant 三态事件（started/snapshot/done）→ 按 id upsert
- * - P1-3: cancel/abort 归一化（markRunningMessagesAborted + markRunningToolSnapshotsAborted）
- *         + chat:aborted 事件统一归一化
+ * - P1-2: assistant 三态事件（started/done）→ 按 id upsert
+ * - P1-3: cancel/abort 归一化（markRunningMessagesAborted）+ chat:aborted 事件统一归一化
  * - P3-1: 发送四重守卫（hasText/pendingConversationSend/isConversationSending/
  *         isConversationRunning）
  * - P3-2: 空泡过滤（filterEmptyAssistantBubbles）
- * - P3-3: 切换会话三步清理（completedToolCallIdsRef.clear / setToolSnapshots([]) /
- *         stickToBottomRef=true + setShowScrollToBottom(false)）
+ * - P3-3: 切换会话清理（stickToBottomRef=true + setShowScrollToBottom(false)）
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ToolCallInfo } from '../components/ToolCallCard';
-import { pickTaskTitleFromArguments } from '../components/ChatMessageContent';
 import type { AssistantMessageSegment } from '../lib/message-filter';
-import { latestToolProgressTextCached } from '../lib/executor-thinking';
 import { createThinkingEventMerger } from '../lib/thinking-event-merger';
 import { IPC_CHAT, IPC_CONV } from '@shared/ipc-channels';
-import type { ChatAttachment, StreamMessage } from '@shared/types/chat';
+import type { ChatAttachment } from '@shared/types/chat';
 
 // ============================================================
 // 类型定义
@@ -73,7 +61,7 @@ export interface ChatMessage {
   /**
    * ★ 修复主/子智能体消息混淆：消息来源标识（向后兼容旧数据无此字段默认 'main'）
    * - 'main': 主智能体（向后兼容默认）
-   * - 'executor': 执行子智能体（修复后由 useChat.toolSnapshots 转换的虚拟消息显式标识）
+   * - 'executor': 执行子智能体（新版方案：由 executor-record-messages 构造的虚拟消息显式标识）
    */
   source?: 'main' | 'executor';
   /** ★ M11 持久化稳定次序键（messages.seq，同批 created_at 同值时排序依据） */
@@ -127,66 +115,6 @@ export interface UseChatMessageApi {
  */
 export interface UseChatOptions {
   messageApi?: UseChatMessageApi;
-}
-
-/**
- * 子智能体执行中间快照（Phase 3 P0-3 适配层）
- * - conversationId: 所属对话
- * - taskId: 子任务 ID（主智能体 delegate_executor 委派时生成的 uuid）
- * - callId: 工具调用 ID（子智能体内部工具调用，可选）
- * - status: 任务状态
- * - progress: 进度描述
- * - toolCalls: 当前累积的工具调用列表（含 result 字段）
- * - updatedAt: 快照时间戳
- */
-
-export interface ToolSnapshot {
-  conversationId: string;
-  taskId: string;
-  callId?: string;
-  status: 'running' | 'completed' | 'failed';
-  progress?: { current: number; total: number; description: string };
-  toolCalls: ToolCallInfo[];
-  createdAt?: string;
-  updatedAt: string;
-  finishedAt?: string;
-  result?: string;
-  /** ★ 对齐 ai_fr executorTaskToToolSnapshot：完整思考链 join 后的思考内容（快照复原/历史恢复时前端渲染消费） */
-  thinking?: string;
-  isError?: boolean;
-  /**
-   * ★ 修复主/子智能体消息混淆：消息来源标识（向后兼容旧数据无此字段默认 'main'）
-   * - 'main': 主智能体（向后兼容默认）
-   * - 'executor': 执行子智能体（修复后由后端显式标识）
-   */
-  source?: 'main' | 'executor';
-  /**
-   * ★ 委派任务名称（运行中任务卡片标题取值源）：从快照 message.payload.arguments
-   *   （delegate_executor 委派参数）解析 taskname——与完成态真实 tool 消息标题
-   *   （pickTaskTitleFromArguments）同一解析器同一数据源；缺省时标题回退子工具名链
-   */
-  name?: string;
-  /**
-   * ★ 修复主/子智能体消息混淆：子智能体工具的真实 callId（修复 callId 语义错位）
-   *   - 主智能体 callId：delegate_executor 的 id（外层 toolCall.id）
-   *   - 子智能体 callId：executorCallId（内层 LLM 返回的 toolCall.id）
-   *   修复后通过 executorCallId 区分
-   */
-  executorCallId?: string;
-  /**
-   * ★ Phase 3 P3-8 messageId ↔ taskId 关联键
-   * 主智能体 assistant 消息 ID,标识该快照归属的 assistant 消息
-   * 用于多子任务并行时各 assistant 消息可正确承载自己的 toolCall 快照
-   * 来自 executor:thinking / executor:tool-progress / executor:snapshot 事件
-   */
-  messageId?: string;
-  /**
-   * ★ 修复主/子智能体消息混淆：最新 thinking/tool-progress 累积文本
-   *   来自 executor:thinking 事件，前端 UI 可按 type 字段判断渲染位置
-   */
-  lastContent?: string;
-  /** 最新推送类型（来自 executor:thinking 事件） */
-  lastType?: 'thinking' | 'tool-progress';
 }
 
 // ============================================================
@@ -315,7 +243,7 @@ interface ToolMessageCreatedPayload {
 
 /**
  * 对话被中止事件（Phase 3 P1-3 适配层）
- * 触发 markRunningMessagesAborted + markRunningToolSnapshotsAborted 归一化
+ * 触发 markRunningMessagesAborted 归一化
  */
 interface AbortedPayload {
   conversationId: string;
@@ -330,31 +258,6 @@ interface AbortedPayload {
 interface ToolBatchCompletedPayload {
   conversationId: string;
   toolCallIds: string[];
-}
-
-/**
- * 轻量快照查询响应 toolCalls 成员条目（M15/M21 消费类型；
- * 与主进程 ExecutorToolCallSnapshot 字段逐一同构——渲染进程不 import 主进程模块）
- */
-interface ExecutorToolCallDetail {
-  callId: string;
-  name: string;
-  status: 'loading' | 'success' | 'error';
-  startedAt?: string;
-  finishedAt?: string;
-}
-
-/**
- * executor:snapshot 六字段信号（v2.1 规则②白名单；M1/M3 主进程 emitSnapshotSignal 唯一出口构造）
- * 信号本身不携带过程数据，前端收到后触发轻量查询 conv:get-running-snapshots 拉取明细
- */
-interface ExecutorSnapshotPayload {
-  conversationId: string;
-  taskId: string;
-  callId?: string;
-  status: 'running' | 'completed' | 'failed';
-  messageId?: string;
-  updatedAt?: string;
 }
 
 // ============================================================
@@ -379,88 +282,6 @@ function nextMessageId(): string {
  */
 function buildLocalUserDisplayText(text: string, _attachments: SendAttachment[]): string {
   return text.trim();
-}
-
-/**
- * 从 StreamMessage 构造 ToolSnapshot（对齐 ai_fr snapshotMessageToToolSnapshot 语义）
- * status 映射：success→completed、error→failed、其余→running
- * thinking 取自 message.payload.thinking（完整思考链）
- */
-function snapshotMessageToToolSnapshot(
-  message: StreamMessage,
-  conversationId: string,
-  taskId: string,
-  toolCallsDetail?: ExecutorToolCallDetail[],
-): ToolSnapshot | null {
-  if (!message || !message.payload) {
-    return null;
-  }
-  const status: ToolSnapshot['status'] =
-    message.status === 'error'
-      ? 'failed'
-      : message.status === 'success'
-        ? 'completed'
-        : 'running';
-  const startedAt = message.payload.startedAt ?? message.createdAt ?? new Date().toISOString();
-  const finishedAt = message.payload.finishedAt;
-  const isFailed = message.payload.isError ?? status === 'failed';
-  // ★ M16 恢复还原 lastContent：由快照七字段合成（S1-5 后 snapshot.json thinking=思考全量、
-  //   result=最新进度），join('\n\n') 与 M15 切分规则互逆；恢复后新事件按 M15 规则追加，
-  //   进度不清零重累（机制F 主修复）
-  const restoredThinking = message.payload.thinking ?? '';
-  const restoredProgress = typeof message.payload.result === 'string' ? message.payload.result : '';
-  // ★ M15（v2.1 数据源换绑）：toolCallsDetail 非空（轻量查询响应三元组 toolCalls 成员）→ 按条映射恢复；
-  //   空缺 → 现状单条合成兜底（委派参数条目）
-  const restoredToolCalls: ToolCallInfo[] = Array.isArray(toolCallsDetail) && toolCallsDetail.length > 0
-    ? toolCallsDetail.map((tc) => ({
-        callId: tc.callId,
-        name: tc.name,
-        arguments: '',
-        status: tc.status === 'error' ? ('error' as const) : tc.status === 'success' ? ('success' as const) : ('loading' as const),
-        startedAt: tc.startedAt ?? startedAt,
-        ...(tc.finishedAt ? { finishedAt: tc.finishedAt } : {}),
-        isDelegatedExecutor: tc.name === 'delegate_executor',
-      }))
-    : [
-      {
-        callId: message.payload.toolCallId,
-        name: message.payload.name,
-        arguments: message.payload.arguments ?? '',
-        result: message.payload.result ?? '',
-        status: status === 'failed' ? 'error' : status === 'completed' ? 'success' : 'loading',
-        startedAt,
-        ...(finishedAt ? { finishedAt } : {}),
-        isError: isFailed,
-        isDelegatedExecutor: message.payload.name === 'delegate_executor',
-      },
-    ];
-  // ★ 运行中标题取值源：委派任务名从快照 message.payload.arguments（委派参数）解析——
-  //   与完成态真实 tool 消息标题（pickTaskTitleFromArguments(payload.arguments)）同一解析器，
-  //   轻量查询/全量恢复两出口数据同源（均携带 message），恢复结果天然一致
-  const restoredTaskName = pickTaskTitleFromArguments(message.payload.arguments ?? '') ?? '';
-  return {
-    conversationId,
-    taskId,
-    callId: message.payload.toolCallId,
-    status,
-    result: message.payload.result ?? '',
-    thinking: message.payload.thinking ?? '',
-    isError: isFailed,
-    toolCalls: restoredToolCalls,
-    createdAt: startedAt,
-    updatedAt: finishedAt ?? startedAt,
-    ...(finishedAt ? { finishedAt } : {}),
-    source: 'executor',
-    // ★ 运行中标题载体：name=委派任务名（委派参数 taskname 解析结果）。
-    //   ChatArea.tsx toolSnapshotsToChatMessages 的 s.name 优先取值，
-    //   运行中标题不再被子工具条目置换（首个子工具调用前后不翻转、并发多任务各自任务名）
-    name: restoredTaskName,
-    // ★ M16：lastContent/lastType 恢复（有 progress 时 lastType=tool-progress）
-    lastContent: [restoredThinking, restoredProgress]
-      .filter((segment) => segment.trim().length > 0)
-      .join('\n\n'),
-    lastType: restoredProgress ? 'tool-progress' : 'thinking',
-  };
 }
 
 /**
@@ -599,144 +420,6 @@ export function markRunningMessagesAbortedInList(
   });
 }
 
-/**
- * 将所有 status='running' 的快照批量归一化（P1-3）
- * 对齐 E:\ai_fr markRunningToolSnapshotsAborted
- * - status='running' → status='failed'
- * - 工具调用空 result → '已取消。'，isError=true
- * @param snapshots 按 taskId 索引的快照字典
- * @returns 归一化后的快照字典
- */
-export function markRunningToolSnapshotsAbortedInList(
-  snapshots: Record<string, ToolSnapshot>,
-): Record<string, ToolSnapshot> {
-  const next: Record<string, ToolSnapshot> = {};
-  for (const [taskId, snap] of Object.entries(snapshots)) {
-    if (snap.status !== 'running') {
-      next[taskId] = snap;
-      continue;
-    }
-    const finishedAt = new Date().toISOString();
-    const updatedToolCalls = (snap.toolCalls || []).map((tc) => {
-      const hasResult = tc.result && tc.result.trim().length > 0;
-      return {
-        ...tc,
-        result: hasResult ? tc.result : '已取消。',
-        isError: true,
-        finishedAt,
-        status: 'error' as const,
-      };
-    });
-    next[taskId] = {
-      ...snap,
-      status: 'failed',
-      toolCalls: updatedToolCalls,
-      result: snap.result || snap.lastContent || '已取消。',
-      isError: true,
-      finishedAt,
-      updatedAt: finishedAt,
-    };
-  }
-  return next;
-}
-
-export function completeToolSnapshotByDelegateCallId(
-  snapshots: Record<string, ToolSnapshot>,
-  payload: ToolResultPayload,
-): Record<string, ToolSnapshot> {
-  const entries = Object.entries(snapshots);
-  // ★ M08 兜底收紧（前置=批1 三成因已闭合：M01/M02/M04/M05 切换不清空+事件不丢弃+恢复 live-wins）：
-  //   精确匹配命中率≈100%，删除 reverse-find 兜底（并发时会错抓任意 running 快照强行收口，
-  //   错写到其他任务卡片）；仅保留精确匹配路径，未命中打 warn 可观测。
-  //   running 快照收口链仍有五路冗余：tool-result 精确匹配（本函数）/ tool.message.created 删键
-  //   / tool.batch.completed 批次收口 / chat:done isError 收口 / chat:aborted 归一化。
-  const targetEntry = entries.find(
-    ([, snapshot]) => snapshot.callId === payload.callId,
-  );
-
-  if (!targetEntry) {
-    console.warn('[useChat] tool-result 无匹配快照', { callId: payload.callId });
-    return snapshots;
-  }
-
-  const [taskId, snapshot] = targetEntry;
-  const finishedAt = new Date().toISOString();
-  const existingToolCalls = snapshot.toolCalls || [];
-  const completedDelegateToolCall: ToolCallInfo = {
-    callId: payload.callId,
-    name: payload.name,
-    arguments: '',
-    result: payload.result,
-    status: payload.success ? 'success' : 'error',
-    startedAt: snapshot.createdAt,
-    finishedAt,
-    isError: !payload.success,
-    isDelegatedExecutor: payload.name === 'delegate_executor',
-  };
-  const hasDelegateToolCall = existingToolCalls.some(
-    (toolCall) => toolCall.callId === payload.callId,
-  );
-  const toolCalls = hasDelegateToolCall
-    ? existingToolCalls.map((toolCall) =>
-        toolCall.callId === payload.callId
-          ? {
-              ...toolCall,
-              result: payload.result,
-              status: payload.success ? ('success' as const) : ('error' as const),
-              isError: !payload.success,
-              finishedAt,
-            }
-          : toolCall,
-      )
-    : [completedDelegateToolCall, ...existingToolCalls];
-
-  return {
-    ...snapshots,
-    [taskId]: {
-      ...snapshot,
-      status: payload.success ? 'completed' : 'failed',
-      result: payload.result,
-      isError: !payload.success,
-      toolCalls,
-      finishedAt,
-      updatedAt: finishedAt,
-    },
-  };
-}
-
-/**
- * ★ S3（M4）批次完成收口：将批内仍为 running 的 toolSnapshots 按 isError 定格终态
- * 对齐 ai_fr chat-shell.tsx markBatchToolSnapshotsSettled:1893-1918
- * - 仅处理 status='running' 且 callId ∈ toolCallIds 的快照（收口键=callId）
- * - isError=true → 'failed'，否则 → 'completed'（Delepi 三态与 ai_fr loading/success/error 语义映射同构）
- * - 补 finishedAt（缺省取当前时间）
- * @param snapshots 按 callId 索引的快照字典（S4/M6 键统一：Object.entries 键即委派 callId）
- * @param conversationId 批次所属会话
- * @param toolCallIds 批内全部工具调用 id
- */
-export function markBatchToolSnapshotsSettled(
-  snapshots: Record<string, ToolSnapshot>,
-  conversationId: string,
-  toolCallIds: string[],
-): Record<string, ToolSnapshot> {
-  const batchCallIds = new Set(toolCallIds);
-  const next = { ...snapshots };
-  for (const [key, snapshot] of Object.entries(next)) {
-    if (snapshot.conversationId !== conversationId) continue;
-    if (snapshot.status !== 'running') continue;
-    const callId = snapshot.callId;
-    if (!callId || !batchCallIds.has(callId)) continue;
-    const finishedAt = snapshot.finishedAt ?? new Date().toISOString();
-    next[key] = {
-      ...snapshot,
-      status: snapshot.isError ? 'failed' : 'completed',
-      finishedAt,
-      updatedAt: finishedAt,
-    };
-  }
-  return next;
-}
-
 // ============================================================
 // Hook
 // ============================================================
@@ -755,18 +438,15 @@ export function useChat(options?: UseChatOptions) {
   const creatingConversationRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
   const [conversations, setConversations] = useState<ConversationListItem[]>([]);
-  /** 子智能体执行中间快照（Phase 3 P0-3），按 taskId 索引 */
-  const [toolSnapshots, setToolSnapshots] = useState<Record<string, ToolSnapshot>>({});
   /**
    * ★ M01 多会话隔离：单会话运行态（含流式中间态），挂在 useRef Map 中
    *   （不进 React 状态，避免整树重渲染）。所有会话的流式事件一律先写入该
-   *   存储（单一事实源），活跃会话的 messages/toolSnapshots 状态只是该存储
+   *   存储（单一事实源），活跃会话的 messages 状态只是该存储
    *   在当前 conversationId 上的实时投影（ChatArea/ChatShell 消费链零改动）。
    */
   interface ConversationRuntimeState {
     conversationId: string;                       // Map 键（与 conversations.id 同源）
     messages: ChatMessage[];                      // 该会话消息列表（含流式 assistant 与乐观 user）
-    toolSnapshots: Record<string, ToolSnapshot>;  // 键 = 委派 callId ?? taskId（随会话隔离，无跨会话碰撞）
     completedToolCallIds: Set<string>;            // 该会话已完成工具调用 ID（防重）
     assistantMessageId: string | null;            // 该会话流式目标 assistant 消息 ID（多会话职责由 entry 承载）
     conversationRunning: boolean;                 // 会话级运行标记
@@ -887,7 +567,7 @@ export function useChat(options?: UseChatOptions) {
 
 /**
  * ★ P0-A 流式投影节流：高频流式事件只 mutate store（M01 单一事实源，零渲染），
- *   投影（setMessages/setToolSnapshots）合并到 50ms 节流窗口执行；
+ *   投影（setMessages）合并到 50ms 节流窗口执行；
  *   终态/低频事件仍即时投影（immediate 分支先吸收 pending 脏数据，无 stale）。
  *   间隔依据见优化方案 1.2（观感 20fps + 主线程负载削减 ≥83%）。
  */
@@ -904,7 +584,6 @@ const projectionTimerRef = useRef<number | null>(null);
     (conversationId: string): ConversationRuntimeState => ({
       conversationId,
       messages: [],
-      toolSnapshots: {},
       completedToolCallIds: new Set<string>(),
       assistantMessageId: null,
       conversationRunning: false,
@@ -931,7 +610,6 @@ const flushProjection = useCallback(() => {
   const entry = activeId ? conversationRuntimeStoreRef.current.get(activeId) : undefined;
   if (entry) {
     setMessages(entry.messages);
-    setToolSnapshots(entry.toolSnapshots);
   }
 }, [cancelPendingProjection]);
 
@@ -948,7 +626,7 @@ const scheduleProjection = useCallback(() => {
 
   /**
    * ★ M01 事件路由器：按 conversationId 取/建 store 条目 → 执行状态变换 → 更新活跃时间；
-   *   若为活跃会话则镜像投影（messages/toolSnapshots/completedToolCallIds/assistantMessageId）
+   *   若为活跃会话则镜像投影（messages/completedToolCallIds/assistantMessageId）
    */
   const applyConversationEvent = useCallback(
     (
@@ -968,7 +646,6 @@ const scheduleProjection = useCallback(() => {
           // 终态/低频：先吸收 pending 流式脏数据（取消定时器），再连同本次 mutate 一并即时投影
           cancelPendingProjection();
           setMessages(entry.messages);
-          setToolSnapshots(entry.toolSnapshots);
         }
         completedToolCallIdsRef.current = entry.completedToolCallIds;
         assistantMessageIdRef.current = entry.assistantMessageId;
@@ -1061,7 +738,6 @@ const scheduleProjection = useCallback(() => {
             //   投影列表（旧会话消息保留在 per-conversation store entry，切回旧会话时由
             //   switchConversation 水合恢复），同时为该会话建立空的 per-conversation 运行态条目
             setMessages([]);
-            // setToolSnapshots 不再清空（累积所有对话的快照）
             assistantMessageIdRef.current = null;
             setShowScrollToBottom(false);
             // ★ T3 修复：原 setPendingConversationSendIds(new Set()) +
@@ -1091,15 +767,6 @@ const scheduleProjection = useCallback(() => {
         setConversations((prev) => prev.filter((c) => c.id !== id));
         // ★ M07：显式删除该会话的运行态存储条目（防泄漏）
         conversationRuntimeStoreRef.current.delete(id);
-        setToolSnapshots((prev) => {
-          const filtered: Record<string, any> = {};
-          for (const [callId, snap] of Object.entries(prev)) {
-            if ((snap as any).conversationId !== id) {
-              filtered[callId] = snap;
-            }
-          }
-          return filtered;
-        });
         if (conversationIdRef.current === id) {
           // ★ D4 修复：删除当前活跃会话时同步 conversationIdRef.current = null，
           //   消除 ref 残留已删会话 id（残留期内该 id 的事件仍满足 applyConversationEvent
@@ -1292,8 +959,8 @@ const scheduleProjection = useCallback(() => {
       try {
         if (window.electronAPI) {
           // ★ S4（M5）恢复单源：conv:get-messages 收敛 { messages }
-          //   （对齐 ai_fr [id]/route.ts:100-118；executorTasks/snapshotTaskIds 字段随表摘除删除，
-          //   运行中快照统一走 conv:get-running-snapshots 轻量查询）
+          //   （对齐 ai_fr [id]/route.ts:100-118；运行中任务显示态由 useExecutorTaskRecords
+          //   独立链路（渲染信号+增量拉取）承载，与本读路径解耦）
           const result = (await window.electronAPI.conversations.getMessages(id)) as
             | {
                 messages: ChatMessage[];
@@ -1310,8 +977,8 @@ const scheduleProjection = useCallback(() => {
           //   见下方 store 写入分支）；仅活跃投影受 conversationIdRef 守卫
           const completedToolCallIds = collectCompletedToolCallIds(msgs);
 
-          // ★ S4（M5）：hasActiveRun 收敛为仅 loading assistant（running 委派任务源随表摘除，
-          //   过渡态由 conv:get-running-snapshots 轻量查询恢复，对齐 ai_fr 单源模型）
+          // ★ S4（M5）：hasActiveRun 收敛为仅 loading assistant（运行中任务显示态由
+          //   useExecutorTaskRecords 独立链路承载，本读路径不再恢复任务过程态）
           const hasActiveRun = msgs.some(
             (message) => message.role === 'assistant' && message.status === 'loading',
           );
@@ -1349,30 +1016,14 @@ const scheduleProjection = useCallback(() => {
           storeEntry.conversationRunning = resumeActiveRun;
           storeEntry.lastActiveAt = Date.now();
 
-          // ★ S4（M5/M6）恢复单源：运行中快照恢复统一走 conv:get-running-snapshots 三字段轻量查询
-          //   （thinking→思考内容、latestToolCallText→工具调用文案）；store 存量快照保持
-          //   live-wins 不清除（内存实时态优先，防闪回）
           conversationRuntimeStoreRef.current.set(id, storeEntry);
 
           // ★ M05：仅当仍活跃时镜像投影
           if (conversationIdRef.current === id) {
             setMessages(finalMsgs);
-            setToolSnapshots(storeEntry.toolSnapshots);
             completedToolCallIdsRef.current = completedToolCallIds;
             assistantMessageIdRef.current = resolveActiveAssistantMessageId(finalMsgs);
           }
-
-          // ★ M20：会话运行中时 fire-and-forget 补一轮轻量查询（切回/激活对账自动恢复运行中快照）
-          // ★ BUG2 修复①（委派快照即时恢复）：委派批次执行期批次声明 assistant 消息 status='success'
-          //   （经 runningAssistantMessages 附加返回、批次末才落库），hasActiveRun 仅认 status='loading'
-          //   恒为 false → resumeActiveRun 恒为 false，切回时即时快照恢复不执行，只能等 10s 轮询兜底。
-          //   故将触发条件扩展为 resumeActiveRun 或会话权威态 isRunning===true（conversations.is_running
-          //   按行权威值）；suppressActiveRunResume（chat:aborted 重载）仍强制不触发，防取消竞态复活。
-          //   fetchRunningSnapshots 幂等轻量：空快照直接返回，仅局部更新 toolSnapshots，不触碰 messages。
-          const shouldRestoreSnapshots = !options?.suppressActiveRunResume
-            && (resumeActiveRun
-              || Boolean(conversationsRef.current.find((c) => c.id === id)?.isRunning));
-          if (shouldRestoreSnapshots) void fetchRunningSnapshots(id).catch(() => undefined);
         }
       } catch (err) {
         console.error('[useChat] 加载对话消息失败:', err);
@@ -1397,61 +1048,9 @@ const scheduleProjection = useCallback(() => {
     [setConversationSending, createRuntimeState],
   );
 
-  /** M21 轻量快照查询消费：invoke conv:get-running-snapshots → 三字段 { toolCallId, thinking, latestToolCallText }
-   *  → 恢复 → store upsert + 活跃投影。仅更新 toolSnapshots（局部），不触碰 messages（无全量更新）。 */
-  const fetchRunningSnapshots = useCallback(async (id: string) => {
-    if (!window.electronAPI) return;
-    const entries = (await window.electronAPI.conversations.getRunningSnapshots(id)) as
-      Array<{ toolCallId: string; thinking: string; latestToolCallText: string; taskName: string }> | undefined;
-    if (!Array.isArray(entries) || entries.length === 0) return;   // 空快照：不做任何处理（裁决④）
-    applyConversationEvent(id, (entry) => {
-      const next = { ...entry.toolSnapshots };
-      for (const item of entries) {
-        const toolCallId = item?.toolCallId;
-        if (!toolCallId || entry.completedToolCallIds.has(toolCallId)) continue;  // 已收口键不复活
-        const updatedAt = new Date().toISOString();
-        // ★ BUG2 修复②（计时锚定·路线B）：从本会话消息基座 entry.messages 中查找携带该委派 callId 的
-        //   assistant 消息（conv:get-messages 经 runningAssistantMessages 附加返回的批次声明消息，
-        //   toolCalls[].callId = 委派 toolCall.id = 快照键 toolCallId），以其 createdAt（= 批次起点
-        //   toolCallTurnStartedAt）作为新建快照的计时基准；查找失败时回退现状（createdAt = updatedAt）。
-        //   已存在快照的合并分支不触碰 createdAt。
-        const hostAssistantMessage = entry.messages.find(
-          (message) =>
-            message.role === 'assistant'
-            && Array.isArray(message.toolCalls)
-            && message.toolCalls.some((toolCall) => toolCall.callId === toolCallId),
-        );
-        next[toolCallId] = next[toolCallId]
-          ? {
-              ...next[toolCallId],
-              thinking: item.thinking,
-              lastContent: item.latestToolCallText,
-              lastType: item.latestToolCallText ? 'tool-progress' : 'thinking',
-              ...(item.taskName ? { name: item.taskName } : {}),   // 任务名非空才补写 name，空串不覆盖已有值
-              updatedAt,
-            }
-          : {
-              conversationId: id,
-              taskId: toolCallId,
-              callId: toolCallId,
-              status: 'running',
-              toolCalls: [],
-              thinking: item.thinking,
-              name: item.taskName,
-              lastContent: item.latestToolCallText,
-              lastType: item.latestToolCallText ? 'tool-progress' : 'thinking',
-              createdAt: hostAssistantMessage?.createdAt ?? updatedAt,
-              updatedAt,
-              source: 'executor',
-            };
-      }
-      entry.toolSnapshots = next;
-    });
-  }, []);
-
   // 切换对话
   // ★ M04 多会话隔离改造：store 即时水合 + 切回即 silent 权威对账（不依赖窗口 focus）。
-  //   废弃旧三步清理（completedToolCallIdsRef.clear / setToolSnapshots({}) / pending+sending 全清）——
+  //   废弃旧三步清理（completedToolCallIdsRef.clear / pending+sending 全清）——
   //   清空/全清会抹掉后台会话的运行态与发送守卫（多会话并行下为破坏性副作用）；
   //   pending/sending 本就是 per-conversation Set，仅依赖终态事件的 per-conversation 清理。
   const switchConversation = useCallback(
@@ -1470,7 +1069,6 @@ const scheduleProjection = useCallback(() => {
       if (id && entry) {
         // ★ 即时水合：以 store（后台持续累积的实时态）渲染，零清空、零闪烁
         setMessages(entry.messages);
-        setToolSnapshots(entry.toolSnapshots);
         completedToolCallIdsRef.current = entry.completedToolCallIds;
         assistantMessageIdRef.current = entry.assistantMessageId;
         entry.lastActiveAt = Date.now();
@@ -1479,14 +1077,12 @@ const scheduleProjection = useCallback(() => {
       } else if (id) {
         // 无 store（首访/重启后）：保持原非静默加载
         setMessages([]);
-        setToolSnapshots({});
         completedToolCallIdsRef.current = new Set();
         assistantMessageIdRef.current = null;
         void loadConversationMessages(id);
       } else {
         // id=null 列表态
         setMessages([]);
-        setToolSnapshots({});
         completedToolCallIdsRef.current = new Set();
         assistantMessageIdRef.current = null;
       }
@@ -1721,9 +1317,6 @@ const scheduleProjection = useCallback(() => {
         if (convId) {
           applyConversationEvent(convId, (entry) => {
             entry.messages = markRunningMessagesAbortedInList(entry.messages);
-            entry.toolSnapshots = markRunningToolSnapshotsAbortedInList(
-              entry.toolSnapshots,
-            );
           });
           setConversationStreaming(convId, false);
           setConversationPendingSend(convId, false);
@@ -1789,11 +1382,9 @@ const scheduleProjection = useCallback(() => {
       applyConversationEvent(convId, (entry) => {
         entry.assistantMessageId = null;
         entry.messages = markRunningMessagesAbortedInList(entry.messages);
-        entry.toolSnapshots = markRunningToolSnapshotsAbortedInList(entry.toolSnapshots);
       });
     } else {
       setMessages((prev) => markRunningMessagesAbortedInList(prev));
-      setToolSnapshots((prev) => markRunningToolSnapshotsAbortedInList(prev));
       assistantMessageIdRef.current = null;
     }
     if (convId) {
@@ -2017,7 +1608,6 @@ const scheduleProjection = useCallback(() => {
             entry.messages = next;
           }
         }
-        entry.toolSnapshots = completeToolSnapshotByDelegateCallId(entry.toolSnapshots, data);
         // P1 防重复：处理完成后记录 callId，防止后续重复处理
         entry.completedToolCallIds.add(data.callId);
       });
@@ -2043,21 +1633,6 @@ const scheduleProjection = useCallback(() => {
           }
         }
         entry.messages = nextMsgs;
-        // ★ S3（M4）兜底语义收窄：running 快照按 isError 收口（对齐 ai_fr :1910 收口语义）
-        //   isError=true → 'failed'，否则 → 'completed'——仍兜底防 IPC 事件丢失或 hung 永久 running
-        const nextSnaps = { ...entry.toolSnapshots };
-        const finishedAt = new Date().toISOString();
-        for (const [taskId, snapshot] of Object.entries(nextSnaps)) {
-          if (snapshot.conversationId === data.conversationId && snapshot.status === 'running') {
-            nextSnaps[taskId] = {
-              ...snapshot,
-              status: snapshot.isError ? 'failed' : 'completed',
-              finishedAt,
-              updatedAt: finishedAt,
-            };
-          }
-        }
-        entry.toolSnapshots = nextSnaps;
       });
 
       // ★ per-conversation 状态清理（不受活跃对话过滤影响）
@@ -2191,38 +1766,6 @@ const scheduleProjection = useCallback(() => {
     cleanups.push(unsubConversationUpdated);
 
     // ============================================================
-    // v2.1 M13：executor:snapshot 六字段信号 → 轻量快照查询（conv:get-running-snapshots）
-    //   200ms 去抖 + in-flight dirty 补偿 + 非当前对话守卫；只查运行中任务快照，不拉历史 messages
-    // ============================================================
-    if (typeof window.electronAPI.executor.onSnapshot === 'function') {
-      const snapshotQueryState = { dirty: false, timer: null as number | null, inFlight: false };
-      const runSnapshotQuery = () => {
-        snapshotQueryState.inFlight = true;
-        const id = conversationIdRef.current;                 // ★ 每次实时读最新对话 ID
-        if (!id) { snapshotQueryState.inFlight = false; return; }
-        fetchRunningSnapshots(id)                              // ★ 轻量查询：只查运行中任务快照，不拉历史 messages
-          .catch(() => undefined)
-          .finally(() => {
-            snapshotQueryState.inFlight = false;
-            if (snapshotQueryState.dirty) { snapshotQueryState.dirty = false; runSnapshotQuery(); }  // 补偿轮
-          });
-      };
-      const unsubSignal = window.electronAPI.executor.onSnapshot((payload: unknown) => {
-        const data = payload as ExecutorSnapshotPayload;    // 六字段信号（规则②）
-        if (!data?.conversationId) return;
-        if (data.conversationId !== conversationIdRef.current) return;  // ★ 非当前对话不查询（R15/D1③）
-        snapshotQueryState.dirty = true;
-        if (snapshotQueryState.inFlight) return;
-        if (snapshotQueryState.timer !== null) return;
-        snapshotQueryState.timer = window.setTimeout(() => {
-          snapshotQueryState.timer = null;
-          if (snapshotQueryState.dirty) { snapshotQueryState.dirty = false; runSnapshotQuery(); }
-        }, 200);
-      });
-      cleanups.push(unsubSignal, () => { if (snapshotQueryState.timer !== null) window.clearTimeout(snapshotQueryState.timer); });
-    }
-
-    // ============================================================
     // Phase 3 P1-1 适配层：chat:user-message-created
     // 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
     // 收到后将 status='local' 的本地乐观 user 消息替换为服务端真实消息
@@ -2306,26 +1849,12 @@ const scheduleProjection = useCallback(() => {
         if (!data.conversationId) return;
         const toolCallId = data.message.toolCall?.callId;
         applyConversationEvent(data.conversationId, (entry) => {
-          // ★ M10 合并 store 化：读 entry.toolSnapshots[toolCallId]，命中后把 thinking/progress
-          //   并入真实消息并从 entry.toolSnapshots 删除该键；M09 后消息自带 thinking，
-          //   优先级保持 data.message.thinking ?? snapshot.thinking ?? ''（双保险任一可用即不丢）
-          let mergedMessage = data.message;
+          // ★ 新版方案 S6：快照合并段随旧链路摘除——真实 tool 消息直接 upsert；
+          //   运行中虚拟任务卡由 ChatArea existingToolCallIds 去重替换（新链路自然切换）
           if (toolCallId) {
             entry.completedToolCallIds.add(toolCallId);
-            // ★ S4（M6）：字典键已统一为委派 callId，直接按键删除
-            const snapshot = entry.toolSnapshots[toolCallId];
-            if (snapshot) {
-              mergedMessage = {
-                ...data.message,
-                thinking: data.message.thinking ?? snapshot.thinking ?? '',
-                progress: latestToolProgressTextCached(toolCallId, snapshot.lastContent || ''),
-              };
-              const next = { ...entry.toolSnapshots };
-              delete next[toolCallId];
-              entry.toolSnapshots = next;
-            }
           }
-          entry.messages = upsertMessageById(entry.messages, mergedMessage);
+          entry.messages = upsertMessageById(entry.messages, data.message);
         });
       },
     );
@@ -2336,17 +1865,17 @@ const scheduleProjection = useCallback(() => {
     //   （含全中止批次，主进程在全中止 throw 之前发送）→ 按 isError 收口 running 快照
     //   ★ M02 多会话隔离：按 conversationId 路由到运行态存储（非活跃会话事件不再丢弃）
     // ============================================================
+    // ★ 新版方案 S6：tool.batch.completed 快照收口随旧链路摘除（新 hook 经终态信号+拉取对账收口）；
+    //   仅保留批内 callId 防重登记（真实 tool 消息到达前的重复 tool-result 防线）
     const unsubToolBatchCompleted = window.electronAPI.on(
       IPC_CHAT.TOOL_BATCH_COMPLETED,
       (payload: unknown) => {
         const data = payload as ToolBatchCompletedPayload;
         if (!data || !data.conversationId) return;
         applyConversationEvent(data.conversationId, (entry) => {
-          entry.toolSnapshots = markBatchToolSnapshotsSettled(
-            entry.toolSnapshots,
-            data.conversationId,
-            data.toolCallIds,
-          );
+          for (const callId of data.toolCallIds) {
+            entry.completedToolCallIds.add(callId);
+          }
         });
       },
     );
@@ -2370,7 +1899,6 @@ const scheduleProjection = useCallback(() => {
           entry.terminal = true;
           entry.terminalAt = Date.now();
           entry.messages = markRunningMessagesAbortedInList(entry.messages);
-          entry.toolSnapshots = markRunningToolSnapshotsAbortedInList(entry.toolSnapshots);
         });
 
         if (data.conversationId === conversationIdRef.current) {
@@ -2532,20 +2060,6 @@ const scheduleProjection = useCallback(() => {
     };
   }, [loadConversationMessages, loadConversations]);
 
-  // ============================================================
-  // v2.1 M14：10s 兜底轻量快照查询（D4 无条件；裁决④逐字——
-  //   相当于再查一次当前快照，若有则更新，没有或空快照就不管（不拉历史））
-  // ============================================================
-  useEffect(() => {
-    const SNAPSHOT_POLL_INTERVAL_MS = 10_000;
-    const timer = window.setInterval(() => {
-      const id = conversationIdRef.current;        // ★ 每次触发实时读最新对话 ID（切对话后查新不查旧）
-      if (!id) return;                              // 无当前对话：不做任何处理
-      fetchRunningSnapshots(id).catch(() => undefined);  // ★ 仅再查一次当前对话运行中任务快照
-    }, SNAPSHOT_POLL_INTERVAL_MS);
-    return () => window.clearInterval(timer);
-  }, [fetchRunningSnapshots]);
-
   // ★ P1-C2：组件卸载时清理 200ms 节流定时器，避免内存泄漏
   useEffect(() => {
     return () => {
@@ -2589,8 +2103,6 @@ const scheduleProjection = useCallback(() => {
     /** 方向3：重命名 / 标签管理（乐观更新 + conv:rename / conv:tag-* IPC） */
     renameConversation,
     removeConversationTag,
-    /** Phase 3 P0-3：子智能体执行中间快照，按 taskId 索引 */
-    toolSnapshots,
     /** Phase 3 P1 + P3：守卫 + 状态相关 */
     /** P3-1 守卫 2：是否在等待对话发送结果 */
     /** P3-1 守卫 3 helper：当前活跃会话是否在发送中 */

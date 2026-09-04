@@ -46,7 +46,7 @@ export const IPC_CHAT = {
   /**
    * 对话被中止事件（主→渲染）
    * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
-   * 用于 markRunningMessagesAborted + markRunningToolSnapshotsAborted 归一化
+   * 用于 markRunningMessagesAborted 归一化（任务记录显示态由 executor:* 新链路独立承载）
    */
   ABORTED: 'chat:aborted',
   /** 批次完成事件（主→渲染），对齐 ai_fr tool.batch.completed */
@@ -87,18 +87,24 @@ export const IPC_CONV = {
   RENAME: 'conv:rename',
   /** 移除对话标签（渲染→主，invoke） */
   TAG_REMOVE: 'conv:tag-remove',
-  /** 轻量快照查询（渲染→主，invoke）：仅返回该对话正在运行的任务快照（三元组），不读 messages 表、不返回历史消息 */
-  GET_RUNNING_SNAPSHOTS: 'conv:get-running-snapshots',
 } as const;
 
 // --- 执行子智能体 IPC 通道 ---
 export const IPC_EXECUTOR = {
   /**
-   * 子智能体执行中间快照推送（主→渲染）
-   * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
-   * 用于 buildConversationDisplayState 恢复 in-flight 任务
+   * 执行子智能体任务记录渲染信号（主→渲染，新版方案 §5.2-A）
+   * 由 executor-task-record-store 内建 200ms leading+trailing 节流发射（终态立即冲刷）；
+   * 极小载荷（conversationId/delegateCallId/taskId/latestSeq/status/updatedAt，<200B），
+   * 不携带过程内容——渲染端收到信号后按 latestSeq 主动增量拉取 GET_TASK_RECORD。
    */
-  SNAPSHOT: 'executor:snapshot',
+  RECORD_SIGNAL: 'executor:record-signal',
+  /**
+   * 执行子智能体任务记录增量查询（渲染→主，invoke，新版方案 §5.2-B）
+   * 请求 { conversationId, delegateCallId, sinceSeq? }（缺省/0=全量）；
+   * 返回 ExecutorTaskRecordQueryResult（seq>sinceSeq 条目 ∪ running 草稿恒返 + reset 兜底）。
+   * 无 isRunning 门禁（终态记录在轮末清理前均可查，供完成后回看）。
+   */
+  GET_TASK_RECORD: 'executor:get-task-record',
 } as const;
 
 // --- 本地文件相关 IPC 通道 ---

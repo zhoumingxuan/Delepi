@@ -22,14 +22,12 @@ import {
 } from '@ant-design/icons';
 import { ChatMessageContent } from './ChatMessageContent';
 import type { ToolSummary } from './ChatMessageContent';
-import type { ChatMessage, ToolSnapshot } from '../hooks/useChat';
-// ★ P04: latestToolProgressText 改用增量缓存版（cacheKey=`snap-${taskId}` 级），输出与全量版逐字一致
-import { latestToolProgressTextCached } from '../lib/executor-thinking';
+import type { ChatMessage } from '../hooks/useChat';
 
 // ============================================================
-// ★ 修复主/子智能体消息混淆：toolSnapshots → 虚拟 ChatMessage 转换 + 时间线合并
-// 对位 ai_fr chat-shell.tsx L504-539 mergeToolSnapshotsIntoTimeline 语义
-// 独立设计：使用 Delepi 自身的 ChatMessage / ToolSnapshot 类型，不硬搬参考实现
+// ★ 新版方案 §7.7：executor 任务记录虚拟消息时间线合并（数据源切换为 useExecutorTaskRecords）
+// 合并算法（existingToolCallIds 去重 + time→seq→id 三级稳定排序）原样保留；
+// 虚拟消息构造职责移至 lib/executor-record-messages（buildExecutorTaskMessages）
 // ============================================================
 
 /**
@@ -44,109 +42,22 @@ function parseTimelineTime(value: string | undefined | null): number {
   return Number.isFinite(ts) ? ts : Number.POSITIVE_INFINITY;
 }
 
-function mapToolSnapshotMessageStatus(
-  status: ToolSnapshot['status'],
-): ChatMessage['status'] {
-  if (status === 'running') return 'loading';
-  if (status === 'failed') return 'error';
-  return 'success';
-}
-
-function getToolSnapshotStartedAt(snapshot: ToolSnapshot): string {
-  const firstStartedAt = snapshot.toolCalls?.find((item) => item.startedAt)?.startedAt;
-  return snapshot.createdAt ?? firstStartedAt ?? snapshot.updatedAt;
-}
-
-function getToolSnapshotFinishedAt(snapshot: ToolSnapshot): string | undefined {
-  if (snapshot.status === 'running') return undefined;
-  return snapshot.finishedAt ?? snapshot.updatedAt;
-}
-
 /**
- * 把 toolSnapshots 转虚拟 ChatMessage（role='tool', source='executor'）
- * - 过滤：仅保留当前 conversationId 的快照（避免跨会话污染）
- * - 虚拟消息 id = `executor-tool-${taskId}`
- * - toolCall.name 优先取委派任务名（ToolSnapshot.name=委派参数 taskname 解析），否则取第一个 toolCall.name
- * - createdAt 使用快照的 updatedAt（用于时间线排序）
- * @param toolSnapshots 按 taskId 索引的快照字典
- * @param conversationId 当前活跃会话 ID
- */
-function toolSnapshotsToChatMessages(
-  toolSnapshots: Record<string, ToolSnapshot>,
-  conversationId: string | null,
-): ChatMessage[] {
-  if (!conversationId) return [];
-  const snapshots = Object.values(toolSnapshots).filter(
-    (s) => s.conversationId === conversationId,
-  );
-  if (snapshots.length === 0) return [];
-  return snapshots.map((s) => {
-    const firstToolCall =
-      s.toolCalls && s.toolCalls.length > 0 ? s.toolCalls[0] : undefined;
-    const lastToolCall =
-      s.toolCalls && s.toolCalls.length > 0 ? s.toolCalls[s.toolCalls.length - 1] : undefined;
-    const detailToolCall = lastToolCall ?? firstToolCall;   // M16：展示字段取值源（末项=最新一条）
-    const status = mapToolSnapshotMessageStatus(s.status);
-    const startedAt = getToolSnapshotStartedAt(s);
-    const finishedAt = getToolSnapshotFinishedAt(s);
-    const result = s.result || s.lastContent || lastToolCall?.result || firstToolCall?.result || '';
-    const callId = s.callId || firstToolCall?.callId || s.taskId;
-    const name = s.name || firstToolCall?.name || '子智能体任务';
-
-    return {
-      id: `executor-tool-${s.taskId}`,
-      role: 'tool' as const,
-      content: result,
-      // ★ 项6：虚拟消息附带完整思考链（来源 ToolSnapshot.thinking），供完成态 Think 渲染
-      thinking: s.thinking || '',
-      progress: latestToolProgressTextCached(`snap-${s.taskId}`, s.lastContent || ''),
-      toolCall: {
-        ...(firstToolCall ?? {}),
-        callId,
-        name,
-        arguments: firstToolCall?.arguments ?? '',
-        result: detailToolCall?.result ?? result,
-        status:
-          detailToolCall?.status ??
-          (status === 'loading'
-            ? 'loading'
-            : status === 'error'
-              ? 'error'
-              : 'success'),
-        startedAt: startedAt ?? detailToolCall?.startedAt,
-        finishedAt: detailToolCall?.finishedAt ?? finishedAt,
-        isError: s.status === 'failed' || detailToolCall?.isError,
-      },
-      status,
-      createdAt: startedAt,
-      source: 'executor' as const,
-      /**
-       * ★ 修复主/子智能体消息混淆：source='executor' 显式标识
-       * 旧数据无 source 字段默认 'main'（ChatMessage 接口 source 可选）
-       * 由 ChatMessageContent 根据 source 字段分支处理
-       */
-    };
-  });
-}
-
-/**
- * 把 toolSnapshots 合并到 messages 时间线
- * 对位 ai_fr chat-shell.tsx L504-539 mergeToolSnapshotsIntoTimeline
- * 独立设计：使用 Delepi ChatMessage / ToolSnapshot 类型，不硬搬参考实现
- * 算法：
- * 1. 把 toolSnapshots 转虚拟 ChatMessage（toolSnapshotsToChatMessages）
- * 2. 虚拟消息按 createdAt 排序（时间相同按 id 字典序）
+ * 把虚拟消息（executor 任务记录）合并到 messages 时间线（新版方案 §7.7 泛化）
+ * 算法原样保留（对位 ai_fr chat-shell.tsx L504-539 语义）：
+ * 1. existingToolCallIds 去重：真实 tool 消息已存在的 callId 虚拟消息让位
+ *    （真实 tool.message.created 到达后，运行中任务卡自然切换为既有 Result 渲染）
+ * 2. 虚拟消息按 createdAt 排序（time → seq → id 三级稳定排序）
  * 3. 遍历 messages，按时间戳把虚拟消息插入到合适位置
  * 4. 末尾追加剩余虚拟消息
  * @param messages 主消息流（按 createdAt 自然顺序）
- * @param toolSnapshots 子智能体执行中间快照（按 taskId 索引）
- * @param conversationId 当前活跃会话 ID
+ * @param virtualMessages 虚拟消息（useExecutorTaskRecords → buildExecutorTaskMessages 产物，
+ *                        调用方已按当前会话过滤）
  * @returns 合并后的消息流（时间线）
  */
-export function mergeToolSnapshotsIntoTimeline(
+export function mergeVirtualMessagesIntoTimeline(
   messages: ChatMessage[],
-  toolSnapshots: Record<string, ToolSnapshot>,
-  conversationId: string | null,
+  virtualMessages: ChatMessage[],
 ): ChatMessage[] {
   const existingToolCallIds = new Set(
     messages
@@ -154,7 +65,7 @@ export function mergeToolSnapshotsIntoTimeline(
       .map((message) => message.toolCall?.callId)
       .filter((callId): callId is string => Boolean(callId)),
   );
-  const snapshotMessages = toolSnapshotsToChatMessages(toolSnapshots, conversationId)
+  const snapshotMessages = virtualMessages
     .filter((message) => {
       const callId = message.toolCall?.callId;
       return !callId || !existingToolCallIds.has(callId);
@@ -201,14 +112,23 @@ export function mergeToolSnapshotsIntoTimeline(
 interface ChatAreaProps {
   messages: ChatMessage[];
   /**
-   * ★ 修复主/子智能体消息混淆：子智能体执行中间快照（按 taskId 索引）
-   * ChatArea 内部将其转换为独立虚拟 tool 消息（role='tool', source='executor'）
-   * 并按时间戳合并到 messages 时间线
+   * ★ 新版方案 §7.7：executor 任务记录虚拟消息（useExecutorTaskRecords →
+   * buildExecutorTaskMessages 产物，已按当前会话过滤），按时间戳合并到 messages 时间线；
+   * 真实 tool 消息到达后由 existingToolCallIds 去重替换
    */
-  toolSnapshots?: Record<string, ToolSnapshot>;
+  executorTaskMessages?: ChatMessage[];
+  /**
+   * ★ 新版方案 §7.7：executor 任务卡面板上下文透传（onOpenPanel 打开右栏 +
+   * activeDelegateCallId 判定按钮激活态）；不传时 ChatMessageContent 内任务卡按钮
+   * 仍可复制路径调用（无面板联动）
+   */
+  executorPanel?: {
+    onOpenPanel: (delegateCallId: string) => void;
+    activeDelegateCallId: string | null;
+  };
   /**
    * ★ 修复主/子智能体消息混淆：当前活跃会话 ID
-   * 用于过滤 toolSnapshots（避免跨会话污染）
+   * 用于过滤虚拟消息（避免跨会话污染）
    */
   conversationId?: string | null;
   messageListRef?: React.RefObject<HTMLDivElement | null>;
@@ -236,7 +156,8 @@ interface ChatAreaProps {
 
 export const ChatArea = memo(function ChatArea({
   messages,
-  toolSnapshots,
+  executorTaskMessages,
+  executorPanel,
   conversationId,
   messageListRef,
   stickToBottomRef,
@@ -274,12 +195,11 @@ export const ChatArea = memo(function ChatArea({
    */
   const mergedMessages = useMemo(
     () =>
-      mergeToolSnapshotsIntoTimeline(
+      mergeVirtualMessagesIntoTimeline(
         messages,
-        toolSnapshots ?? {},
-        conversationId ?? null,
+        executorTaskMessages ?? [],
       ),
-    [messages, toolSnapshots, conversationId],
+    [messages, executorTaskMessages],
   );
 
   /** P3-3 核心判定函数（对位 ai_fr updateScrollBottomState）
@@ -407,6 +327,7 @@ export const ChatArea = memo(function ChatArea({
             message={info.extraInfo?.message as ChatMessage}
             toolSummaries={toolSummaries}
             conversationId={conversationId ?? null}
+            executorPanel={executorPanel}
           />
         ),
       },
@@ -444,6 +365,7 @@ export const ChatArea = memo(function ChatArea({
             message={info.extraInfo?.message as ChatMessage}
             toolSummaries={toolSummaries}
             conversationId={conversationId ?? null}
+            executorPanel={executorPanel}
           />
         ),
       },
@@ -474,14 +396,14 @@ export const ChatArea = memo(function ChatArea({
             message={info.extraInfo?.message as ChatMessage}
             toolSummaries={toolSummaries}
             conversationId={conversationId ?? null}
+            executorPanel={executorPanel}
           />
         ),
       },
     }),
-    // ★ P03 roleConfig 依赖收敛：useMemo 体内仅引用 toolSummaries/conversationId/renderUserMessageFooter，
-    //   toolSnapshots 属多余依赖（其变化触发全部气泡外壳重渲=根因R3）；toolSnapshots 仍经 props 参与
-    //   mergedMessages（L266-274 投影链零改动），仅不再无谓重建 roleConfig
-    [toolSummaries, conversationId, renderUserMessageFooter],
+    // ★ P03 roleConfig 依赖收敛：useMemo 体内仅引用 toolSummaries/conversationId/renderUserMessageFooter/executorPanel；
+    //   虚拟消息仍经 props 参与 mergedMessages（投影链零改动），仅不再无谓重建 roleConfig
+    [toolSummaries, conversationId, renderUserMessageFooter, executorPanel],
   );
 
   // ★ 对齐参考项目 E:\ai_fr\components\chat-shell.tsx L2684-2738

@@ -38,6 +38,12 @@ import type { AssistantMessageSegment } from '../lib/message-filter';
 import { latestToolProgressTextCached, splitLoadingToolContentCached } from '../lib/executor-thinking';
 import { isEmptyAssistantBubble } from '../lib/message-filter';
 import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
+// ★ 新版方案 §7.7：executor 任务虚拟消息徽标分发（任务卡=最新一行思考+图标按钮）；
+//   EXECUTOR_RECORD_PANEL_ENABLED 纯显示开关（useExecutorTaskRecords 顶部，默认 true）——
+//   置 false 即短路回既有渲染（单点回滚）
+import { EXECUTOR_RECORD_PANEL_ENABLED } from '../hooks/useExecutorTaskRecords';
+import { ExecutorTaskCard } from './ExecutorTaskCard';
+import type { ExecutorTaskChatMessage } from '../lib/executor-record-messages';
 
 /**
  * 工具摘要（用于把 toolCall.name 解析为 displayName）
@@ -371,9 +377,10 @@ function renderToolResultSegment(
         includeStructuredFilePreview: options?.includeStructuredFilePreview,
       });
   const renderedContent = loading ? (
-    // ★ 缺陷②修复：接通 options.progressText（=message.progress，来自 ChatArea.tsx
-    //   toolSnapshotsToChatMessages 的快照级进度文本）作为'工具调用'块内容——运行中可见且
-    //   内容可追溯快照数据；完成分支不受影响（loading=false 不进本调用，仅渲染 Result，M17 零回归）
+    // ★ 缺陷②修复：接通 options.progressText（=message.progress，消息级进度文本）
+    //   作为'工具调用'块内容——运行中可见且内容可追溯；完成分支不受影响
+    //   （loading=false 不进本调用，仅渲染 Result，M17 零回归）；
+    //   新版方案：executor 任务卡已由徽标分支短路（ExecutorTaskCard），本路径仅服务主智能体链路
     renderLoadingToolContent(content, thinkingText, toolCall.callId, options?.progressText)
   ) : (
     // ★ M17（D3 两态覆盖历史）：完成分支仅渲染 Result（RichMarkdown）；思考块/工具调用块移除
@@ -573,6 +580,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
   message,
   toolSummaries,
   conversationId,
+  executorPanel,
 }: {
   message: ChatMessage;
   /**
@@ -586,6 +594,14 @@ export const ChatMessageContent = memo(function ChatMessageContent({
    * 来自 ChatArea 传入,缺失时降级：仅使用已有 previewUrl/storageKey fallback
    */
   conversationId?: string | null;
+  /**
+   * ★ 新版方案 §7.7：executor 任务卡面板上下文（onOpenPanel 打开右栏 + activeDelegateCallId
+   * 判定按钮激活态）；不传时任务卡按钮仍可复制路径调用（无面板联动，保持 props 兼容）
+   */
+  executorPanel?: {
+    onOpenPanel: (delegateCallId: string) => void;
+    activeDelegateCallId: string | null;
+  };
 }) {
   // ★ P6 异步获取图片 attachment 的 blob URL
   //   历史消息的图片 attachment 没有 previewUrl 字段,需要从主进程 readFile 后 URL.createObjectURL
@@ -728,6 +744,22 @@ export const ChatMessageContent = memo(function ChatMessageContent({
 
   // 工具消息
   if (message.role === 'tool') {
+    // ★ 新版方案 §7.7：executor 任务虚拟消息徽标分发（运行中任务卡=最新一行思考+图标按钮，
+    //   不显示思考折叠块/工具调用块；既有 renderToolResultSegment/ToolCallCard 兜底路径不动）
+    const executorTaskBadge = (message as ExecutorTaskChatMessage).executorTask;
+    if (executorTaskBadge && EXECUTOR_RECORD_PANEL_ENABLED) {
+      return (
+        <ExecutorTaskCard
+          badge={executorTaskBadge}
+          onOpenPanel={executorPanel?.onOpenPanel ?? (() => undefined)}
+          panelActive={
+            executorPanel
+              ? executorPanel.activeDelegateCallId === executorTaskBadge.delegateCallId
+              : false
+          }
+        />
+      );
+    }
     const toolInfo = message.toolCall;
     if (!toolInfo) {
       return null;

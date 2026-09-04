@@ -36,7 +36,8 @@ import type { AppSettings } from '../types/config';
 import type { ConfigGetResult, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { eventBus } from '../modules/event-bus/event-bus';
 import { getRunningAssistantMessage } from '../modules/main-agent/running-assistant-message-map';
-import { clearSnapshotSession, getRunningSnapshotEntries } from '../modules/main-agent/snapshot-session-map';
+import { queryExecutorTaskRecord, clearExecutorTaskRecords } from '../modules/executor-agent/executor-task-record-store';
+import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../constants/events';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
 import { refreshMainTools } from '../modules/main-agent/prompt';
 import {
@@ -621,12 +622,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }));
 
-  eventBusCleanups.push(eventBus.on('executor:snapshot', (data) => {
+  // ★ 新版方案 §5.2-A4：executor:record-signal 白名单转发（主→渲染，极小信号）；
+  //   守卫模式与上方既有转发一致（isDestroyed + conversationId 存在性 + send 容错）
+  eventBusCleanups.push(eventBus.on(EXECUTOR_RECORD_SIGNAL_EVENT, (data) => {
+    if (!data?.conversationId) {
+      return;
+    }
     if (mainWindow.isDestroyed()) {
       return;
     }
     try {
-      mainWindow.webContents.send(IPC_EXECUTOR.SNAPSHOT, data);
+      mainWindow.webContents.send(IPC_EXECUTOR.RECORD_SIGNAL, data);
     } catch {
       // renderer frame 已销毁时 send 会抛错，静默吞掉
     }
@@ -1005,8 +1011,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     //   - 先删 SQLite 记录(deleteConversationRecord)
     //   - 再删磁盘文件(removeConversationUploadDir + removeConversationOutputFiles)
     deleteConversationRecord(id);
-    // 快照内存 session 随会话删除同步清理（文件侧随会话目录整体删除）
-    clearSnapshotSession(id);
+    // ★ 新版方案 §5.2：任务记录会话随会话删除同步清理（幂等；文件侧随会话目录整体删除）
+    clearExecutorTaskRecords(id);
     if (lastActiveConversationId === id) {
       lastActiveConversationId = null;
     }
@@ -1099,16 +1105,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   /**
-   * conv:get-running-snapshots — 轻量快照查询（11:41:49 裁决①）
-   * 返回该对话当前内存中的任务快照条目（未随 clearSnapshotSession 清理前均外流）；
-   * 不读 messages 表、不返回历史消息、不去重读库。
-   * is_running=false 时返回空数组（门禁语义与 conv:get-messages 一致，纯内存判断）。
+   * executor:get-task-record — 任务记录增量查询（新版方案 §5.2-B3；渲染→主，invoke）
+   * 无 isRunning 门禁：终态记录在轮末清理前均可查（完成后回看窗口）。
+   * 增量规则：seq > sinceSeq 条目 ∪ 当前 running 思考草稿（恒返最新全文）；
+   * 服务端 latestSeq < sinceSeq → reset=true（前端整体重置）。
    */
-  ipcMain.handle(IPC_CONV.GET_RUNNING_SNAPSHOTS, (_event, conversationId: string) => {
-    const conversation = getConversationById(conversationId);
-    if (!conversation?.isRunning) return [];
-    return getRunningSnapshotEntries(conversationId);
-  });
+  ipcMain.handle(
+    IPC_EXECUTOR.GET_TASK_RECORD,
+    (_event, params: import('../types/ipc').ExecutorTaskRecordQueryParams) =>
+      queryExecutorTaskRecord(params),
+  );
 
   // ================================================================
   // 本地文件处理器

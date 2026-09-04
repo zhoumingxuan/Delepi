@@ -28,9 +28,11 @@ export const EXECUTOR_WORKER_SKILLS_DIR = path.join(
   'skills',
 );
 
-/** 执行子智能体经验库根目录（生产：打包 resources/script-tools；开发：项目根 script-tools；同款三元式仿 EXECUTOR_WORKER_SKILLS_DIR） */
+/** 执行子智能体经验库根目录（生产/开发统一：app.getPath('userData')/script-tools；
+ * userData 不被卸载器删除（重装不覆盖治本；旧载体由 index.ts 启动期一次性迁移到本新位置，
+ * 迁移只增不删、源保留）；EXECUTOR_WORKER_SKILLS_DIR 仍为随包分发只读内容保持不变 */
 export const SCRIPTS_TOOLS_DIR = path.join(
-  app.isPackaged ? process.resourcesPath : process.cwd(),
+  app.getPath('userData'),
   SCRIPTS_TOOLS_DIR_NAME,
 );
 

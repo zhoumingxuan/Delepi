@@ -170,3 +170,20 @@ export interface FileCleanupOrphansResult {
   scannedCount: number;
   removedCount: number;
 }
+
+// ============================================================
+// 执行子智能体任务记录增量查询（新版方案 §5.2-B2）
+// ============================================================
+
+/**
+ * executor:get-task-record 请求参数（渲染→主，invoke）
+ * 返回类型 ExecutorTaskRecordQueryResult 定义于 @shared/types/executor-record
+ * （跨进程以结构化 JSON 传输，主进程 store 与渲染进程 hook 共同 import）
+ */
+export interface ExecutorTaskRecordQueryParams {
+  conversationId: string;
+  /** 委派工具调用 id（= 主智能体 delegate_executor toolCall.id，前端寻址主键） */
+  delegateCallId: string;
+  /** 增量基准（缺省/0 = 全量）；服务端 latestSeq < sinceSeq 时响应 reset=true */
+  sinceSeq?: number;
+}

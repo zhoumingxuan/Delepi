@@ -8,6 +8,7 @@
  */
 
 import { EventEmitter } from 'events';
+import type { ExecutorTaskRecordSignal } from '@shared/types/executor-record';
 import {
   ASSISTANT_MESSAGE_DONE_EVENT,
   ASSISTANT_MESSAGE_STARTED_EVENT,
@@ -147,29 +148,18 @@ export interface MainAgentEvents {
 }
 
 /**
- * ★ Phase 3 P3-8 ExecutorAgent 事件(走 IPC 白名单推送)
- * v2.1 D2：executor:thinking / executor:tool-progress 两数据通道已完全停用删除，
- * 仅保留 executor:snapshot 六字段信号通道（M1 白名单收敛，规则②）：
- * 前端收到信号后触发轻量快照查询 conv:get-running-snapshots 获取运行中任务明细。
+ * ★ ExecutorAgent 事件（走 IPC 白名单推送）
+ * v2.1 D2：executor:thinking / executor:tool-progress 两数据通道维持停用（不复活）；
+ * 新版方案：仅保留 executor:record-signal 渲染信号通道（信号与内容彻底解耦，
+ * 前端收到信号后主动增量拉取 executor:get-task-record 获取任务记录明细）。
  */
 export interface ExecutorAgentEvents {
   /**
-   * ★ Phase 3 P3-8 executor:snapshot 事件（v2.1 M1：收敛为六字段信号白名单——规则②）
-   * 纯信号载荷（main-agent.ts emitSnapshotSignal 唯一出口构造）：前端收到后触发轻量查询
-   * conv:get-running-snapshots 获取运行中任务快照明细（信号本身不携带任何过程数据）。
+   * ★ 新版方案 §3.3：executor:record-signal 渲染信号（极小载荷，<200B）
+   * 由 executor-task-record-store 内建 200ms 节流发射；信号只携带对账基准（latestSeq 单调不减），
+   * 不携带任何过程内容——内容一律由渲染端按信号主动拉取 executor:get-task-record（拉取为准，丢信号不丢内容）。
    */
-  'executor:snapshot': {
-    conversationId: string;
-    taskId: string;
-    /** 委派工具调用的 callId */
-    callId?: string;
-    status: 'running' | 'completed' | 'failed';
-    /**
-     * ★ Phase 3 P3-8 messageId ↔ taskId 关联键
-     */
-    messageId?: string;
-    updatedAt?: string;
-  };
+  'executor:record-signal': ExecutorTaskRecordSignal;
 }
 
 /** 所有事件类型联合 */

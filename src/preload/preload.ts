@@ -1,8 +1,8 @@
 /**
  * Preload 脚本 - contextBridge 安全暴露 API
  *
- * Phase 3 P0 适配层：
- * - electronAPI.executor.onSnapshot(callback)：订阅子智能体六字段信号（已由主进程推送，v2.1 M1/D2 收敛）
+ * 新版方案：electronAPI.executor.onRecordSignal(callback) / getTaskRecord(params) ——
+ * 订阅任务记录渲染信号（executor:record-signal）+ 增量查询（executor:get-task-record）
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
@@ -19,8 +19,6 @@ const electronAPI = {
     create: () => ipcRenderer.invoke(IPC_CONV.CREATE),
     delete: (id: string) => ipcRenderer.invoke(IPC_CONV.DELETE, id),
     getMessages: (id: string) => ipcRenderer.invoke(IPC_CONV.GET_MESSAGES, id),
-    /** 轻量快照查询：仅返回该对话正在运行的任务快照（三元组数组：toolCallId/message/toolCalls），不拉历史 messages */
-    getRunningSnapshots: (id: string) => ipcRenderer.invoke(IPC_CONV.GET_RUNNING_SNAPSHOTS, id),
     /**
      * v2恢复方案：获取上次活跃的对话ID
      * 主进程内存维护，重启后返回 null → 场景C退化
@@ -105,19 +103,30 @@ const electronAPI = {
   },
   executor: {
     /**
-     * 订阅子智能体执行中间快照事件（Phase 3 P0-3 适配层）
-     * 主进程已通过 executor:snapshot 通道推送真实快照数据（main-agent.ts sendToolSnapshot 唯一出口），前端按 callId 键 upsert 到 toolSnapshots
-     * @param listener 回调函数，参数为 IPC 推送载荷
+     * 订阅任务记录渲染信号（新版方案 §5.2-A5；主→渲染，极小载荷 <200B）
+     * 载荷 ExecutorTaskRecordSignal：{ conversationId, delegateCallId, taskId, latestSeq, status, updatedAt }
+     * 信号不携带过程内容——收到后按 latestSeq 增量拉取 getTaskRecord
+     * @param listener 回调函数，参数为信号载荷
      * @returns 取消监听的函数
      */
-    onSnapshot: (listener: (payload: unknown) => void) => {
+    onRecordSignal: (listener: (payload: unknown) => void) => {
       const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) =>
         listener(args[0]);
-      ipcRenderer.on(IPC_EXECUTOR.SNAPSHOT, handler);
+      ipcRenderer.on(IPC_EXECUTOR.RECORD_SIGNAL, handler);
       return () => {
-        ipcRenderer.removeListener(IPC_EXECUTOR.SNAPSHOT, handler);
+        ipcRenderer.removeListener(IPC_EXECUTOR.RECORD_SIGNAL, handler);
       };
     },
+    /**
+     * 任务记录增量查询（新版方案 §5.2-B4；渲染→主，invoke）
+     * @param params { conversationId, delegateCallId, sinceSeq? }（缺省/0=全量）
+     * @returns ExecutorTaskRecordQueryResult（found/taskName/status/latestSeq/entries/reset?）
+     */
+    getTaskRecord: (params: {
+      conversationId: string;
+      delegateCallId: string;
+      sinceSeq?: number;
+    }) => ipcRenderer.invoke(IPC_EXECUTOR.GET_TASK_RECORD, params),
   },
   python: {
     download: () => ipcRenderer.invoke(IPC_PYTHON.DOWNLOAD),

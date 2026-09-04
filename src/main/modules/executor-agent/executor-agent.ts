@@ -103,6 +103,7 @@ import {
   type ExecutorExecutionLog,
   type ExecutorExecutionLogToolCall,
 } from './executor-execution-log';
+import type { ExecutorTaskRecordSession } from './executor-task-record-store';
 /** 委派任务中携带的上传文件 */
 export interface DelegatedUploadedFile {
   name: string;
@@ -1162,6 +1163,18 @@ export type RunDelegatedTaskOptions = {
    */
   onStreamRetry?: () => void;
   /**
+   * ★ 新版方案 §7.1-1：任务记录会话（双视图宿主）。
+   * 存在时：runtimeMessages 初始化领养 recordSession.modelMessages（同一数组引用，
+   * 真实内容视图与给大模型的上下文共享；executor 循环全部 push 作用在该数组上）。
+   */
+  recordSession?: ExecutorTaskRecordSession;
+  /**
+   * ★ 新版方案 §7.1-3：轮收口回调（每轮 completeExecutorTurn 返回后触发，单点覆盖工具轮/最终输出轮/修复轮）。
+   * 思考来源=executor 任务级 reasoning（extractAssistantReasoning 权威全文），
+   * 与主智能体思考链（chat:thinking）零交集。
+   */
+  onTurnEnd?: (info: { reasoning: string; hasToolCalls: boolean }) => void;
+  /**
    * 注意：onThinking / onToolCall / onToolResult 三回调均会触发
    * persistExecutorIntermediate（见 main-agent.ts）。
    * type 字段约定：
@@ -1325,7 +1338,7 @@ export async function runDelegatedTask(
     finalOutputDir: options.finalOutputDir,
     runDir: toolContext.runDir,
   });
-  const runtimeMessages: RuntimeMessage[] = [
+  const initialMessages: RuntimeMessage[] = [
     {
       role: 'system',
       content: buildExecutorSystemPrompt({
@@ -1345,6 +1358,12 @@ export async function runDelegatedTask(
         : plainExecutorPrompt,
     },
   ];
+  // ★ 新版方案 §7.1-2 领养语义：recordSession 存在时初始消息写入 session.modelMessages
+  //   并领养该数组引用（真实内容视图与模型上下文同引用共享，零拷贝零漂移）；
+  //   无 session 时回退局部数组（签名向后兼容）
+  const runtimeMessages = options.recordSession
+    ? options.recordSession.adoptMessages(initialMessages)
+    : initialMessages;
 
   let finalOutput = '';
   let finalOutputParseError: string | null = null;
@@ -1379,6 +1398,10 @@ export async function runDelegatedTask(
       typeof assistantMessage.content === 'string'
         ? assistantMessage.content.trim()
         : '';
+
+    // ★ 新版方案 §7.1-3 轮收口回调：reasoning=executor 任务级思考权威全文（轮界 seal 数据源），
+    //   工具轮/最终输出轮/修复轮三路径均经此点
+    options.onTurnEnd?.({ reasoning: thinking, hasToolCalls: toolCalls.length > 0 });
 
     // 无工具调用 → 解析最终输出
     if (toolCalls.length === 0) {

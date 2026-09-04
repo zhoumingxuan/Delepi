@@ -37,6 +37,14 @@ export const USER_MESSAGE_CREATED_EVENT = 'user.message.created';
 export const TOOL_BATCH_COMPLETED_EVENT = 'tool.batch.completed';
 
 // ============================================================
+// 执行子智能体任务记录渲染信号（新版方案 §5.2-A2）
+// 由 executor-task-record-store 内建 200ms leading+trailing 节流发射，
+// ipc-handlers 白名单转发 IPC_EXECUTOR.RECORD_SIGNAL 给渲染进程（信号不携带过程内容）。
+// ============================================================
+
+export const EXECUTOR_RECORD_SIGNAL_EVENT = 'executor:record-signal';
+
+// ============================================================
 // 错误类型
 // ============================================================
 
