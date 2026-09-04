@@ -30,3 +30,4 @@ win:
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
+  include: installer.nsh

@@ -10,7 +10,7 @@ release-linux/
 .smoke-compiled/
 /conversations/
 /bin/
-/resources/*
+/resources/python/*
 scripts/cache/
 scripts/.build/
 

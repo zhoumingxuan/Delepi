@@ -1,6 +1,6 @@
 {
   "name": "delepi",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Delepi - 智能协作、准确交付",
   "author": "start at zhoumingxuan 657427356@qq.com",
   "main": "dist/main/index.js",
