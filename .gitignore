@@ -11,6 +11,9 @@ release-linux/
 /conversations/
 /bin/
 /resources/python/*
+/resources/python-win10/*
+/resources/python-mac/*
+/resources/python-linux/*
 scripts/cache/
 scripts/.build/
 

@@ -42,7 +42,7 @@ const OUTPUT_DIR = path.join(__dirname, '..', 'resources', 'python', `python-${P
 const PRESET_MARKER_FILE = '.beez-preset';
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
-const EXEC_TIMEOUT_MS = 600_000;
+const EXEC_TIMEOUT_MS = 1800_000;  // 2026-09-04 fix: 预装依赖大包下载在慢速源下超过 600s 会被杀；换源后仍留充足余量
 
 // ================================================================
 // 构建变体（Win10 差异化打包，2026-08-22 新增；mac/Linux 差异化打包，2026-08-22 新增）
@@ -590,7 +590,7 @@ async function main() {
   // pip 默认构建隔离注入 sitecustomize 失效，需关闭隔离并由宿主 site-packages 提供 setuptools.build_meta
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', 'https://mirrors.aliyun.com/pypi/simple/', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', 'https://mirrors.cloud.tencent.com/pypi/simple/', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
     buildPythonDir,
   );
   const pkgSpecs: string[] = [];
@@ -599,7 +599,7 @@ async function main() {
   }
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '--no-build-isolation', '-i', 'https://mirrors.aliyun.com/pypi/simple/', ...pkgSpecs, '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '--no-build-isolation', '-i', 'https://mirrors.cloud.tencent.com/pypi/simple/', ...pkgSpecs, '--target', sitePackagesDir],
     buildPythonDir,
   );
   log(`预装依赖安装完成: ${pkgSpecs.length} 个包`);
