@@ -78,13 +78,14 @@ ${options.sessionDirectoryText.trim()}
 \`\`\`
 - a.在【经验工具库主目录】下为每个工具建立独立目录，目录内必须有 main.py 与 protocol.yaml 两个文件。
 - b.**注意:每个工具的适配唯一的【子流程类型】，与其他工具互不耦合；在此前提条件下，工具必须适配【更多、更广泛的场景】，从而形成通用工具的目的**
-- c. protocol.yaml：工具的协议文件；仅允许 8 个字段：name、title、description、inputSchema、timeout_seconds、progress_name、applicable_conditions、python_deps。
-- d. main.py：工具的唯一执行入口文件；必须允许直接接收 【CLI/argparse 风格】参数来获取启动参数。
+- c.每个工具设计原则务必符合【高复用价值、高鲁棒性、逻辑自洽】。
+- d. protocol.yaml：工具的协议文件；仅允许 8 个字段：name、title、description、inputSchema、timeout_seconds、progress_name、applicable_conditions、python_deps。
+- e. main.py：工具的唯一执行入口文件；必须允许直接接收 【CLI/argparse 风格】参数来获取启动参数。
 \`\`\`
 
 # 经验工具库维护规范（** 内部规则，必须严格遵守 **）
 \`\`\`
-- 经验工具的【新增】、【修改】、【拆分】、【删除】依据【可沉淀经验】以及【沉淀经验的三个目的】自行决策和维护。
+- 经验工具的【新增】、【修改】、【优化】、【拆分】、【删除】依据【可沉淀经验】以及【沉淀经验的三个目的】自行决策和维护。
 - 删除经验工具附加触发条件：工具数量超限（上限 32 个），删除创建时间最早且适用范围最低的工具，并且尽量避免删除重要工具。
 \`\`\`
 `.trim()
