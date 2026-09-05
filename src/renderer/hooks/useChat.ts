@@ -27,6 +27,10 @@ import type { AssistantMessageSegment } from '../lib/message-filter';
 import { createThinkingEventMerger } from '../lib/thinking-event-merger';
 import { IPC_CHAT, IPC_CONV } from '@shared/ipc-channels';
 import type { ChatAttachment } from '@shared/types/chat';
+import type {
+  ConversationCleanupOptions,
+  ConversationCleanupResult,
+} from '@shared/types/conversation-cleanup';
 
 // ============================================================
 // 类型定义
@@ -780,6 +784,26 @@ const scheduleProjection = useCallback(() => {
       console.error('[useChat] 删除对话失败:', err);
     }
   }, []);
+
+  // 清理对话（会话批量清理）：IPC 执行 → 运行态条目清理 → 活跃会话重置 → 全量刷新
+  const cleanupConversations = useCallback(
+    async (options: ConversationCleanupOptions): Promise<ConversationCleanupResult> => {
+      const result = await window.electronAPI.conversations.cleanup(options);
+      for (const id of result.deletedIds) {
+        // ★ M07 同款：显式删除该会话的运行态存储条目（防泄漏）
+        conversationRuntimeStoreRef.current.delete(id);
+      }
+      if (result.deletedIds.includes(conversationIdRef.current ?? '')) {
+        // ★ D4 修复同款：清理命中当前活跃会话时重置列表态（主区回到列表）
+        conversationIdRef.current = null;
+        setConversationId(null);
+        setMessages([]);
+      }
+      await loadConversations(); // 全量替换（conv:list 唯一权威来源，窗口激活对账同口径）
+      return result;
+    },
+    [loadConversations],
+  );
 
   // ============================================================
   // 方向3：重命名 + 标签（乐观更新 + IPC；electron.d.ts 类型墙用局部断言，方向4同款）
@@ -1815,6 +1839,20 @@ const scheduleProjection = useCallback(() => {
         //   ★ M06：assistantMessageId 职责由 entry 承载（先写 entry 再 upsert）
         if (!data || !data.message || data.message.role !== 'assistant' || !data.conversationId) return;
         applyConversationEvent(data.conversationId, (entry) => {
+          // ★ R2 双保险守卫（取消任务后 loading 不停止）：终态已到（terminal=true，chat:aborted
+          //   已归一化）且主进程权威态非运行（chat:abort 已置 isRunning=false 并推送
+          //   conversation:updated）时，本事件为取消竞态窗口内的晚到 started——直接丢弃，
+          //   不复活 loading、不重置 assistantMessageId/conversationRunning（保住 abortChat/
+          //   chat:aborted 已建立的 assistantMessageId=null 防线）。
+          //   注意：不得仅以 entry.terminal 一刀切——正常多轮任务下一轮合法 started 也会在
+          //   上一轮 terminal=true 后到达，届时 sendMessage 已重置 terminal=false 且主进程
+          //   isRunning=true，须两条件同时绑定方能精确命中取消竞态窗口、不误杀正常下一轮。
+          if (
+            entry.terminal
+            && !conversationsRef.current.find((c) => c.id === data.conversationId)?.isRunning
+          ) {
+            return;
+          }
           entry.assistantMessageId = data.message.id;
           entry.conversationRunning = true;
           entry.messages = upsertMessageById(entry.messages, { ...data.message, status: 'loading' });
@@ -2099,6 +2137,8 @@ const scheduleProjection = useCallback(() => {
     onCancelPendingSettleReissue,
     createConversation,
     deleteConversation,
+    /** 清理对话（会话批量清理） */
+    cleanupConversations,
     switchConversation,
     /** 方向3：重命名 / 标签管理（乐观更新 + conv:rename / conv:tag-* IPC） */
     renameConversation,

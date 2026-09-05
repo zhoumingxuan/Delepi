@@ -8,6 +8,7 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
+import type { ConversationCleanupOptions } from '@shared/types/conversation-cleanup';
 
 const electronAPI = {
   chat: {
@@ -30,6 +31,12 @@ const electronAPI = {
     /** 方向3：移除对话标签；返回最新 tags */
     removeTag: (params: { id: string; tag: string }) =>
       ipcRenderer.invoke(IPC_CONV.TAG_REMOVE, params),
+    /** 清理对话：条件预览统计（纯只读，不删数据） */
+    cleanupPreview: (params: ConversationCleanupOptions) =>
+      ipcRenderer.invoke(IPC_CONV.CLEANUP_PREVIEW, params),
+    /** 清理对话：执行清理（主进程实时重算候选集，跳过运行中会话） */
+    cleanup: (params: ConversationCleanupOptions) =>
+      ipcRenderer.invoke(IPC_CONV.CLEANUP, params),
   },
   config: {
     get: () => ipcRenderer.invoke(IPC_CONFIG.GET),

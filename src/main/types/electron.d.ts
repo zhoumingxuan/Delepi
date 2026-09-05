@@ -17,6 +17,14 @@ export interface ElectronAPI {
     getMessages: (id: string) => Promise<unknown[]>;
     /** v2恢复方案：获取上次活跃的对话ID，主进程内存维护，重启后返回null */
     getRestoreConversationId: () => Promise<string | null>;
+    /** 清理对话：条件预览统计（conv:cleanup-preview；纯只读不删数据） */
+    cleanupPreview: (
+      params: import('@shared/types/conversation-cleanup').ConversationCleanupOptions,
+    ) => Promise<import('@shared/types/conversation-cleanup').ConversationCleanupPreview>;
+    /** 清理对话：执行清理（conv:cleanup；主进程实时重算候选集并跳过运行中会话） */
+    cleanup: (
+      params: import('@shared/types/conversation-cleanup').ConversationCleanupOptions,
+    ) => Promise<import('@shared/types/conversation-cleanup').ConversationCleanupResult>;
   };
   config: {
     get: () => Promise<import('./config').AppSettings>;

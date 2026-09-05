@@ -123,6 +123,12 @@ import {
   abortConversationRun,
 } from '../modules/chat/conversation-runtime';
 
+import type { ConversationCleanupOptions } from '@shared/types/conversation-cleanup';
+import {
+  computeConversationCleanupPreview,
+  executeConversationCleanup,
+} from '../utils/conversation-cleanup';
+
 let lastActiveConversationId: string | null = null;
 
 function emitConversationUpdated(
@@ -1019,6 +1025,27 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     await removeConversationUploadDir(id).catch(() => undefined);
     await removeConversationOutputFiles(id).catch(() => undefined);
   });
+
+  // ================================================================
+  // 清理对话（会话批量清理）：预览统计 + 执行清理（薄封装）
+  // ================================================================
+
+  ipcMain.handle(
+    IPC_CONV.CLEANUP_PREVIEW,
+    async (_event, params: ConversationCleanupOptions) =>
+      computeConversationCleanupPreview(params),
+  );
+
+  ipcMain.handle(
+    IPC_CONV.CLEANUP,
+    async (_event, params: ConversationCleanupOptions) =>
+      executeConversationCleanup(params, (id) => {
+        // 与 conv:delete 同模式：被清理会话为 lastActive 时置空（重启后返回 null → 场景C退化）
+        if (lastActiveConversationId === id) {
+          lastActiveConversationId = null;
+        }
+      }),
+  );
 
   // ================================================================
   // 方向3：对话重命名 + 标签（自定义标题安全关闭 / conversation_tags）

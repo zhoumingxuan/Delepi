@@ -87,6 +87,11 @@ export const IPC_CONV = {
   RENAME: 'conv:rename',
   /** 移除对话标签（渲染→主，invoke） */
   TAG_REMOVE: 'conv:tag-remove',
+
+  /** 批量清理（清理对话）：条件预览统计（渲染→主，invoke；纯只读不删数据） */
+  CLEANUP_PREVIEW: 'conv:cleanup-preview',
+  /** 批量清理（清理对话）：执行清理（渲染→主，invoke；主进程实时重算候选集并跳过运行中会话） */
+  CLEANUP: 'conv:cleanup',
 } as const;
 
 // --- 执行子智能体 IPC 通道 ---

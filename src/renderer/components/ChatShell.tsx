@@ -37,7 +37,9 @@ import { useFileUpload } from '../hooks/useFileUpload';
 import { useSettings } from '../hooks/useSettings';
 import type { SidebarConversation } from './Sidebar';
 import type { ConfigMissingItem } from '@shared/types/config';
+import type { ConversationCleanupOptions } from '@shared/types/conversation-cleanup';
 import { ConfigCheckModal } from './ConfigCheckModal';
+import { CleanupConversationsModal } from './CleanupConversationsModal';
 import { useConfigReadiness } from '../hooks/useConfigReadiness';
 
 export function ChatShell() {
@@ -56,6 +58,7 @@ export function ChatShell() {
     abortChat,
     createConversation,
     deleteConversation,
+    cleanupConversations,
     switchConversation,
     /** Phase 3 P1 + P3：守卫 + 状态相关 */
     isConversationSending,
@@ -129,6 +132,7 @@ export function ChatShell() {
 const [configDrawerActiveTab, setConfigDrawerActiveTab] = useState<'model' | 'python'>('model');
 const [showConfigCheckModal, setShowConfigCheckModal] = useState(false);
 const [configCheckMissingItems, setConfigCheckMissingItems] = useState<ConfigMissingItem[]>([]);
+const [cleanupOpen, setCleanupOpen] = useState(false);
 
 
 const { check, canCheck } = useConfigReadiness({
@@ -432,6 +436,41 @@ const { check, canCheck } = useConfigReadiness({
     [deleteConversation],
   );
 
+  // 清理对话（会话批量清理）：执行 + 四类反馈分支（success/warning/error/info）
+  const handleCleanupConfirm = useCallback(
+    async (options: ConversationCleanupOptions) => {
+      try {
+        const result = await cleanupConversations(options);
+        for (const id of result.deletedIds) {
+          draftsRef.current.delete(id); // ★ R1 同款：清理命中的会话同步清理其草稿
+        }
+        const { deletedCount, skippedRunningIds, failedItems } = result;
+        if (deletedCount === 0 && failedItems.length > 0) {
+          // 全部失败：弹窗保持打开可重试
+          messageApi.error('清理失败，请重试');
+        } else if (failedItems.length > 0) {
+          // 部分失败：成功的已生效，失败的保留原状
+          messageApi.warning(`已清理 ${deletedCount} 个会话，${failedItems.length} 个清理失败`);
+          setCleanupOpen(false);
+        } else if (deletedCount === 0 && skippedRunningIds.length === 0) {
+          // 竞态空结果：确认可用到执行之间候选清空（幂等无害）
+          messageApi.info('没有符合条件的会话');
+          setCleanupOpen(false);
+        } else {
+          messageApi.success(
+            skippedRunningIds.length > 0
+              ? `已清理 ${deletedCount} 个会话，已跳过 ${skippedRunningIds.length} 个运行中会话`
+              : `已清理 ${deletedCount} 个会话`,
+          );
+          setCleanupOpen(false);
+        }
+      } catch (err) {
+        messageApi.error(err instanceof Error ? err.message : '清理失败，请重试');
+      }
+    },
+    [cleanupConversations, messageApi],
+  );
+
   const handleHoverConversation = useCallback((id: string | null) => {
     setHoveredConversationId(id);
   }, []);
@@ -484,6 +523,7 @@ const { check, canCheck } = useConfigReadiness({
             onSwitchConversation={handleSwitchConversation}
             onRemoveConversation={handleRemoveConversation}
             onHoverConversation={handleHoverConversation}
+            onCleanupClick={() => setCleanupOpen(true)}
           />
         </div>
       ) : null}
@@ -591,6 +631,12 @@ const { check, canCheck } = useConfigReadiness({
         missingItems={configCheckMissingItems}
         onClose={handleCloseConfigCheckModal}
         onGoToConfig={handleGoToConfig}
+      />
+
+      <CleanupConversationsModal
+        open={cleanupOpen}
+        onCancel={() => setCleanupOpen(false)}
+        onOk={handleCleanupConfirm}
       />
 
       {/* ★ 新版方案 §7.7：任务执行记录 dock 右栏（固定布局列，非 Drawer/Modal；

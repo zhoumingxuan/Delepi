@@ -25,6 +25,7 @@ import {
   MoreOutlined,
   DeleteOutlined,
   EditOutlined,
+  ClearOutlined,
 } from '@ant-design/icons';
 import { Conversations } from '@ant-design/x';
 
@@ -48,6 +49,8 @@ interface SidebarProps {
   onSwitchConversation: (id: string) => void;
   onRemoveConversation: (id: string) => void;
   onHoverConversation: (id: string | null) => void;
+  /** 清理对话（会话批量清理）弹窗入口 */
+  onCleanupClick: () => void;
 }
 
 /**
@@ -85,6 +88,7 @@ export const Sidebar = memo(function Sidebar({
   onSwitchConversation,
   onRemoveConversation,
   onHoverConversation,
+  onCleanupClick,
 }: SidebarProps): ReactElement {
   const { token } = theme.useToken();
 
@@ -230,6 +234,15 @@ export const Sidebar = memo(function Sidebar({
         style={{ flexShrink: 0 }}
       >
         新建对话
+      </Button>
+
+      <Button
+        block
+        icon={<ClearOutlined />}
+        onClick={onCleanupClick}
+        style={{ flexShrink: 0 }}
+      >
+        清理对话
       </Button>
 
       {!sortedConversations.length ? (

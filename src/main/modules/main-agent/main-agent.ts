@@ -1357,6 +1357,19 @@ export async function runMainAgent(
       throw new Error(ERR_ABORTED);
     }
 
+    // ★ R1 根因修复（取消任务后 loading 不停止）：signal.aborted 守卫——
+    //   取消发生在“委派任务已启动后”时，任务级 catch 将中止失败统一记为 'failed'，
+    //   上方全中止判定（every aborted）不命中，原代码继续新建 running 消息(status='loading')
+    //   并 emit ASSISTANT_MESSAGE_STARTED——该事件晚于 chat:aborted 到达渲染层且此后再无
+    //   任何终态事件收口，导致取消后 loading 永久卡死。
+    //   守卫位置约束（不得提前）：必须位于 insertMessages 批次落库与 TOOL_MESSAGE_CREATED
+    //   推送之后（保证中止批次 tool 消息照常落库，M17 语义不变）、deleteRunningAssistantMessage
+    //   与新一轮 started 之前；throw 走既有 catch 的 signal.aborted 分支——aborted 终态已由
+    //   ipc-handlers chat:abort → MAIN_AGENT_ABORTED_EVENT 先行发出，此处不再发任何事件。
+    if (options.signal?.aborted) {
+      throw new Error(ERR_ABORTED);
+    }
+
     // running map 删除时位移至批次末（对齐 ai_fr :1004-1008；批次期间存活=中途重开会话可见 assistant 消息，H8）
     deleteRunningAssistantMessage(conversationId);
 

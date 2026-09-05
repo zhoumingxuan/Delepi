@@ -208,3 +208,53 @@ export function updateConversationTitleIfUnchanged(
   `).run(newTitle, nowIso(), conversationId, expectedTitle);
   return result.changes > 0;
 }
+
+// ============================================================
+// 批量清理（清理对话功能）：空会话识别 + 守卫事务删除
+// 仅追加新函数；既有函数（含 deleteConversation）零改动
+// ============================================================
+
+/** 空会话 id 集合（0 条消息；NOT EXISTS 反连接命中 idx_messages_conversation_seq(conversation_id, seq) 前缀索引） */
+export function listEmptyConversationIds(): string[] {
+  const db = getDb();
+  return (db
+    .prepare(
+      `SELECT c.id FROM conversations c
+       WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.conversation_id = c.id)`,
+    )
+    .all() as Array<{ id: string }>).map((row) => row.id);
+}
+
+export type GuardedDeleteOutcome = 'deleted' | 'running' | 'missing';
+
+/**
+ * 批量清理专用：会话粒度事务删除
+ * - 事务内复查 is_running：覆盖"预览→执行"窗口竞态（执行窗口内开始运行的会话一律跳过）
+ * - 子表（messages/context_compressions/conversation_tags）→ 父表（conversations）删除顺序，
+ *   不依赖外键 ON DELETE CASCADE（存量库连接未执行 PRAGMA foreign_keys）
+ * - 事务范式对齐 runtime-state.repo.ts resetInterruptedRuntimeState
+ * - 不替代既有 deleteConversation（单删链路保持原样）
+ */
+export function deleteConversationGuarded(conversationId: string): GuardedDeleteOutcome {
+  const db = getDb();
+  let outcome: GuardedDeleteOutcome = 'missing';
+  db.transaction(() => {
+    const row = db
+      .prepare('SELECT is_running FROM conversations WHERE id = ?')
+      .get(conversationId) as { is_running: number } | undefined;
+    if (!row) {
+      outcome = 'missing';
+      return;
+    }
+    if (row.is_running !== 0) {
+      outcome = 'running';
+      return;
+    }
+    db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);
+    db.prepare('DELETE FROM context_compressions WHERE conversation_id = ?').run(conversationId);
+    db.prepare('DELETE FROM conversation_tags WHERE conversation_id = ?').run(conversationId);
+    db.prepare('DELETE FROM conversations WHERE id = ?').run(conversationId);
+    outcome = 'deleted';
+  })();
+  return outcome;
+}
