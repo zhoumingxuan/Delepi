@@ -8,9 +8,12 @@
 // ============================================================
 
 /** 默认命令行执行超时（秒）。
- * 挂起模式豁免（方向6 S6-3/D6C8 落档）：run_shell 与 run_with_python 的 suspend=true 挂起模式均不设超时定时器，
- * timeout_seconds 语义=忽略，挂起进程生命周期由调用方管理（启动期 200ms 内秒退/abort 除外，A6-2）。 */
+ * 挂起模式豁免（方向6 S6-3/D6C8 落档）：run_shell 与 run_with_python 的 suspend=true 挂起模式均 spawn 后立即返回真实子进程 PID，
+ * timeout 语义=忽略，挂起进程生命周期由调用方管理（立即返回、不等待不采集、无执行超时）。 */
 export const DEFAULT_TIMEOUT_SECONDS = 180;
+
+/** timeout 上限（秒）：对齐 dyn-tool-loader DYN_TOOL_TIMEOUT_MAX_SECONDS / script-tool-protocol SCRIPT_TOOL_TIMEOUT_MAX_SECONDS 的 3600 语义 */
+export const TOOL_TIMEOUT_MAX_SECONDS = 3600;
 
 /** 最大命令长度 */
 export const MAX_COMMAND_LENGTH = 8000;

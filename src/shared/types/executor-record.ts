@@ -2,7 +2,7 @@
  * 委派任务执行记录——跨进程共享类型（主进程 record-store 与渲染进程 hook 共同 import）
  *
  * 新版设计方案 §3.2/§3.3：
- * - 显示视图条目（思考 / 工具两类，seq 任务内统一单调递增）
+ * - 显示视图条目（思考 / 工具 / 通知三类，seq 任务内统一单调递增）
  * - 渲染信号载荷（executor:record-signal，极小信号 <200B）
  * - 增量查询响应（executor:get-task-record，sinceSeq 增量 + running 草稿恒返 + reset 兜底）
  *
@@ -47,7 +47,20 @@ export interface ExecutorToolRecord {
   displayName?: string;
 }
 
-export type ExecutorRecordEntry = ExecutorThinkingRecord | ExecutorToolRecord;
+
+/** 显示视图条目：任务级通知类（当前仅任务级手动停止通知；静态单时刻条目、无 running/草稿语义、无 status） */
+export interface ExecutorNoticeRecord {
+  kind: 'notice';
+  seq: number;
+  /** 通知类型：目前仅 'stop'（任务级手动停止）；未来同类静态通知在此扩联合 */
+  type: 'stop';
+  /** 展示文本（如“{任务名} 已停止，用户手动取消。”——模板既有，逐字保留） */
+  text: string;
+  /** 通知产生时刻（ISO；渲染头部时钟 formatEntryClock 取此字段） */
+  createdAt: string;
+}
+
+export type ExecutorRecordEntry = ExecutorThinkingRecord | ExecutorToolRecord | ExecutorNoticeRecord;
 
 /** 任务状态（running → completed / failed / aborted；终态后 records 冻结只读） */
 export type ExecutorTaskRecordStatus = 'running' | 'completed' | 'failed' | 'aborted';

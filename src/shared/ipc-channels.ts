@@ -110,6 +110,13 @@ export const IPC_EXECUTOR = {
    * 无 isRunning 门禁（终态记录在轮末清理前均可查，供完成后回看）。
    */
   GET_TASK_RECORD: 'executor:get-task-record',
+  /**
+   * 执行子智能体任务级隔离停止（渲染→主，invoke）
+   * 请求 { conversationId, delegateCallId }；返回 { stopped, taskName }。
+   * 仅停止该委派任务（任务级 AbortController 精确取消），不影响同会话其他并发任务，
+   * 也不触发会话级 chat:aborted / MAIN_AGENT_ABORTED_EVENT。
+   */
+  STOP_TASK: 'executor:stop-task',
 } as const;
 
 // --- 本地文件相关 IPC 通道 ---

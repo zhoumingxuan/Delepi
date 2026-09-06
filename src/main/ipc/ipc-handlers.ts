@@ -36,7 +36,11 @@ import type { AppSettings } from '../types/config';
 import type { ConfigGetResult, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { eventBus } from '../modules/event-bus/event-bus';
 import { getRunningAssistantMessage } from '../modules/main-agent/running-assistant-message-map';
-import { queryExecutorTaskRecord, clearExecutorTaskRecords } from '../modules/executor-agent/executor-task-record-store';
+import {
+  queryExecutorTaskRecord,
+  clearExecutorTaskRecords,
+  stopExecutorTask,
+} from '../modules/executor-agent/executor-task-record-store';
 import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../constants/events';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
 import { refreshMainTools } from '../modules/main-agent/prompt';
@@ -1141,6 +1145,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     IPC_EXECUTOR.GET_TASK_RECORD,
     (_event, params: import('../types/ipc').ExecutorTaskRecordQueryParams) =>
       queryExecutorTaskRecord(params),
+  );
+
+  /**
+   * executor:stop-task — 任务级隔离停止（渲染→主，invoke）
+   * 双防线校验（session 存在且 running 且 controller 未 aborted）通过后：
+   * 先同步写入停止文案条目、再 abort 任务级 controller（main-agent 委派闭包 catch 收敛 aborted）；
+   * 不触发 chat:aborted / MAIN_AGENT_ABORTED_EVENT 等任何会话级事件（A/B 并发隔离）。
+   */
+  ipcMain.handle(
+    IPC_EXECUTOR.STOP_TASK,
+    (_event, params: { conversationId: string; delegateCallId: string }) =>
+      stopExecutorTask(params.conversationId, params.delegateCallId),
   );
 
   // ================================================================

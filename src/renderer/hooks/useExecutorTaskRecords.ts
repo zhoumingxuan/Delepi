@@ -57,6 +57,8 @@ export interface UseExecutorTaskRecordsResult {
   openTask: (delegateCallId: string) => void;
   /** 关闭右栏 */
   closePanel: () => void;
+  /** 任务级隔离停止（仅停止目标任务；静默容错，无乐观更新与全局提示，状态收敛由终态信号链路完成） */
+  stopTask: (delegateCallId: string) => void;
   /** 右栏当前目标任务 id（唯一目标状态） */
   activeDelegateCallId: string | null;
   /** 右栏当前目标任务视图（无目标或已归档时可能为 null / hasRecords=false） */
@@ -382,6 +384,28 @@ export function useExecutorTaskRecords(options: {
     setActiveDelegateCallId(null);
   }, []);
 
+  /** 任务级隔离停止：conversationId 经 taskConversationIndexRef 反查 → IPC 停止目标任务；
+   *  静默容错（无乐观更新、无全局提示——渲染层状态收敛由 executor:record-signal 终态信号链路自动完成）。
+   *  window.electronAPI 的全局类型声明（electron.d.ts）不在本次改动白名单内——
+   *  局部类型收窄（模式对齐 ConfigDrawer/Sidebar 既有先例）。 */
+  const stopTask = useCallback((delegateCallId: string) => {
+    const targetConversationId = taskConversationIndexRef.current.get(delegateCallId);
+    if (!targetConversationId) {
+      return;
+    }
+    const executorStopApi = window.electronAPI.executor as unknown as Partial<{
+      stopTask: (params: { conversationId: string; delegateCallId: string }) => Promise<{
+        stopped: boolean;
+        taskName: string;
+      }>;
+    }>;
+    void Promise.resolve(
+      executorStopApi.stopTask?.({ conversationId: targetConversationId, delegateCallId }),
+    ).catch(() => {
+      // 静默容错：停止失败不提示；任务终态以主进程记录为准
+    });
+  }, []);
+
   const activeTaskView = activeDelegateCallId
     ? taskViews[activeDelegateCallId] ?? null
     : null;
@@ -395,6 +419,7 @@ export function useExecutorTaskRecords(options: {
     taskViews,
     openTask,
     closePanel,
+    stopTask,
     activeDelegateCallId,
     activeTaskView,
     executorTaskMessages,

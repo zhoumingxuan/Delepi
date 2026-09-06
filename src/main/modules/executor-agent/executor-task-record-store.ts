@@ -5,7 +5,7 @@
  * - modelMessages（真实内容视图）：executor 循环唯一 push 目标，与给大模型的上下文
  *   （runtimeMessages）同引用共享（adoptMessages 领养语义）——真实视图零加工、显示视图
  *   仅做控制字符净化不回写，保证模型上下文纯净。
- * - records（显示视图）：思考/工具两类条目（append-only、seq 单调、上限 500 条），
+ * - records（显示视图）：思考/工具/通知三类条目（append-only、seq 单调、上限 500 条），
  *   由结构化边界（思考 delta / 轮 seal / 工具事件 / 终态）驱动更新。
  *
  * 渲染信号：内建 200ms leading+trailing 节流发射 executor:record-signal（极小载荷），
@@ -30,7 +30,9 @@ import { eventBus } from '../event-bus/event-bus';
 import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../../constants/events';
 import { resolveExecutorToolProgressDisplayName } from '../../constants/agent';
 import { getDynamicExecutorToolMeta } from '../../tools/executor-registry';
+import { ERR_ABORTED } from '../../constants/errors';
 import type {
+  ExecutorNoticeRecord,
   ExecutorRecordEntry,
   ExecutorTaskRecordQueryResult,
   ExecutorTaskRecordSignal,
@@ -174,6 +176,10 @@ export interface ExecutorTaskRecordSession {
   resetThinkingDraft(): void;
   /** 终态收敛（R-draft-7、running 工具条目处置）+ 冲刷节流 + 立即终态信号 + 冻结 */
   markTerminal(status: 'completed' | 'failed' | 'aborted'): void;
+  /** 任务级停止通知条目（kind='notice'/type='stop'；冻结/终态守卫 no-op；stopExecutorTask 冻结前写入；push + 立即信号走增量下发） */
+  appendStopNotice(text: string): void;
+  /** 停止请求写入冻结（stopExecutorTask 内部调用；置位后除 markTerminal 外全部写入 API no-op；幂等） */
+  freezeForStop(): void;
 }
 
 class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
@@ -193,6 +199,11 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   private draftRawText = '';
   /** 终态冻结标记（终态后全部写入 API no-op） */
   private terminal = false;
+  /** 停止请求写入冻结标记（stopExecutorTask → freezeForStop 同步置位；置位后除 markTerminal
+   *  终态收敛外全部写入 API no-op，杜绝 abort→markTerminal 窗口内残余流再写入——思考 #3 机制根除）。
+   *  职责分层：stopRequested=停止请求即时冻结（本标记）；terminal=终态收敛冻结（markTerminal 置位）。
+   *  正常 completed/failed 路径与本标记无关。 */
+  private stopRequested = false;
   /**
    * 原位变更条目 seq 登记（seal / 工具终态 / 终态收敛等不新增 seq 的状态转移）：
    * 增量查询将这些条目一并下发（客户端按 seq 覆盖合并，兑现"草稿/工具状态更新"语义），
@@ -307,7 +318,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   appendThinkingDelta(delta: string): void {
-    if (this.terminal || !delta) {
+    if (this.stopRequested || this.terminal || !delta) {
       return;
     }
     const draft = this.runningDraft;
@@ -331,7 +342,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   sealThinkingTurn(reasoning: string): void {
-    if (this.terminal) {
+    if (this.stopRequested || this.terminal) {
       return;
     }
     const authoritative = sanitizeDisplayText(reasoning ?? '');
@@ -360,7 +371,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   beginToolCall(info: { callId: string; name: string; args: string }): void {
-    if (this.terminal || !info.callId) {
+    if (this.stopRequested || this.terminal || !info.callId) {
       return;
     }
     // 同 callId 幂等：running 条目更新元数据，已终态条目不回退
@@ -391,7 +402,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   endToolCall(info: { callId: string; success: boolean; message: string }): void {
-    if (this.terminal || !info.callId) {
+    if (this.stopRequested || this.terminal || !info.callId) {
       return;
     }
     const target = this.records.find(
@@ -413,7 +424,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   resetThinkingDraft(): void {
-    if (this.terminal) {
+    if (this.stopRequested || this.terminal) {
       return;
     }
     const draft = this.runningDraft;
@@ -428,6 +439,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   markTerminal(status: 'completed' | 'failed' | 'aborted'): void {
+    // 豁免 stopRequested：终态收敛为停止请求冻结后唯一合法写入（R-draft-7 / mutatedSeqs / 终态信号）。
     if (this.terminal) {
       return;
     }
@@ -459,6 +471,38 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     this.pendingSignal = null;
     this.lastSignalEmitAt = Date.now();
     eventBus.emit(EXECUTOR_RECORD_SIGNAL_EVENT, this.buildSignal());
+  }
+
+  /**
+   * 任务级停止通知条目（kind='notice'/type='stop'；{任务名} 已停止，用户手动取消。）：
+   * 冻结守卫 no-op（stopRequested 停止请求冻结 / terminal 终态收敛冻结——stopExecutorTask 时序
+   * 保证通知在冻结前写入，冻结后任何二次通知 no-op）；
+   * notice 为静态单时刻事件条目：无 running/草稿语义、无 status/startedAt/finishedAt，
+   * 渲染层按 kind='notice' 独立分发（头部“已停止 · HH:mm:ss”），不再冒充思考条目。
+   */
+  appendStopNotice(text: string): void {
+    if (this.stopRequested || this.terminal) {
+      return;
+    }
+    this.records.push({
+      kind: 'notice',
+      seq: this.nextSeq(),
+      type: 'stop',
+      text,
+      createdAt: nowIso(),
+    });
+    this.evictOverflow();
+    this.emitSignal(true);
+  }
+
+  /** 停止请求写入冻结：置位后除 markTerminal 外全部写入 API no-op（幂等——重复调用安全）。
+   *  调用契约：stopExecutorTask 校验通过后、abort 前置位；本方法不触碰 terminal/status，
+   *  终态收敛仍由 main-agent catch 的 markTerminal('aborted') 独占完成。 */
+  freezeForStop(): void {
+    if (this.terminal) {
+      return;
+    }
+    this.stopRequested = true;
   }
 
   /** 清理时冲刷挂起定时器（防清理后迟到信号） */
@@ -496,6 +540,9 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
             displayName: resolveToolRecordDisplayName(record),
           } satisfies ExecutorToolRecord;
         }
+        if (record.kind === 'notice') {
+          return { ...record } satisfies ExecutorNoticeRecord;
+        }
         return { ...record } satisfies ExecutorThinkingRecord;
       });
     for (const record of this.records) {
@@ -512,6 +559,69 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
 // ============================================================
 
 const taskRecordSessions = new Map<string, Map<string, ExecutorTaskRecordSessionImpl>>();
+
+// ===============================================================
+// 任务级隔离停止注册表：Map<conversationId, Map<delegateCallId, AbortController>>
+// （与 taskRecordSessions 同键空间；委派闭包启动前登记、任务收敛后注销、清理会话时同步清理）
+// ===============================================================
+
+const taskStopControllers = new Map<string, Map<string, AbortController>>();
+
+/** 登记任务级停止句柄（委派闭包在 runDelegatedTask 启动前调用；同键覆盖旧值防泄漏） */
+export function registerTaskStopController(
+  conversationId: string,
+  delegateCallId: string,
+  controller: AbortController,
+): void {
+  let conversationControllers = taskStopControllers.get(conversationId);
+  if (!conversationControllers) {
+    conversationControllers = new Map();
+    taskStopControllers.set(conversationId, conversationControllers);
+  }
+  conversationControllers.set(delegateCallId, controller);
+}
+
+/** 注销任务级停止句柄（任务收敛公共路径调用；空二级 Map 顺带清理防泄漏） */
+export function unregisterTaskStopController(conversationId: string, delegateCallId: string): void {
+  const conversationControllers = taskStopControllers.get(conversationId);
+  if (!conversationControllers) {
+    return;
+  }
+  conversationControllers.delete(delegateCallId);
+  if (conversationControllers.size === 0) {
+    taskStopControllers.delete(conversationId);
+  }
+}
+
+/**
+ * 任务级隔离停止（executor:stop-task 唯一后端出口）：
+ * - 双防线校验：session 不存在 / status!=='running' / controller 不存在或 signal.aborted 已为 true
+ *   → 直接返回未停止（不写通知、不重复 abort，天然防连点与终态幂等）；
+ * - 通过后同步三步（通知→冻结→abort，全在同一同步执行栈内完成——Node 事件循环无法在同步栈
+ *   执行期间插入任何残余流回调，abort→markTerminal 窗口内零写入）：
+ *   1) appendStopNotice：先写停止通知条目（kind='notice'/type='stop'，冻结前写入）；
+ *   2) freezeForStop()：置 stopRequested 冻结——此后除 markTerminal 外全部写入 API no-op，
+ *      迟到残余 reasoning/tool 回调一律丢弃（思考 #3 机制级根除）；
+ *   3) controller.abort(reason)：中止经 executor-agent 既有 abort 检查点抛出，
+ *      由 main-agent 委派闭包 catch 的 markTerminal('aborted') 收敛终态（冻结后唯一合法写入）。
+ */
+export function stopExecutorTask(
+  conversationId: string,
+  delegateCallId: string,
+): { stopped: boolean; taskName: string } {
+  const session = taskRecordSessions.get(conversationId)?.get(delegateCallId);
+  if (!session || session.status !== 'running') {
+    return { stopped: false, taskName: session?.taskName ?? '' };
+  }
+  const controller = taskStopControllers.get(conversationId)?.get(delegateCallId);
+  if (!controller || controller.signal.aborted) {
+    return { stopped: false, taskName: session.taskName };
+  }
+  session.appendStopNotice(`${session.taskName || '子智能体任务'} 已停止，用户手动取消。`);
+  session.freezeForStop();
+  controller.abort(new Error(ERR_ABORTED));
+  return { stopped: true, taskName: session.taskName };
+}
 
 /**
  * 创建并登记 executor 任务记录会话（委派闭包启动时调用；发一次 running 信号（立即））
@@ -596,4 +706,6 @@ export function clearExecutorTaskRecords(conversationId: string): void {
     session.dispose();
   }
   taskRecordSessions.delete(conversationId);
+  // 任务级停止注册表同步清理（同键空间；防 Map 泄漏）
+  taskStopControllers.delete(conversationId);
 }

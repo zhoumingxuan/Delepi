@@ -20,13 +20,14 @@
  * - 归档空态（hasRecords=false）：居中"任务记录已随本轮结束归档"（13px secondary），
  *   标题区保留任务名+终态 Tag，关闭按钮可用。
  *
- * 全部色值经 theme.useToken() 引用（禁硬编码）；纯只读面板——无任何输入控件（§1.2-A）。
+ * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均为 UI 占位轻提示，草稿按 delegateCallId 键控隔离；原"纯只读面板"声明随之废止，§1.2-A 修订）。
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
-import { Button, Tag, Typography, theme } from 'antd';
+import { App, Button, Input, Tag, Typography, theme } from 'antd';
 import {
+  ArrowUpOutlined,
   CheckCircleFilled,
   CloseCircleFilled,
   CloseOutlined,
@@ -35,6 +36,7 @@ import {
   ToolOutlined,
 } from '@ant-design/icons';
 import type {
+  ExecutorNoticeRecord,
   ExecutorRecordEntry,
   ExecutorTaskRecordStatus,
   ExecutorThinkingRecord,
@@ -385,11 +387,61 @@ function ToolRecordItem(options: { record: ExecutorToolRecord }): ReactElement {
   );
 }
 
+/** 停止/通知条目（内聚子组件，不外泄）：
+ * - notice 为静态单时刻条目：头部不使用“思考 #seq”字样（停止语义与思考语义在数据层解耦后，
+ *   渲染层按 kind 独立分发，本组件天然不出现“思考 #N”头部）——停止文案不再冒充思考；
+ * - 头部行与思考/工具条目头部行同构（12px/18px colorTextTertiary），语义标识“已停止”
+ *   （与文案模板“…已停止，用户手动取消。”动词一致；标题 Tag“已取消”表达任务终态，互补不冲突）；
+ * - 正文为纯文本信息条（非 markdown；单条固定文案，无折叠/展开需求，量级确定），
+ *   中性浅底 colorFillQuaternary + 次级文本色 colorTextSecondary —— 表达“正常手动取消”，
+ *   不借 colorError/colorWarning 语义（避免与失败/中断混淆）。
+ */
+function NoticeRecordItem(options: { record: ExecutorNoticeRecord }): ReactElement {
+  const { record } = options;
+  const { token } = theme.useToken();
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+      {/* 头部行：已停止 · HH:mm:ss（不显示“思考 #seq”，语义解耦的可观察落点） */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          minWidth: 0,
+          fontSize: 12,
+          lineHeight: '18px',
+          color: token.colorTextTertiary,
+        }}
+      >
+        <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', minWidth: 0 }}>
+          已停止 · {formatEntryClock(record.createdAt)}
+        </span>
+      </div>
+      {/* 正文信息条：文案全文（模板既有，逐字展示） */}
+      <div
+        style={{
+          fontSize: 13,
+          lineHeight: '22px',
+          color: token.colorTextSecondary,
+          background: token.colorFillQuaternary,
+          borderRadius: token.borderRadiusSM,
+          padding: '6px 10px',
+          wordBreak: 'break-word',
+        }}
+      >
+        {record.text}
+      </div>
+    </div>
+  );
+}
+
 export function ExecutorRecordDrawer(options: {
   taskView: ExecutorTaskView;
   onClose: () => void;
+  /** 任务级停止回调（UI 占位预留：真实任务级停止 IPC 接入后由调用方接线；不传时静默跳过、不报错） */
+  onStopTask?: (delegateCallId: string) => void;
 }): ReactElement {
-  const { taskView, onClose } = options;
+  const { taskView, onClose, onStopTask } = options;
   const { token } = theme.useToken();
 
   /** dock 展开动效：挂载后 0 → 目标宽（width 200ms ease-out + overflow hidden） */
@@ -398,6 +450,42 @@ export function ExecutorRecordDrawer(options: {
     const raf = requestAnimationFrame(() => setExpanded(true));
     return () => cancelAnimationFrame(raf);
   }, []);
+
+  /* ★ 任务级草稿键控隔离（模式对齐 ChatShell 主输入草稿 draftsRef 先例：Map<会话ID,草稿>）：
+     按 delegateCallId 键控，openTask 切换 taskView 时恢复目标任务草稿，并发任务互不串扰；
+     useLayoutEffect 在 paint 前完成恢复，避免切换瞬间闪现上一任务草稿 */
+  const [taskDraft, setTaskDraft] = useState('');
+  const taskDraftsRef = useRef<Map<string, string>>(new Map());
+  const taskDraftKeyRef = useRef<string>(taskView.delegateCallId);
+  useLayoutEffect(() => {
+    const nextKey = taskView.delegateCallId;
+    if (taskDraftKeyRef.current === nextKey) return;
+    taskDraftKeyRef.current = nextKey;
+    setTaskDraft(taskDraftsRef.current.get(nextKey) ?? '');
+  }, [taskView.delegateCallId]);
+
+  /** 任务级轻提示上下文（App.useApp() message；UI-only 占位反馈，不接任何 IPC） */
+  const { message } = App.useApp();
+  const taskRunning = taskView.status === 'running';
+
+  /** 草稿受控变更：即时落 Map（当前 delegateCallId 键）；恢复/清空均以 Map 为唯一权威 */
+  const handleTaskDraftChange = (value: string): void => {
+    setTaskDraft(value);
+    taskDraftsRef.current.set(taskView.delegateCallId, value);
+  };
+
+  /** 发送占位（仅终态可触发）：清空该任务草稿 + 轻提示；真实任务交互消息链路后续接入 */
+  const handleTaskSend = (): void => {
+    if (taskView.status === 'running' || taskDraft.trim().length === 0) return;
+    taskDraftsRef.current.set(taskView.delegateCallId, '');
+    setTaskDraft('');
+    void message.info('任务交互消息功能开发中');
+  };
+
+  /** 停止占位（running 恒可点）：仅轻提示 + 预留回调，不改动任何状态；真实任务级停止 IPC 后续接入 */
+  const handleTaskStop = (): void => {
+    onStopTask?.(taskView.delegateCallId);
+  };
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const followingRef = useRef(true);
@@ -575,11 +663,13 @@ export function ExecutorRecordDrawer(options: {
                       ? entry.status === 'running'
                         ? token.colorPrimary
                         : token.colorTextQuaternary
-                      : entry.status === 'running'
-                        ? token.colorPrimary
-                        : entry.status === 'completed'
-                          ? token.colorSuccess
-                          : token.colorError;
+                      : entry.kind === 'tool'
+                        ? entry.status === 'running'
+                          ? token.colorPrimary
+                          : entry.status === 'completed'
+                            ? token.colorSuccess
+                            : token.colorError
+                        : token.colorTextQuaternary;
                   return (
                     <div
                       key={entry.seq}
@@ -603,8 +693,10 @@ export function ExecutorRecordDrawer(options: {
                       />
                       {entry.kind === 'thinking' ? (
                         <ThinkingRecordItem record={entry} />
-                      ) : (
+                      ) : entry.kind === 'tool' ? (
                         <ToolRecordItem record={entry} />
+                      ) : (
+                        <NoticeRecordItem record={entry} />
                       )}
                     </div>
                   );
@@ -639,6 +731,74 @@ export function ExecutorRecordDrawer(options: {
             ↓ 回到最新
           </Button>
         ) : null}
+      </div>
+
+      {/* ★ 底部任务级输入区（UI-only 占位，§1.2-A 修订）：running → 停止圆钮恒可点
+          （规格对照 SenderBox 停止态：default 圆钮 + 10×10 圆角2 currentColor 方块图标）；
+          终态 completed/failed/aborted（含归档态）→ 发送圆钮（primary + ArrowUpOutlined，
+          草稿 trim 为空置灰）；两钮互斥渲染、绝不同时显示 */}
+      <div
+        style={{
+          flexShrink: 0,
+          width: '100%',
+          padding: '12px 16px',
+          borderTop: `1px solid ${token.colorBorderSecondary}`,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-end', gap: token.marginSM }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <Input.TextArea
+              value={taskDraft}
+              onChange={(event) => handleTaskDraftChange(event.target.value)}
+              onKeyDown={(event) => {
+                /* Enter（无 Shift）触发发送；Shift+Enter 换行；中文输入法组合期 Enter 不触发 */
+                if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+                event.preventDefault();
+                handleTaskSend();
+              }}
+              autoSize={{ minRows: 1, maxRows: 4 }}
+              placeholder="向此任务发送消息"
+              style={{ width: '100%', fontSize: token.fontSize }}
+            />
+          </div>
+          {taskRunning ? (
+            <Button
+              type="default"
+              shape="circle"
+              style={{
+                flexShrink: 0,
+                background: token.colorFillSecondary,
+                borderColor: token.colorBorderSecondary,
+                color: token.colorText,
+              }}
+              icon={
+                <span
+                  style={{
+                    display: 'block',
+                    width: 10,
+                    height: 10,
+                    background: 'currentColor',
+                    borderRadius: 2,
+                  }}
+                />
+              }
+              aria-label="停止此任务"
+              title="停止此任务"
+              onClick={handleTaskStop}
+            />
+          ) : (
+            <Button
+              type="primary"
+              shape="circle"
+              style={{ flexShrink: 0 }}
+              icon={<ArrowUpOutlined />}
+              aria-label="发送消息"
+              title="发送消息"
+              disabled={taskDraft.trim().length === 0}
+              onClick={handleTaskSend}
+            />
+          )}
+        </div>
       </div>
     </div>
   );

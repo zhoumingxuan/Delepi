@@ -134,6 +134,16 @@ const electronAPI = {
       delegateCallId: string;
       sinceSeq?: number;
     }) => ipcRenderer.invoke(IPC_EXECUTOR.GET_TASK_RECORD, params),
+    /**
+     * 停止指定委派任务（渲染→主，invoke；任务级隔离停止——仅停止该任务，
+     * 不影响其他并发任务与会话级运行）
+     * @param params { conversationId, delegateCallId }
+     * @returns { stopped, taskName }（双防线校验未通过时 stopped=false，幂等）
+     */
+    stopTask: (params: {
+      conversationId: string;
+      delegateCallId: string;
+    }) => ipcRenderer.invoke(IPC_EXECUTOR.STOP_TASK, params),
   },
   python: {
     download: () => ipcRenderer.invoke(IPC_PYTHON.DOWNLOAD),

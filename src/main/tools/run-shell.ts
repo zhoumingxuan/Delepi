@@ -4,8 +4,8 @@
  * - 每次调用 spawn 一个独立 shell 子进程（Windows: powershell.exe -NoProfile -Command <command>；
  *   Linux: /bin/bash -c <command>），命令经命令行参数直传，工作目录经 spawn cwd 传入，进程执行完即退出；
  * - 无常驻/单例 shell 会话、无模块级可变状态、无临时脚本文件；
- * - timeout_seconds 默认 180s（可覆盖），超时 kill 后 returncode=124，abort 后 returncode=130；
- * - suspend 挂起模式：约 200ms 启动期确认子进程存活后立即返回真实子进程 PID（参照 run-with-python.ts L458-615）；
+ * - timeout 默认 180s（可覆盖），超时 kill 后 returncode=124，abort 后 returncode=130；
+ * - suspend 挂起模式：spawn 后立即返回真实子进程 PID，进程独立运行、不等待不采集、无执行超时（参照 script-tool.ts timeout=-1 挂起形态）；
  * - 结果字段与 run_exe 逐字段一致（success/code/message/data{returncode,stdout,stderr,execId,responseId}；挂起成功附加 pid/platform）。
  */
 import { randomUUID } from 'node:crypto';
@@ -17,6 +17,7 @@ import { buildExecutedToolResultData, buildToolResult, truncateToolOutput, type 
 import { ensureErrorMessage } from '../utils/index';
 import {
   DEFAULT_TIMEOUT_SECONDS,
+  TOOL_TIMEOUT_MAX_SECONDS,
   MAX_COMMAND_LENGTH,
   ERR_INVALID_ARGUMENT,
   ERR_COMMAND_TOO_LONG,
@@ -31,7 +32,7 @@ type RunShellInput = {
   command?: unknown;
   run_dir?: unknown;
   suspend?: unknown;
-  timeout_seconds?: unknown;
+  timeout?: unknown;
 };
 
 type ShellPlatform = 'windows' | 'linux' | 'macos';
@@ -42,13 +43,8 @@ type SpawnCommandResult = {
 };
 
 type SuspendedSpawnResult = {
-  exited: boolean; returncode: number | null;
-  stdout: string; stderr: string;
-  pid?: number; platform?: NodeJS.Platform;
+  pid: number; platform: NodeJS.Platform;
 };
-
-/** 挂起模式启动期确认窗口（ms）：对齐 run-with-python.ts SUSPEND_STARTUP_DELAY_MS=200 */
-const SUSPEND_STARTUP_DELAY_MS = 200;
 
 function getShellPlatform(): ShellPlatform {
   if (process.platform === 'win32') return 'windows';
@@ -132,9 +128,11 @@ async function resolveWorkDir(inputWorkDir: string | null, context: ToolRuntimeC
   return resolvedDir;
 }
 
-// timeout_seconds 归一化：非法值回退 DEFAULT_TIMEOUT_SECONDS(180)
+// timeout 归一化：非法值回退 DEFAULT_TIMEOUT_SECONDS(180)，超上限按 TOOL_TIMEOUT_MAX_SECONDS(3600) 收敛
 function toTimeoutSeconds(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : DEFAULT_TIMEOUT_SECONDS;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.min(value, TOOL_TIMEOUT_MAX_SECONDS)
+    : DEFAULT_TIMEOUT_SECONDS;
 }
 
 /** 子进程输出解码：utf-8 严格试探 → GBK 回退（Windows PowerShell 管道输出默认为控制台代码页） */
@@ -217,11 +215,11 @@ async function runSpawnCommand(
 }
 
 /**
- * 挂起模式执行（参照 run-with-python.ts L458-615）：
- * - spawn 后约 200ms 启动期收集输出，不设超时定时器（timeout_seconds 语义=忽略）；
- * - 启动期内进程已退出（秒退/启动失败）→ 返回 exited=true，交由普通结果路径组装；
- * - 启动期内 abort → kill 并以 ABORTED 结束；
- * - 启动期后进程仍活 → 挂起成功返回真实子进程 PID；此后移除 abort 监听（生命周期由调用方管理）。
+ * 挂起模式执行（参照 script-tool.ts timeout=-1 挂起形态）：只开启执行，无需关心结果直接返回。
+ * - spawn 后立即返回真实子进程 PID，不等待进程结束、不采集 stdout/stderr（立即 resume 丢弃，防背压）；
+ * - 不设超时定时器（timeout 语义=忽略）；
+ * - 不挂 abort 监听：进程独立于会话运行，生命周期由调用方经 PID 管理；
+ * - error 事件挂空监听：解释器缺失等异步启动失败时防止未处理 'error' 事件导致主进程崩溃（结果已返回不再改写）。
  */
 async function runSuspendedSpawnCommand(
   platform: ShellPlatform,
@@ -229,82 +227,31 @@ async function runSuspendedSpawnCommand(
   options: { cwd: string | null },
   signal?: AbortSignal,
 ): Promise<SuspendedSpawnResult> {
-  return new Promise<SuspendedSpawnResult>((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(new Error('ABORTED'));
-      return;
-    }
-    const shell = buildShellSpawn(platform, userCommand);
-    const child = spawn(shell.command, shell.args, {
-      cwd: options.cwd ?? undefined,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    const stdoutChunks: Buffer[] = [];
-    const stderrChunks: Buffer[] = [];
-    let aborted = false;
-    let settled = false;
-    let collecting = true;
-    const startupTimer: NodeJS.Timeout = setTimeout(() => {
-      if (settled) return;
-      settled = true; cleanup();
-      if (aborted) { reject(new Error('ABORTED')); return; }
-      const pid = child.pid;
-      if (typeof pid !== 'number') {
-        child.kill();
-        reject(new Error('无法获取挂起 Shell 进程 PID'));
-        return;
-      }
-      // 挂起成功：停止收集后续输出（流切换 flowing 丢弃，防父进程内存膨胀）
-      collecting = false;
-      child.stdout.removeAllListeners('data');
-      child.stdout.resume();
-      child.stderr.removeAllListeners('data');
-      child.stderr.resume();
-      resolve({
-        exited: false,
-        returncode: null,
-        stdout: decodeOutput(stdoutChunks),
-        stderr: decodeOutput(stderrChunks),
-        pid,
-        platform: process.platform,
-      });
-    }, SUSPEND_STARTUP_DELAY_MS);
-    const abortHandler = () => {
-      if (settled) return;
-      aborted = true;
-      child.kill();
-    };
-    const cleanup = () => {
-      clearTimeout(startupTimer);
-      if (signal) signal.removeEventListener('abort', abortHandler);
-    };
-    if (signal) {
-      signal.addEventListener('abort', abortHandler, { once: true });
-    }
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      if (collecting) stdoutChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      if (collecting) stderrChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-    });
-    child.once('error', (error) => {
-      if (settled) return;
-      settled = true; cleanup(); reject(error);
-    });
-    child.once('close', (code) => {
-      if (settled) return;
-      settled = true; cleanup();
-      if (aborted) { reject(new Error('ABORTED')); return; }
-      // 启动期内秒退：不返回已死 pid，结果交由普通结果路径处理
-      resolve({
-        exited: true,
-        returncode: code ?? 1,
-        stdout: decodeOutput(stdoutChunks),
-        stderr: decodeOutput(stderrChunks),
-      });
-    });
+  if (signal?.aborted) {
+    throw new Error('ABORTED');
+  }
+
+  const shell = buildShellSpawn(platform, userCommand);
+  const child = spawn(shell.command, shell.args, {
+    cwd: options.cwd ?? undefined,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
+
+  // error 事件挂空监听：异步启动失败不再改写已返回结果，仅防未处理 'error' 事件崩溃
+  child.once('error', () => {});
+
+  // 立即 resume 丢弃输出（不采集、防背压），进程后续输出与退出码不再关心
+  child.stdout.resume();
+  child.stderr.resume();
+
+  const pid = child.pid;
+  if (typeof pid !== 'number') {
+    child.kill();
+    throw new Error('无法获取挂起 Shell 进程 PID');
+  }
+
+  return { pid, platform: process.platform };
 }
 
 /**
@@ -345,7 +292,7 @@ export async function runShell(input: unknown, context: ToolRuntimeContext): Pro
     return buildToolResult({ success: false, code: ERR_INVALID_WORK_DIR, message: `run_dir 非法：${ensureErrorMessage(error)}` });
   }
 
-  const timeoutSeconds = toTimeoutSeconds(resolvedInput.timeout_seconds);
+  const timeoutSeconds = toTimeoutSeconds(resolvedInput.timeout);
 
   // 与 run_exe 一致的正常退出结果组装
   const finish = (returncode: number, stdout: string, stderr: string): ToolResult => {
@@ -366,21 +313,18 @@ export async function runShell(input: unknown, context: ToolRuntimeContext): Pro
       data: buildExecutedToolResultData({ returncode: 130, stdout: truncateToolOutput(''), stderr: truncateToolOutput('ABORTED'), execId, responseId }),
     });
 
-  // 挂起模式：约 200ms 启动期确认存活后返回真实子进程 PID
+  // 挂起模式：spawn 后立即返回真实子进程 PID（不等待不采集、无执行超时）
   if (suspend) {
     try {
       const suspended = await runSuspendedSpawnCommand(platform, command, { cwd: workDir }, context.signal);
-      if (suspended.exited) {
-        return finish(suspended.returncode ?? 1, suspended.stdout, suspended.stderr);
-      }
       return buildToolResult({
         success: true,
         code: ERR_OK,
-        message: `\n当前进程(PID: ${suspended.pid})已挂起，【若用户无特殊要求则默认当前任务结束前清理】，当前平台: ${suspended.platform}`,
+        message: `\n当前进程(PID: ${suspended.pid})已启动，当前不返回进程状态，可用其他脚本【监控】具体执行状态；【若用户无特殊要求则默认当前任务结束前清理】，当前平台: ${suspended.platform}`,
         data: buildExecutedToolResultData({
           returncode: 0,
-          stdout: truncateToolOutput(suspended.stdout),
-          stderr: truncateToolOutput(suspended.stderr),
+          stdout: truncateToolOutput(''),
+          stderr: truncateToolOutput(''),
           execId,
           responseId,
           extra: { pid: suspended.pid, platform: suspended.platform },

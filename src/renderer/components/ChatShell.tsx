@@ -645,6 +645,7 @@ const { check, canCheck } = useConfigReadiness({
         <ExecutorRecordDrawer
           taskView={executorRecords.activeTaskView}
           onClose={executorRecords.closePanel}
+          onStopTask={executorRecords.stopTask}
         />
       ) : null}
 

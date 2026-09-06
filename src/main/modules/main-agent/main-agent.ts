@@ -60,7 +60,12 @@ import {
   getRunningAssistantMessage,
   deleteRunningAssistantMessage,
 } from './running-assistant-message-map';
-import { beginExecutorTaskRecord, clearExecutorTaskRecords } from '../executor-agent/executor-task-record-store';
+import {
+  beginExecutorTaskRecord,
+  clearExecutorTaskRecords,
+  registerTaskStopController,
+  unregisterTaskStopController,
+} from '../executor-agent/executor-task-record-store';
 import {
   MAX_CONVERSATION_TITLE_LENGTH,
   DELEGATE_ARGUMENTS_RETRY_LIMIT,
@@ -1044,6 +1049,16 @@ export async function runMainAgent(
         //   未启动即中止时不再发出 init 快照（原位置在 abort 检查之前，会多发一次瞬时 init 事件）；
         //   任务真正启动（闭包首个 await 前）即同步发出，前端任务卡片立即出现。
 
+        // ★ 任务级隔离停止：任务级 AbortController（会话级取消经手工桥接先例模式传导至此——
+        //   对齐上方 titleController/onSessionAbort 既有模式，不引入 AbortSignal.any）；
+        //   注册表登记后 stopExecutorTask 可按 (conversationId, toolCall.id) 精确停止单个任务，
+        //   不影响同批其他并发任务，也不触发任何会话级事件。
+        const taskStopController = new AbortController();
+        registerTaskStopController(conversationId, toolCall.id, taskStopController);
+        const onSessionAbort = () =>
+          taskStopController.abort(options.signal?.reason ?? new Error(ERR_ABORTED));
+        options.signal?.addEventListener('abort', onSessionAbort, { once: true });
+
         try {
           await mkdir(conversationDir, { recursive: true });
           await mkdir(finalOutputDir, { recursive: true });
@@ -1059,7 +1074,7 @@ export async function runMainAgent(
             taskId,
             finalOutputDir,
             outputDir,
-            signal: options.signal,
+            signal: taskStopController.signal,
             currentUploadedFiles: uploadedFiles.map((file) => ({
               name: file.name,
               absolutePath: resolveStoragePath(file.storageKey),
@@ -1187,14 +1202,14 @@ export async function runMainAgent(
 
           const failureResult = buildDelegatedTaskFailureResult(
             error,
-            Boolean(options.signal?.aborted),
+            Boolean(taskStopController.signal.aborted),
             delegatedTaskStartedAt,
           );
           const failureResultText = stringifyDelegatedTaskResultForMainAgent(failureResult);
           const toolFinishedAt = new Date().toISOString();
 
           // ★ 新版方案 §7.3-14：中止 → aborted；其余失败 → failed（草稿强制 seal、running 工具条目 → failed）
-          recordSession.markTerminal(options.signal?.aborted ? 'aborted' : 'failed');
+          recordSession.markTerminal(taskStopController.signal.aborted ? 'aborted' : 'failed');
 
           turnMessages.push({
             role: 'tool',
@@ -1223,7 +1238,10 @@ export async function runMainAgent(
               finishedAt: toolFinishedAt,
             },
           });
-          batchResults.push({ callId: toolCall.id, status: 'failed' });
+          batchResults.push({
+            callId: toolCall.id,
+            status: taskStopController.signal.aborted ? 'aborted' : 'failed',
+          });
 
 
           // 发送错误事件
@@ -1233,6 +1251,12 @@ export async function runMainAgent(
             errorType: ERROR_TYPE_EXECUTOR_ERROR,
           });
           return { toolCall, status: 'failed' as const };
+        } finally {
+          // ★ 任务级隔离停止生命周期：任务收敛（成功收口 / catch 收口 / 异常上抛均经此公共路径）——
+          //   移除会话级桥接 listener（{once:true} 已触发时 removeEventListener 为幂等 no-op）
+          //   + 注销任务级停止注册表条目（防 Map 泄漏；注销后 stopExecutorTask 经双防线校验天然幂等）
+          options.signal?.removeEventListener('abort', onSessionAbort);
+          unregisterTaskStopController(conversationId, toolCall.id);
         }
       } else {
         // 未知工具调用 → 返回错误

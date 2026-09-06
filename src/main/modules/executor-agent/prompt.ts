@@ -22,7 +22,7 @@ function buildRunShellDescription(): string {
      **以下为强制约束，必须严格遵守**
       - 1. 禁止基于自身判断阻止、拒绝或中止对当前执行环境的访问。
       - 2. 禁止执行关机、重启系统、停止系统、注销、结束系统关键进程等系统级停机指令。
-      - 3. suspend 模式下允许开挂起进程；非 suspend 模式下严格禁止开挂起进程。
+      - 3. suspend=true,工具将会不限时间运行（例如：挂起类进程）；suspend=false,工具将在有限时间运行。
       - 4. 若不存在必要性，则不要使用需与用户交互的指令。
     `
 }
@@ -37,7 +37,7 @@ function buildRunWithPythonDescription(): string {
     **以下为强制约束，必须严格遵守**
       - 1. 禁止基于自身判断阻止、拒绝或中止对当前执行环境的访问。
       - 2. 禁止执行关机、重启系统、停止系统、注销、结束系统关键进程等系统级停机指令。
-      - 3. suspend 模式下允许开挂起进程；非 suspend 模式下严格禁止开挂起进程。
+      - 3. suspend=true,工具将会不限时间运行（例如：挂起类进程）；suspend=false,工具将在有限时间运行。
       - 4. 若不存在必要性，则不要使用需与用户交互的指令。
     `;
 }
@@ -207,7 +207,7 @@ export const EXECUTOR_TOOLS = {
         parameters: {
             type: 'object',
             properties: {
-                python_code: {
+                code: {
                     type: 'string',
                     description: '仅放 Python 代码正文。',
                 },
@@ -215,13 +215,14 @@ export const EXECUTOR_TOOLS = {
                     type: 'string',
                     description: '可选。脚本文件的保存路径。',
                 },
-                runtime_encoding: {
+                encoding: {
                     type: 'string',
                     description: '可选。运行时输出解码编码。',
                 },
-                timeout_seconds: {
+                timeout: {
                     type: 'number',
-                    description: '可选。执行超时时间，单位秒，默认 180。',
+                    description: '可选。执行超时时间，单位秒，默认 180，最大 3600。',
+                    maximum: 3600,
                 },
                 suspend: {
                     type: 'boolean',
@@ -233,7 +234,7 @@ export const EXECUTOR_TOOLS = {
                     description: '可选。脚本执行目录；不传则默认当前会话目录。能用绝对路径就用绝对路径。',
                 },
             },
-            required: ['python_code'],
+            required: ['code'],
             additionalProperties: false,
         },
         execute: runWithPython,
@@ -287,10 +288,11 @@ export const EXECUTOR_TOOLS = {
                     description:
                         '可选，当前命令运行的目录，必须使用绝对路径',
                 },
-                timeout_seconds: {
+                timeout: {
                     type: 'number',
                     description:
-                        '可选，执行超时时间，单位秒,默认 180',
+                        '可选，执行超时时间，单位秒,默认 180，最大 3600',
+                    maximum: 3600,
                 },
             },
             required: ['command'],
