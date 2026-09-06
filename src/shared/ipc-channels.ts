@@ -117,6 +117,14 @@ export const IPC_EXECUTOR = {
    * 也不触发会话级 chat:aborted / MAIN_AGENT_ABORTED_EVENT。
    */
   STOP_TASK: 'executor:stop-task',
+  /**
+   * 执行子智能体任务级交互消息（渲染→主，invoke）
+   * 请求 { conversationId, delegateCallId, message }；返回 { accepted, reason? }。
+   * 消息仅进入目标任务的排队队列（与 stopExecutorTask 同构的任务级隔离寻址），
+   * 在执行子智能体安全点（思考段结束/工具批次结束）注入该任务模型上下文；
+   * 任务非 running / 停止请求已置位 / 超长 / 队满 → accepted=false（拒收，不入时间线）。
+   */
+  SEND_TASK_MESSAGE: 'executor:send-task-message',
 } as const;
 
 // --- 本地文件相关 IPC 通道 ---

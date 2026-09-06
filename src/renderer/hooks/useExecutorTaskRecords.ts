@@ -25,6 +25,7 @@ import {
 } from '../lib/executor-record-messages';
 import type {
   ExecutorRecordEntry,
+  ExecutorTaskMessageSendResult,
   ExecutorTaskRecordQueryResult,
   ExecutorTaskRecordSignal,
   ExecutorTaskRecordStatus,
@@ -59,6 +60,13 @@ export interface UseExecutorTaskRecordsResult {
   closePanel: () => void;
   /** 任务级隔离停止（仅停止目标任务；静默容错，无乐观更新与全局提示，状态收敛由终态信号链路完成） */
   stopTask: (delegateCallId: string) => void;
+
+  /** 任务级交互消息发送：返回后端受理结果（accepted 后视觉态由 record-signal 链路驱动；
+   *  渲染层自产 reason: unavailable/ipc-error；不在本 hook 内做乐观更新） */
+  sendTaskMessage: (
+    delegateCallId: string,
+    message: string,
+  ) => Promise<ExecutorTaskMessageSendResult>;
   /** 右栏当前目标任务 id（唯一目标状态） */
   activeDelegateCallId: string | null;
   /** 右栏当前目标任务视图（无目标或已归档时可能为 null / hasRecords=false） */
@@ -406,6 +414,35 @@ export function useExecutorTaskRecords(options: {
     });
   }, []);
 
+  /** 任务级交互消息：conversationId 经 taskConversationIndexRef 反查 → IPC 入队（模式对齐
+   *  stopTask：electron.d.ts 不在改动白名单——局部类型收窄先例沿用） */
+  const sendTaskMessage = useCallback(
+    (delegateCallId: string, message: string): Promise<ExecutorTaskMessageSendResult> => {
+      const targetConversationId = taskConversationIndexRef.current.get(delegateCallId);
+      if (!targetConversationId) {
+        return Promise.resolve({ accepted: false, reason: 'not-found' });
+      }
+      const executorSendApi = window.electronAPI.executor as unknown as Partial<{
+        sendTaskMessage: (params: {
+          conversationId: string;
+          delegateCallId: string;
+          message: string;
+        }) => Promise<ExecutorTaskMessageSendResult>;
+      }>;
+      if (!executorSendApi.sendTaskMessage) {
+        return Promise.resolve({ accepted: false, reason: 'unavailable' });
+      }
+      return Promise.resolve(
+        executorSendApi.sendTaskMessage({
+          conversationId: targetConversationId,
+          delegateCallId,
+          message,
+        }),
+      ).catch(() => ({ accepted: false, reason: 'ipc-error' }));
+    },
+    [],
+  );
+
   const activeTaskView = activeDelegateCallId
     ? taskViews[activeDelegateCallId] ?? null
     : null;
@@ -420,6 +457,7 @@ export function useExecutorTaskRecords(options: {
     openTask,
     closePanel,
     stopTask,
+    sendTaskMessage,
     activeDelegateCallId,
     activeTaskView,
     executorTaskMessages,

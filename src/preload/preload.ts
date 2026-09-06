@@ -144,6 +144,17 @@ const electronAPI = {
       conversationId: string;
       delegateCallId: string;
     }) => ipcRenderer.invoke(IPC_EXECUTOR.STOP_TASK, params),
+    /**
+     * 向指定委派任务发送交互消息（渲染→主，invoke；任务级隔离——消息仅进入目标任务排队队列，
+     * 由执行子智能体安全点注入其模型上下文；不影响其他并发任务）
+     * @param params { conversationId, delegateCallId, message }
+     * @returns { accepted, reason? }（任务非 running/停止中/超长/队满等 → accepted=false）
+     */
+    sendTaskMessage: (params: {
+      conversationId: string;
+      delegateCallId: string;
+      message: string;
+    }) => ipcRenderer.invoke(IPC_EXECUTOR.SEND_TASK_MESSAGE, params),
   },
   python: {
     download: () => ipcRenderer.invoke(IPC_PYTHON.DOWNLOAD),

@@ -1373,6 +1373,12 @@ export async function runDelegatedTask(
 
   // 工具调用循环
   while (true) {
+
+    // ★ 任务级交互消息·安全点二（工具批次结束/循环轮起点）：到达此点必经 Promise.all 汇聚
+    //   （并发批次全部结束）+ 全部 role:'tool' 已 push 同步收口，或修复轮 continue（合成 user
+    //   已 push）；批次期间到达的排队消息在此注入（序位=数组末尾），本轮请求即携带——
+    //   批次收口到本轮 create 之间无 await，注入必然生效。
+    options.recordSession?.consumePendingUserMessages();
     const assistantMessage = await completeExecutorTurn({
       assistantConfig: options.assistantConfig,
       messages: runtimeMessages,
@@ -1402,6 +1408,14 @@ export async function runDelegatedTask(
     // ★ 新版方案 §7.1-3 轮收口回调：reasoning=executor 任务级思考权威全文（轮界 seal 数据源），
     //   工具轮/最终输出轮/修复轮三路径均经此点
     options.onTurnEnd?.({ reasoning: thinking, hasToolCalls: toolCalls.length > 0 });
+
+    // ★ 任务级交互消息·安全点一（思考段结束，仅工具轮）：此刻本轮 assistant(tool_calls) 尚未
+    //   push，注入序位=上一轮消息之后、本轮 assistant 之前，合法；工具轮必有下一轮，注入必然
+    //   被下一轮请求携带。无工具调用轮（最终输出/修复候选）不在此消费——该轮可能解析成功
+    //   break，消费交由循环顶安全点二或 markTerminal 终态清扫。
+    if (toolCalls.length > 0) {
+      options.recordSession?.consumePendingUserMessages();
+    }
 
     // 无工具调用 → 解析最终输出
     if (toolCalls.length === 0) {

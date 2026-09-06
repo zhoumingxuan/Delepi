@@ -60,7 +60,28 @@ export interface ExecutorNoticeRecord {
   createdAt: string;
 }
 
-export type ExecutorRecordEntry = ExecutorThinkingRecord | ExecutorToolRecord | ExecutorNoticeRecord;
+/** 显示视图条目：任务级交互消息（用户运行中消息；有状态机——queued→delivered/undelivered，
+ *  状态转移经 mutatedSeqs 原位补发，与 notice 的静态单时刻语义不同，故独立第四 kind） */
+export interface ExecutorUserMessageRecord {
+  kind: 'user-message';
+  /** 会话内单调递增序号（nextSeq 统一分配；= 右栏时间线序号） */
+  seq: number;
+  /** 用户消息原文（显示视图：控制字符净化后全文，不截断；与 modelMessages 注入文本双视图分离） */
+  text: string;
+  /** queued=排队中（等待安全点注入）；delivered=已送达（已写入 modelMessages，模型下一轮可见）；
+   *  undelivered=未送达（任务终态时仍在排队/未获送达证明，终态清扫收敛） */
+  state: 'queued' | 'delivered' | 'undelivered';
+  /** 入队时刻（ISO；渲染头部时钟 formatEntryClock 取此字段） */
+  createdAt: string;
+  /** 送达时刻（ISO；仅 state='delivered' 时存在） */
+  deliveredAt?: string;
+}
+
+export type ExecutorRecordEntry =
+  | ExecutorThinkingRecord
+  | ExecutorToolRecord
+  | ExecutorNoticeRecord
+  | ExecutorUserMessageRecord;
 
 /** 任务状态（running → completed / failed / aborted；终态后 records 冻结只读） */
 export type ExecutorTaskRecordStatus = 'running' | 'completed' | 'failed' | 'aborted';
@@ -95,4 +116,28 @@ export interface ExecutorTaskRecordQueryResult {
   entries: ExecutorRecordEntry[];
   /** 服务端 latestSeq < 请求 sinceSeq（会话已清理重建）→ 前端整体重置 */
   reset?: boolean;
+}
+
+/** executor:send-task-message 请求参数（渲染→主，invoke） */
+export interface ExecutorTaskMessageSendParams {
+  conversationId: string;
+  delegateCallId: string;
+  message: string;
+}
+
+/** executor:send-task-message 受理失败原因（后端主进程产生；unavailable/ipc-error 为渲染层自产） */
+export type ExecutorTaskMessageSendFailReason =
+  | 'empty'            // 消息 trim 后为空（前端已拦截，双保险）
+  | 'too-long'         // 超过单条上限（EXECUTOR_TASK_MESSAGE_MAX_LENGTH，默认 4000）
+  | 'queue-full'       // 排队队列超上限（EXECUTOR_TASK_MESSAGE_MAX_PENDING，默认 10）
+  | 'not-found'        // 会话/任务不存在或已清理
+  | 'terminal'         // 任务已终态（status !== 'running'）
+  | 'stop-requested'   // 停止请求已冻结（freezeForStop 已置、终态未收敛窗口）
+  | 'unavailable'      // 渲染层：preload 方法不存在（类型收窄命中空）
+  | 'ipc-error';       // 渲染层：invoke 异常
+
+/** executor:send-task-message 返回（受理结果；受理后的视觉态由 record-signal 链路驱动） */
+export interface ExecutorTaskMessageSendResult {
+  accepted: boolean;
+  reason?: ExecutorTaskMessageSendFailReason;
 }

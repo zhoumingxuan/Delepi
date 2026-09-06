@@ -39,7 +39,7 @@ import { getRunningAssistantMessage } from '../modules/main-agent/running-assist
 import {
   queryExecutorTaskRecord,
   clearExecutorTaskRecords,
-  stopExecutorTask,
+  stopExecutorTask, sendTaskUserMessage,
 } from '../modules/executor-agent/executor-task-record-store';
 import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../constants/events';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
@@ -1157,6 +1157,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     IPC_EXECUTOR.STOP_TASK,
     (_event, params: { conversationId: string; delegateCallId: string }) =>
       stopExecutorTask(params.conversationId, params.delegateCallId),
+  );
+
+  /**
+   * executor:send-task-message — 任务级交互消息（渲染→主，invoke）
+   * 参数校验 + 会话寻址 + enqueueUserMessage 内聚守卫后入队（时间线排队中条目 + 立即信号）；
+   * 注入时机由安全点机制决定（思考段结束/工具批次结束），任务终态未注入消息由 markTerminal 清扫为未送达。
+   * 与 stopExecutorTask 同构 (conversationId, delegateCallId) 寻址，不触碰任何会话级事件。
+   */
+  ipcMain.handle(
+    IPC_EXECUTOR.SEND_TASK_MESSAGE,
+    (_event, params: { conversationId: string; delegateCallId: string; message: string }) =>
+      sendTaskUserMessage(params.conversationId, params.delegateCallId, params.message),
   );
 
   // ================================================================

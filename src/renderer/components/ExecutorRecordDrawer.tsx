@@ -38,9 +38,11 @@ import {
 import type {
   ExecutorNoticeRecord,
   ExecutorRecordEntry,
+  ExecutorTaskMessageSendResult,
   ExecutorTaskRecordStatus,
   ExecutorThinkingRecord,
   ExecutorToolRecord,
+  ExecutorUserMessageRecord,
 } from '@shared/types/executor-record';
 import type { ExecutorTaskView } from '../lib/executor-record-messages';
 import { RichMarkdown } from './RichMarkdown';
@@ -435,13 +437,82 @@ function NoticeRecordItem(options: { record: ExecutorNoticeRecord }): ReactEleme
   );
 }
 
+/** executor:send-task-message 受理失败 reason → 轻提示文案映射（unavailable/ipc-error 等未列举项走默认） */
+const SEND_FAIL_TEXT_OF = (reason?: string): string => {
+  switch (reason) {
+    case 'terminal':
+      return '任务已结束，消息未发送';
+    case 'stop-requested':
+      return '任务停止中，消息未发送';
+    case 'queue-full':
+      return '排队消息过多，请稍候';
+    case 'too-long':
+      return '单条消息过长，请精简后重发';
+    case 'not-found':
+      return '任务不存在或已清理，消息未发送';
+    default:
+      return '消息发送失败，请重试';
+  }
+};
+
+/** 任务级交互消息条目（内聚子组件，不外泄）：
+ * - 头部行与思考/工具/通知条目同构（12px/18px colorTextTertiary）："用户消息 · HH:mm:ss · 状态"，
+ *   状态文案 排队中/已送达/未送达（兑现"排队等待→已送达"交互逻辑的用户可理解性要求）；
+ * - 正文气泡 13px/22px colorText + colorPrimaryBg 浅底 + borderRadiusSM + padding '6px 10px'
+ *   （结构对齐 NoticeRecordItem；底色取 colorPrimaryBg 以区分"用户来源"与系统中性通知——全 token）；
+ * - 静态无动画：状态转移为内容变更，不新增任何动画类声明（条目入场沿用时间线既有
+ *   executor-record-entry-in）。 */
+function UserMessageRecordItem(options: { record: ExecutorUserMessageRecord }): ReactElement {
+  const { record } = options;
+  const { token } = theme.useToken();
+  const stateText =
+    record.state === 'queued' ? '排队中' : record.state === 'delivered' ? '已送达' : '未送达';
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          minWidth: 0,
+          fontSize: 12,
+          lineHeight: '18px',
+          color: token.colorTextTertiary,
+        }}
+      >
+        <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', minWidth: 0 }}>
+          用户消息 · {formatEntryClock(record.createdAt)} · {stateText}
+        </span>
+      </div>
+      <div
+        style={{
+          fontSize: 13,
+          lineHeight: '22px',
+          color: token.colorText,
+          background: token.colorPrimaryBg,
+          borderRadius: token.borderRadiusSM,
+          padding: '6px 10px',
+          wordBreak: 'break-word',
+        }}
+      >
+        {record.text}
+      </div>
+    </div>
+  );
+}
+
 export function ExecutorRecordDrawer(options: {
   taskView: ExecutorTaskView;
   onClose: () => void;
   /** 任务级停止回调（UI 占位预留：真实任务级停止 IPC 接入后由调用方接线；不传时静默跳过、不报错） */
   onStopTask?: (delegateCallId: string) => void;
+  /** 任务级交互消息回调（受理结果制；不传时静默跳过、不报错——对齐 onStopTask 可选先例） */
+  onSendTaskMessage?: (
+    delegateCallId: string,
+    message: string,
+  ) => Promise<ExecutorTaskMessageSendResult> | undefined;
 }): ReactElement {
-  const { taskView, onClose, onStopTask } = options;
+  const { taskView, onClose, onStopTask, onSendTaskMessage } = options;
   const { token } = theme.useToken();
 
   /** dock 展开动效：挂载后 0 → 目标宽（width 200ms ease-out + overflow hidden） */
@@ -474,12 +545,23 @@ export function ExecutorRecordDrawer(options: {
     taskDraftsRef.current.set(taskView.delegateCallId, value);
   };
 
-  /** 发送占位（仅终态可触发）：清空该任务草稿 + 轻提示；真实任务交互消息链路后续接入 */
+  /** 任务级交互消息发送：仅 running 可发；受理成功清草稿（条目由 record-signal 链路出现于时间线），
+   *  受理失败按 reason 轻提示且草稿保留（不吞用户输入） */
   const handleTaskSend = (): void => {
-    if (taskView.status === 'running' || taskDraft.trim().length === 0) return;
-    taskDraftsRef.current.set(taskView.delegateCallId, '');
-    setTaskDraft('');
-    void message.info('任务交互消息功能开发中');
+    const text = taskDraft.trim();
+    if (!taskRunning || text.length === 0) return;
+    void Promise.resolve(onSendTaskMessage?.(taskView.delegateCallId, text))
+      .then((result) => {
+        if (result?.accepted) {
+          taskDraftsRef.current.set(taskView.delegateCallId, '');
+          setTaskDraft('');
+          return;
+        }
+        void message.info(SEND_FAIL_TEXT_OF(result?.reason));
+      })
+      .catch(() => {
+        void message.info('消息发送失败，请重试');
+      });
   };
 
   /** 停止占位（running 恒可点）：仅轻提示 + 预留回调，不改动任何状态；真实任务级停止 IPC 后续接入 */
@@ -669,7 +751,13 @@ export function ExecutorRecordDrawer(options: {
                           : entry.status === 'completed'
                             ? token.colorSuccess
                             : token.colorError
-                        : token.colorTextQuaternary;
+                        : entry.kind === 'user-message'
+                          ? entry.state === 'queued'
+                            ? token.colorPrimary
+                            : entry.state === 'delivered'
+                              ? token.colorSuccess
+                              : token.colorWarning
+                          : token.colorTextQuaternary;
                   return (
                     <div
                       key={entry.seq}
@@ -695,6 +783,8 @@ export function ExecutorRecordDrawer(options: {
                         <ThinkingRecordItem record={entry} />
                       ) : entry.kind === 'tool' ? (
                         <ToolRecordItem record={entry} />
+                      ) : entry.kind === 'user-message' ? (
+                        <UserMessageRecordItem record={entry} />
                       ) : (
                         <NoticeRecordItem record={entry} />
                       )}
@@ -733,10 +823,10 @@ export function ExecutorRecordDrawer(options: {
         ) : null}
       </div>
 
-      {/* ★ 底部任务级输入区（UI-only 占位，§1.2-A 修订）：running → 停止圆钮恒可点
-          （规格对照 SenderBox 停止态：default 圆钮 + 10×10 圆角2 currentColor 方块图标）；
-          终态 completed/failed/aborted（含归档态）→ 发送圆钮（primary + ArrowUpOutlined，
-          草稿 trim 为空置灰）；两钮互斥渲染、绝不同时显示 */}
+      {/* ★ 底部任务级输入区（任务级交互消息）：running → 发送圆钮（primary + ArrowUpOutlined，
+          草稿 trim 为空置灰）与停止圆钮（规格对照 SenderBox 停止态：default 圆钮 + 10×10 圆角2
+          currentColor 方块图标）共存；终态 completed/failed/aborted（含归档态）→ 发送圆钮恒置灰、
+          停止圆钮隐藏；发送受理结果驱动反馈（成功清草稿/失败按 reason 轻提示且草稿保留） */}
       <div
         style={{
           flexShrink: 0,
@@ -745,6 +835,19 @@ export function ExecutorRecordDrawer(options: {
           borderTop: `1px solid ${token.colorBorderSecondary}`,
         }}
       >
+        {taskRunning &&
+        entries.some((entry) => entry.kind === 'user-message' && entry.state === 'queued') ? (
+          <div
+            style={{
+              fontSize: 12,
+              lineHeight: '18px',
+              color: token.colorTextTertiary,
+              padding: '0 0 6px',
+            }}
+          >
+            消息排队中，将在当前思考段或工具批次结束后送达
+          </div>
+        ) : null}
         <div style={{ display: 'flex', alignItems: 'flex-end', gap: token.marginSM }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <Input.TextArea
@@ -757,10 +860,21 @@ export function ExecutorRecordDrawer(options: {
                 handleTaskSend();
               }}
               autoSize={{ minRows: 1, maxRows: 4 }}
-              placeholder="向此任务发送消息"
+              placeholder={taskRunning ? '向此任务发送消息' : '任务已结束'}
+              disabled={!taskRunning}
               style={{ width: '100%', fontSize: token.fontSize }}
             />
           </div>
+          <Button
+            type="primary"
+            shape="circle"
+            style={{ flexShrink: 0 }}
+            icon={<ArrowUpOutlined />}
+            aria-label="发送消息"
+            title="发送消息"
+            disabled={!taskRunning || taskDraft.trim().length === 0}
+            onClick={handleTaskSend}
+          />
           {taskRunning ? (
             <Button
               type="default"
@@ -786,18 +900,7 @@ export function ExecutorRecordDrawer(options: {
               title="停止此任务"
               onClick={handleTaskStop}
             />
-          ) : (
-            <Button
-              type="primary"
-              shape="circle"
-              style={{ flexShrink: 0 }}
-              icon={<ArrowUpOutlined />}
-              aria-label="发送消息"
-              title="发送消息"
-              disabled={taskDraft.trim().length === 0}
-              onClick={handleTaskSend}
-            />
-          )}
+          ) : null}
         </div>
       </div>
     </div>

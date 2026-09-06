@@ -646,6 +646,7 @@ const { check, canCheck } = useConfigReadiness({
           taskView={executorRecords.activeTaskView}
           onClose={executorRecords.closePanel}
           onStopTask={executorRecords.stopTask}
+          onSendTaskMessage={executorRecords.sendTaskMessage}
         />
       ) : null}
 

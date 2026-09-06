@@ -31,14 +31,17 @@ import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../../constants/events';
 import { resolveExecutorToolProgressDisplayName } from '../../constants/agent';
 import { getDynamicExecutorToolMeta } from '../../tools/executor-registry';
 import { ERR_ABORTED } from '../../constants/errors';
+import { buildExecutorUserTaskMessage } from './executor-system-prompt';
 import type {
   ExecutorNoticeRecord,
   ExecutorRecordEntry,
+  ExecutorTaskMessageSendResult,
   ExecutorTaskRecordQueryResult,
   ExecutorTaskRecordSignal,
   ExecutorTaskRecordStatus,
   ExecutorThinkingRecord,
   ExecutorToolRecord,
+  ExecutorUserMessageRecord,
 } from '@shared/types/executor-record';
 
 /**
@@ -58,6 +61,11 @@ export type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 const MAX_RECORDS = 500;
 /** 渲染信号节流窗口（leading+trailing；算法逐字对齐 main-agent 既有 emitSnapshotSignal 模式） */
 const RECORD_SIGNAL_EMIT_MIN_INTERVAL_MS = 200;
+
+/** 单条任务级交互消息长度上限（字符） */
+export const EXECUTOR_TASK_MESSAGE_MAX_LENGTH = 4000;
+/** 单任务排队消息上限（防长批次期间连点刷屏） */
+export const EXECUTOR_TASK_MESSAGE_MAX_PENDING = 10;
 
 /** 剥离 C0/C1 控制字符（保留 \n \t）——仅作用于显示视图，真实视图零加工 */
 function sanitizeDisplayText(text: string): string {
@@ -180,6 +188,16 @@ export interface ExecutorTaskRecordSession {
   appendStopNotice(text: string): void;
   /** 停止请求写入冻结（stopExecutorTask 内部调用；置位后除 markTerminal 外全部写入 API no-op；幂等） */
   freezeForStop(): void;
+
+  /** 任务级交互消息入队（sendTaskUserMessage 唯一入口；守卫内聚：terminal/stop-requested/
+   *  queue-full 拒收；records 新增 state=queued 条目（净化文本）+ pendingUserMessages 入队
+   *  （原文，真实视图零加工）+ emitSignal(true) 立即信号；返回受理结果） */
+  enqueueUserMessage(text: string): ExecutorTaskMessageSendResult;
+  /** 安全点消费（executor-agent 循环 SP1/SP2 调用）：FIFO 消费 pendingUserMessages，逐条经
+   *  buildExecutorUserTaskMessage 包装后 push 进 this.modelMessages（与 runtimeMessages 同引用，
+   *  push 即进入模型上下文），条目 state→delivered + mutatedSeqs 登记 + emitSignal(true)；
+   *  守卫：stopRequested/terminal 时 no-op 返回 0（冻结后永不消费，终态清扫兜底） */
+  consumePendingUserMessages(): number;
 }
 
 class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
@@ -210,6 +228,10 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
    * 服务完成后即剪除（单客户端应用，窗口内条目数与两次查询间转移数同阶）。
    */
   private mutatedSeqs = new Set<number>();
+
+  /** ★ 任务级交互消息排队队列（真实视图原文，FIFO；安全点消费入口：executor-agent 循环
+   *  SP1/SP2 调用 consumePendingUserMessages） */
+  private pendingUserMessages: Array<{ seq: number; text: string }> = [];
   /** 200ms leading+trailing 节流状态 */
   private lastSignalEmitAt = 0;
   private pendingSignal: ExecutorTaskRecordSignal | null = null;
@@ -463,6 +485,16 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
         this.mutatedSeqs.add(record.seq);   // 同 seq 状态转移：登记供增量查询补发
       }
     }
+    // ★ 任务级交互消息终态清扫：终态时仍在排队的消息收敛为未送达——终态后 modelMessages
+    //   不再被任何 create 消费，语义与 UI 对齐
+    for (const item of this.pendingUserMessages) {
+      const record = this.records.find((entry) => entry.seq === item.seq);
+      if (record && record.kind === 'user-message' && record.state === 'queued') {
+        record.state = 'undelivered';
+        this.mutatedSeqs.add(record.seq);
+      }
+    }
+    this.pendingUserMessages.length = 0;
     this.status = status;
     this.finishedAt = finishedAt;
     this.terminal = true;
@@ -505,6 +537,52 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     this.stopRequested = true;
   }
 
+  enqueueUserMessage(text: string): ExecutorTaskMessageSendResult {
+    if (this.terminal || this.status !== 'running') {
+      return { accepted: false, reason: 'terminal' };
+    }
+    if (this.stopRequested) {
+      return { accepted: false, reason: 'stop-requested' };
+    }
+    if (this.pendingUserMessages.length >= EXECUTOR_TASK_MESSAGE_MAX_PENDING) {
+      return { accepted: false, reason: 'queue-full' };
+    }
+    const seq = this.nextSeq();
+    this.records.push({
+      kind: 'user-message',
+      seq,
+      text: sanitizeDisplayText(text),   // 显示视图：净化
+      state: 'queued',
+      createdAt: nowIso(),
+    });
+    this.pendingUserMessages.push({ seq, text });   // 真实视图：原文零加工
+    this.evictOverflow();
+    this.emitSignal(true);               // 立即信号：用户即时回显优先
+    return { accepted: true };
+  }
+
+  consumePendingUserMessages(): number {
+    if (this.stopRequested || this.terminal) {
+      return 0;
+    }
+    let consumed = 0;
+    while (this.pendingUserMessages.length > 0) {
+      const item = this.pendingUserMessages.shift()!;
+      this.modelMessages.push({ role: 'user', content: buildExecutorUserTaskMessage(item.text) });
+      const record = this.records.find((entry) => entry.seq === item.seq);
+      if (record && record.kind === 'user-message' && record.state === 'queued') {
+        record.state = 'delivered';
+        record.deliveredAt = nowIso();
+        this.mutatedSeqs.add(record.seq);   // 原位状态转移：登记供增量查询补发
+      }
+      consumed += 1;
+    }
+    if (consumed > 0) {
+      this.emitSignal(true);
+    }
+    return consumed;
+  }
+
   /** 清理时冲刷挂起定时器（防清理后迟到信号） */
   dispose(): void {
     this.cancelPendingSignalTimer();
@@ -542,6 +620,9 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
         }
         if (record.kind === 'notice') {
           return { ...record } satisfies ExecutorNoticeRecord;
+        }
+        if (record.kind === 'user-message') {
+          return { ...record } satisfies ExecutorUserMessageRecord;
         }
         return { ...record } satisfies ExecutorThinkingRecord;
       });
@@ -621,6 +702,32 @@ export function stopExecutorTask(
   session.freezeForStop();
   controller.abort(new Error(ERR_ABORTED));
   return { stopped: true, taskName: session.taskName };
+}
+
+/**
+ * 任务级交互消息入队（executor:send-task-message 唯一后端出口）：
+ * 与 stopExecutorTask 同构的 (conversationId, delegateCallId) 寻址；
+ * 参数校验（empty/too-long）→ 会话寻址（not-found）→ enqueueUserMessage 内聚守卫（terminal/
+ * stop-requested/queue-full）。受理成功仅代表入队，注入时机由安全点机制决定（executor-agent
+ * 循环 SP1/SP2），任务终态时未注入的消息由 markTerminal 清扫为 undelivered。
+ */
+export function sendTaskUserMessage(
+  conversationId: string,
+  delegateCallId: string,
+  message: string,
+): ExecutorTaskMessageSendResult {
+  const text = (message ?? '').trim();
+  if (!text) {
+    return { accepted: false, reason: 'empty' };
+  }
+  if (text.length > EXECUTOR_TASK_MESSAGE_MAX_LENGTH) {
+    return { accepted: false, reason: 'too-long' };
+  }
+  const session = taskRecordSessions.get(conversationId)?.get(delegateCallId);
+  if (!session) {
+    return { accepted: false, reason: 'not-found' };
+  }
+  return session.enqueueUserMessage(text);
 }
 
 /**
