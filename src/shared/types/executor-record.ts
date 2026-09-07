@@ -77,11 +77,31 @@ export interface ExecutorUserMessageRecord {
   deliveredAt?: string;
 }
 
+/** 显示视图条目：任务级助手回复（子智能体对【用户提示】的回复；有状态机——loading→completed/aborted，
+ *  状态转移经 mutatedSeqs 原位补发，与 user-message 的状态机语义同族，故独立第五 kind） */
+export interface ExecutorAssistantReplyRecord {
+  kind: 'assistant-reply';
+  /** 会话内单调递增序号（nextSeq 统一分配；= 右栏时间线序号；必然大于其对应 user-message 条目 seq——
+   *  开槽发生在 consumePendingUserMessages 同一同步调用内，紧随本批 delivered 消息之后） */
+  seq: number;
+  /** 回复正文（completed 态非空；控制字符净化后全文，不截断；首行【助手回复】标记已由后端剥离——
+   *  本字段不含标记文本；loading/aborted 态为空串） */
+  text: string;
+  /** loading=已送达待回复（consumePendingUserMessages 开槽，前端展示 loading 态）；
+   *  completed=轮收口剥离标记提取正文完结；aborted=任务终态时仍未收到回复（终态清扫收敛） */
+  state: 'loading' | 'completed' | 'aborted';
+  /** 开槽时刻（ISO；渲染头部时钟 formatEntryClock 取此字段） */
+  createdAt: string;
+  /** 完结/收敛时刻（ISO；仅 completed/aborted 态存在） */
+  finishedAt?: string;
+}
+
 export type ExecutorRecordEntry =
   | ExecutorThinkingRecord
   | ExecutorToolRecord
   | ExecutorNoticeRecord
-  | ExecutorUserMessageRecord;
+  | ExecutorUserMessageRecord
+  | ExecutorAssistantReplyRecord;
 
 /** 任务状态（running → completed / failed / aborted；终态后 records 冻结只读） */
 export type ExecutorTaskRecordStatus = 'running' | 'completed' | 'failed' | 'aborted';

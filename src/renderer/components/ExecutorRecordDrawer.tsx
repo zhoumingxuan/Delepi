@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
-import { App, Button, Input, Tag, Typography, theme } from 'antd';
+import { App, Button, Input, Spin, Tag, Typography, theme } from 'antd';
 import {
   ArrowUpOutlined,
   CheckCircleFilled,
@@ -36,6 +36,7 @@ import {
   ToolOutlined,
 } from '@ant-design/icons';
 import type {
+  ExecutorAssistantReplyRecord,
   ExecutorNoticeRecord,
   ExecutorRecordEntry,
   ExecutorTaskMessageSendResult,
@@ -501,6 +502,112 @@ function UserMessageRecordItem(options: { record: ExecutorUserMessageRecord }): 
   );
 }
 
+/** 任务级助手回复条目（内聚子组件，不外泄）：
+ *  - 头部行与用户消息/思考/工具/通知条目同构（12px/18px colorTextTertiary）："助手回复 · HH:mm:ss · 状态"，
+ *    状态文案 回复中/已完成/未收到回复（对齐 UserMessageRecordItem 头部行三段式先例）；
+ *  - loading：气泡区 antd Spin（size="small"，对齐 ChatMessageContent.tsx L810-816 消息级 Spin 形态先例）
+ *    + 次级文案"正在生成回复…"；无任何打字机/流式动画（正文仅在 completed 后一次性写入，天然无中间态）；
+ *  - completed：正文一次性经 RichMarkdown 渲染（后端轮收口已剥离首行【助手回复】标记，渲染源不含
+ *    标记文本；此处行首标记字样兜底过滤为第二道防线——防御未来后端剥离回归）；复用
+ *    .thinking-md-scope 局部样式作用域（13px/22px/colorText 与思考正文一致）；maxHeight 240px 内滚
+ *    （复用 THINKING_EXPANDED_MAX_HEIGHT_PX 常量——500 字+长回复完整可读，不引入折叠状态机）；
+ *  - aborted：气泡区次级文案"任务已结束，未收到回复"（colorTextSecondary + colorFillQuaternary 中性底，
+ *    不借 colorError——与任务终态失败语义解耦，对齐 NoticeRecordItem 用色先例）；
+ *  - 静态无动画：状态转移为内容变更（loading→completed 为一次性 DOM 结构替换），不新增任何
+ *    动画类声明；入场沿用时间线既有 executor-record-entry-in。 */
+function AssistantReplyRecordItem(options: {
+  record: ExecutorAssistantReplyRecord;
+}): ReactElement {
+  const { record } = options;
+  const { token } = theme.useToken();
+  const stateText =
+    record.state === 'loading' ? '回复中' : record.state === 'completed' ? '已完成' : '未收到回复';
+  /** 标记字样兜底过滤（行首【助手回复】标记行剔除后重组；后端剥离正常时为恒等变换） */
+  const displayText = useMemo(
+    () =>
+      record.text
+        .split('\n')
+        .filter((line) => !line.trimStart().startsWith('【助手回复】'))
+        .join('\n')
+        .trim(),
+    [record.text],
+  );
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+      {/* 头部行：助手回复 · HH:mm:ss · 状态 */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          minWidth: 0,
+          fontSize: 12,
+          lineHeight: '18px',
+          color: token.colorTextTertiary,
+        }}
+      >
+        <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', minWidth: 0 }}>
+          助手回复 · {formatEntryClock(record.createdAt)} · {stateText}
+        </span>
+      </div>
+      {record.state === 'loading' ? (
+        /* loading 态：Spin + 次级文案（既有 Spin 形态，无打字机） */
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            padding: '6px 10px',
+            background: token.colorFillQuaternary,
+            borderRadius: token.borderRadiusSM,
+          }}
+        >
+          <Spin size="small" />
+          <span style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
+            正在生成回复…
+          </span>
+        </div>
+      ) : record.state === 'completed' ? (
+        /* completed 态：一次性完整渲染（RichMarkdown；240px 内滚承载长回复） */
+        <div
+          className="thinking-md-scope"
+          style={
+            {
+              fontSize: 13,
+              lineHeight: '22px',
+              color: token.colorText,
+              wordBreak: 'break-word',
+              background: token.colorFillQuaternary,
+              borderRadius: token.borderRadiusSM,
+              padding: '6px 10px',
+              maxHeight: THINKING_EXPANDED_MAX_HEIGHT_PX,
+              overflowY: 'auto',
+              '--thinking-md-text-color': token.colorText,
+            } as CSSProperties
+          }
+        >
+          <RichMarkdown content={displayText} />
+        </div>
+      ) : (
+        /* aborted 态：中性收敛文案 */
+        <div
+          style={{
+            fontSize: 13,
+            lineHeight: '22px',
+            color: token.colorTextSecondary,
+            background: token.colorFillQuaternary,
+            borderRadius: token.borderRadiusSM,
+            padding: '6px 10px',
+            wordBreak: 'break-word',
+          }}
+        >
+          任务已结束，未收到回复
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ExecutorRecordDrawer(options: {
   taskView: ExecutorTaskView;
   onClose: () => void;
@@ -757,7 +864,13 @@ export function ExecutorRecordDrawer(options: {
                             : entry.state === 'delivered'
                               ? token.colorSuccess
                               : token.colorWarning
-                          : token.colorTextQuaternary;
+                          : entry.kind === 'assistant-reply'
+                            ? entry.state === 'loading'
+                              ? token.colorPrimary
+                              : entry.state === 'completed'
+                                ? token.colorSuccess
+                                : token.colorWarning
+                            : token.colorTextQuaternary;
                   return (
                     <div
                       key={entry.seq}
@@ -785,6 +898,8 @@ export function ExecutorRecordDrawer(options: {
                         <ToolRecordItem record={entry} />
                       ) : entry.kind === 'user-message' ? (
                         <UserMessageRecordItem record={entry} />
+                      ) : entry.kind === 'assistant-reply' ? (
+                        <AssistantReplyRecordItem record={entry} />
                       ) : (
                         <NoticeRecordItem record={entry} />
                       )}

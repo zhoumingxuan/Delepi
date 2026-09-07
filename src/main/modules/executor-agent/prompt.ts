@@ -198,6 +198,16 @@ export const EXECUTOR_TOOLS = {
         },
         execute: readFileTool,
     },
+    script_tool: {
+        config: {
+            name: 'script_tool',
+            displayName: '经验工具库调用',
+            buildDescription: buildScriptToolDescription(),
+        },
+        // v2.0 R1：tool_name 为自由字符串，无动态枚举注入；此处静态声明即唯一声明，executor-registry.ts 保持零改动。
+        parameters: buildScriptToolParameters(),
+        execute: scriptTool,
+    },
     run_with_python: {
         config: {
             name: 'run_with_python',
@@ -299,15 +309,5 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: runShell,
-    },
-    script_tool: {
-        config: {
-            name: 'script_tool',
-            displayName: '经验工具库调用',
-            buildDescription: buildScriptToolDescription(),
-        },
-        // v2.0 R1：tool_name 为自由字符串，无动态枚举注入；此处静态声明即唯一声明，executor-registry.ts 保持零改动。
-        parameters: buildScriptToolParameters(),
-        execute: scriptTool,
-    },
+    }
 }

@@ -290,10 +290,18 @@ export function useExecutorTaskRecords(options: {
         for (const [delegateCallId, view] of Object.entries(prev)) {
           if (view.conversationId === data.conversationId && view.status === 'running') {
             changed = true;
+            const abortedAt = view.finishedAt ?? new Date().toISOString();
             next[delegateCallId] = {
               ...view,
               status: 'aborted' as ExecutorTaskRecordStatus,
-              finishedAt: view.finishedAt ?? new Date().toISOString(),
+              finishedAt: abortedAt,
+              // ★ 本地兜底收敛：loading 态助手回复条目同步终态化（终态信号万一丢失时前端
+              //   双保险；下一次拉取对账时服务端 markTerminal 清扫结果为权威覆盖）
+              entries: view.entries.map((entry) =>
+                entry.kind === 'assistant-reply' && entry.state === 'loading'
+                  ? { ...entry, state: 'aborted' as const, finishedAt: abortedAt }
+                  : entry,
+              ),
             };
           } else {
             next[delegateCallId] = view;
