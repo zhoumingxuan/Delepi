@@ -2,7 +2,7 @@
  * LLMProvider - OpenAI 兼容客户端
  *
  * 服务于 MainAgent（流式 streamChat）和所有非流式调用方（nonStreamChat）
- * 包括 ExecutorAgent、title-generation、context-compression、inspect-image
+ * 包括 ExecutorAgent、title-generation、context-compression、inspect-media
  * 封装 OpenAI 兼容 SDK，集成重试策略和 SSE 解析。
  *
  * 设计原则（v1.2）：
@@ -60,8 +60,8 @@ export interface StreamChatOptions {
  * 调用点思考意图（唯一思考意图通道）：reasoningEffort 放宽为 string，空串合法（= 不发送 reasoning_effort）。
  * - 不传（undefined）：零思考参数（请求不携带任何思考键）——标题生成等辅助调用点
  * - { reasoningEffort: string }：主/子智能体（档位分别读 AppSettings.mainThinkingLevel / executorThinkingLevel，空串=不设置）
- * - { enableThinking: true }：上下文压缩/图片识别·glm*（glm 判定在调用点）
- * - { enableThinking: false }：上下文压缩/图片识别·非 glm*
+ * - { enableThinking: true }：上下文压缩/视觉识别·glm*（glm 判定在调用点）
+ * - { enableThinking: false }：上下文压缩/视觉识别·非 glm*
  * 翻译收口：本文件 buildThinkingParams（enableThinking→enable_thinking；reasoningEffort 非空→reasoning_effort，空串/未传彻底不写）
  */
 export type ThinkingIntent =
@@ -156,7 +156,7 @@ function getOpenAIClient(modelConfig: ModelConfig): OpenAI {
  * reasoning_effort 仅来自 intent.reasoningEffort（主/子智能体档位由调用点分别读取
  * AppSettings.mainThinkingLevel / executorThinkingLevel 后传入）：空串/未传 = 彻底不写该键
  * （请求体不出现 reasoning_effort 字段，由服务端走默认档位）；非空 = 写入该档位。
- * 辅助调用点（标题生成/上下文压缩/图片识别）不传 reasoningEffort，请求不带 reasoning_effort。
+ * 辅助调用点（标题生成/上下文压缩/视觉识别）不传 reasoningEffort，请求不带 reasoning_effort。
  */
 function buildThinkingParams(intent?: ThinkingIntent): {
   enable_thinking?: boolean;
@@ -429,7 +429,7 @@ export async function streamChat(
 }
 
 // ============================================================
-// 非流式调用（ExecutorAgent、title-generation、context-compression、inspect-image 使用）
+// 非流式调用（ExecutorAgent、title-generation、context-compression、inspect-media 使用）
 // ============================================================
 
 async function nonStreamChatOnce(
@@ -487,7 +487,7 @@ async function nonStreamChatOnce(
 }
 
 /**
- * 非流式对话（ExecutorAgent、title-generation、context-compression、inspect-image 使用）
+ * 非流式对话（ExecutorAgent、title-generation、context-compression、inspect-media 使用）
  * 带重试策略的非流式 API 调用
  */
 export async function nonStreamChat(

@@ -1126,7 +1126,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         valuePropName="checked"
                         extra={
                           visionLlmUnconfigured
-                            ? "视觉模型 API 未配置，图片识别会报错"
+                            ? "视觉模型 API 未配置，视觉识别会报错"
                             : undefined
                         }
                       >
@@ -1134,7 +1134,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                           onChange={(value) => {
                             if (value) {
                               antdMessage.info(
-                                "开启视觉识别需配置模型 API，否则图片识别会报错",
+                                "开启视觉识别需配置模型 API，否则视觉识别会报错",
                               );
                             }
                             onSave("visionEnabled", value);

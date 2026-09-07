@@ -222,8 +222,8 @@ export async function executeToolCall(
     }, toolCallId);
   }
 
-  // 视觉识别总开关关闭时拒绝执行 inspect_image（执行层拦截；声明层过滤见 executor-agent.ts runDelegatedTask）
-  if (normalizedToolName === 'inspect_image' && !configManager.getSettings().visionEnabled) {
+  // 视觉识别总开关关闭时拒绝执行 inspect_media（执行层拦截；声明层过滤见 executor-agent.ts runDelegatedTask）
+  if (normalizedToolName === 'inspect_media' && !configManager.getSettings().visionEnabled) {
     return buildSimpleToolResult({
       success: false,
       code: 'TOOL_DISABLED_VISION_OFF',

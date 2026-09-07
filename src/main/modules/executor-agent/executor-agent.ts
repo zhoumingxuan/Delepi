@@ -1259,14 +1259,14 @@ export async function runDelegatedTask(
 
   // 获取工具定义
   // 复用 executor-registry.getExecutorOpenAITools() 从合并视图（内置∪动态，S5-1 方向5）构建 OpenAI 工具声明。
-  // 视觉识别总开关关闭时从合并视图全集排除视觉类工具 inspect_image（声明层过滤；执行层拦截见
+  // 视觉识别总开关关闭时从合并视图全集排除视觉类工具 inspect_media（声明层过滤；执行层拦截见
   // executor-registry.executeToolCall）。动态工具全部纳入本禁用名单机制（A5-4）——首期 requiresVision=true
   // 被拒绝注册，动态工具均为非视觉，视觉关闭时保留；空动态表时过滤结果与原硬编码
   // 名单完全一致（S5-1 等价性约束）。
   const executorTools = getExecutorOpenAITools(
     configManager.getSettings().visionEnabled
       ? undefined
-      : getDefaultEnabledExecutorToolNames().filter((name) => name !== 'inspect_image'),
+      : getDefaultEnabledExecutorToolNames().filter((name) => name !== 'inspect_media'),
   );
 
   // v2.0 R1/R5：tool_name 为自由字符串（无枚举）。委派组装期一次性扫描经验库：

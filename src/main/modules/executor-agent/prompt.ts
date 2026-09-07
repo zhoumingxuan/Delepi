@@ -1,7 +1,7 @@
 import { runWithPython } from '@/main/tools/run-with-python';
 import { runShell } from '@/main/tools/run-shell';
 import { readFileTool } from '@/main/tools/read-file';
-import { inspectImage } from '@/main/tools/inspect-image';
+import { inspectImage } from '@/main/tools/inspect-media';
 import { fsSearch } from '@/main/tools/fs-search';
 import { scriptTool } from '@/main/tools/script-tool';
 
@@ -69,11 +69,11 @@ function buildFsSearchDescription(): string {
 
 function buildInspectImageDescription(): string {
     return [
-        '识别并分析本地图片中的可见事实信息。',
-        '凡是当前任务需要从图片可见内容中获取、核对、提取或分析信息时，都可以调用；包括文字、数字、符号、界面元素、表格结构、物体场景、视觉状态、异常细节等等。',
-        '必须提供真实可读取的图片文件路径；禁止虚构路径，禁止把非图片文件当作图片提交。',
-        '必须提供查询目标，用于限定当前图片中需要查询的信息范围。',
-        '输出只能依据图片中可见内容；禁止把图片外信息、用户意图或不可见内容写成事实。',
+        '识别并分析本地图片或视频中的可见事实信息。',
+        '凡是当前任务需要从图片或视频可见内容中获取、核对、提取或分析信息时，都可以调用；包括文字、数字、符号、界面元素、表格结构、物体场景、视觉状态、异常细节等等。',
+        '必须提供真实可读取的本地媒体文件路径；禁止虚构路径，禁止把非媒体文件当作图片或视频提交。',
+        '必须提供查询目标，用于限定需要查询的信息范围。',
+        '输出只能依据画面中可见内容；禁止把画面外信息、用户意图或不可见内容写成事实。',
     ].join('\n');
 }
 
@@ -250,10 +250,10 @@ export const EXECUTOR_TOOLS = {
         },
         execute: runWithPython,
     },
-    inspect_image: {
+    inspect_media: {
         config: {
-            name: 'inspect_image',
-            displayName: '图片识别',
+            name: 'inspect_media',
+            displayName: '视觉识别',
             buildDescription: buildInspectImageDescription(),
         },
         parameters: {
@@ -262,12 +262,19 @@ export const EXECUTOR_TOOLS = {
                 file_path: {
                     type: 'string',
                     description:
-                        '必填。图片文件路径，必须是当前运行环境可读取的本地图片文件路径；能使用绝对路径时优先使用绝对路径。',
+                        '必填。图片或视频文件路径，必须是当前运行环境可读取的本地媒体文件路径；能使用绝对路径时优先使用绝对路径。',
+                },
+                type: {
+                    type: 'string',
+                    enum: ['image', 'video'],
+                    description:
+                        '可选。媒体类型，图片还是视频，默认图片',
+                    default: 'image',
                 },
                 query_target: {
                     type: 'string',
                     description:
-                        '必填。想要查询当前图片中的哪些信息；必须围绕当前任务明确查询范围，禁止提交空泛或与当前任务无关的查询目标。',
+                        '必填。想要查询当前图片或视频中的哪些信息；必须围绕当前任务明确查询范围，禁止提交空泛或与当前任务无关的查询目标。',
                 },
             },
             required: ['file_path', 'query_target'],

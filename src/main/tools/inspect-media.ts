@@ -20,6 +20,7 @@ import {
   buildDataUrl,
   prepareModelImagePayload,
 } from '../utils/model-image';
+import { CONTENT_TYPE_BY_EXTENSION } from '@shared/utils/file-mime';
 import {
   ERR_VISION_MODEL_ERROR,
 } from '../modules/llm/constants';
@@ -29,11 +30,14 @@ import {
   ERR_FILE_READ_ERROR,
   ERR_ABORTED,
   ERR_OK,
+  ERR_INVALID_ARGUMENT,
+  ERR_UNSUPPORTED_VIDEO_FORMAT,
 } from '../constants';
 
 type InspectImageInput = {
   file_path?: unknown;
   query_target?: unknown;
+  type?: unknown;
 };
 
 const VISION_SYSTEM_PROMPT = `
@@ -117,6 +121,62 @@ function buildVisionMessages(options: {
   ];
 }
 
+function parseMediaType(value: unknown): 'image' | 'video' | null {
+  const normalized = normalizeString(value).trim().toLowerCase();
+
+  if (!normalized) {
+    return 'image';
+  }
+
+  if (normalized === 'image' || normalized === 'video') {
+    return normalized;
+  }
+
+  return null;
+}
+
+function getVideoContentType(filePath: string): string | null {
+  const extension = path.extname(filePath).toLowerCase();
+  const mimeType = extension ? CONTENT_TYPE_BY_EXTENSION[extension] : undefined;
+
+  return mimeType && mimeType.startsWith('video/') ? mimeType : null;
+}
+
+function buildVideoVisionMessages(options: {
+  queryTarget: string;
+  videoDataUrl: string;
+}): OpenAI.Chat.ChatCompletionMessageParam[] {
+  // 视觉模型（GLM 系等）的视频输入扩展：video_url 内容类型不在 OpenAI SDK 类型内，运行时按原样透传
+  const videoContentPart = {
+    type: 'video_url',
+    video_url: {
+      url: options.videoDataUrl,
+    },
+  } as unknown as OpenAI.Chat.ChatCompletionContentPart;
+
+  return [
+    {
+      role: 'system',
+      content: [
+        {
+          type: 'text',
+          text: VISION_SYSTEM_PROMPT,
+        },
+      ],
+    },
+    {
+      role: 'user',
+      content: [
+        {
+          type: 'text',
+          text: buildUserPrompt(options.queryTarget),
+        },
+        videoContentPart,
+      ],
+    },
+  ];
+}
+
 function extractMessageText(value: unknown): string {
   if (typeof value === 'string') {
     return value.trim();
@@ -144,8 +204,7 @@ function extractMessageText(value: unknown): string {
 }
 
 async function completeImageInspection(options: {
-  queryTarget: string;
-  imageDataUrl: string;
+  messages: OpenAI.Chat.ChatCompletionMessageParam[];
   signal?: AbortSignal;
   modelConfig: ModelConfig;
 }): Promise<{
@@ -156,7 +215,7 @@ async function completeImageInspection(options: {
   const isGlmModel = options.modelConfig.model.toLowerCase().startsWith('glm');
   const result = await nonStreamChat({
     modelConfig: options.modelConfig,
-    messages: buildVisionMessages(options),
+    messages: options.messages,
     signal: options.signal,
     thinking: isGlmModel
       ? { enableThinking: true, reasoningEffort: 'low' }
@@ -178,6 +237,16 @@ export async function inspectImage(
     input && typeof input === 'object' ? (input as InspectImageInput) : {};
   const filePath = normalizeFilePath(resolvedInput.file_path);
   const queryTarget = normalizeString(resolvedInput.query_target);
+  const mediaType = parseMediaType(resolvedInput.type);
+
+  if (!mediaType) {
+    return buildToolResult({
+      success: false,
+      code: ERR_INVALID_ARGUMENT,
+      message: 'type 参数仅支持 image 或 video',
+    });
+  }
+
   const resolvedFilePath = resolveImagePath(filePath, context);
 
   let buffer: Buffer;
@@ -189,14 +258,14 @@ export async function inspectImage(
       return buildToolResult({
         success: false,
         code: ERR_PATH_NOT_FILE,
-        message: '图片路径不是文件',
+        message: mediaType === 'video' ? '视频路径不是文件' : '图片路径不是文件',
       });
     }
   } catch {
     return buildToolResult({
       success: false,
       code: ERR_FILE_NOT_FOUND,
-      message: '图片文件不存在',
+      message: mediaType === 'video' ? '视频文件不存在' : '图片文件不存在',
     });
   }
 
@@ -208,17 +277,41 @@ export async function inspectImage(
     return buildToolResult({
       success: false,
       code: ERR_FILE_READ_ERROR,
-      message: `图片文件读取失败：${message}`,
+      message: mediaType === 'video' ? `视频文件读取失败：${message}` : `图片文件读取失败：${message}`,
     });
   }
 
-  const imagePayload = await prepareModelImagePayload(buffer);
+  let visionMessages: OpenAI.Chat.ChatCompletionMessageParam[];
 
-  if (!imagePayload.success) {
-    return buildToolResult({
-      success: false,
-      code: imagePayload.code,
-      message: imagePayload.message,
+  if (mediaType === 'video') {
+    const videoMimeType = getVideoContentType(resolvedFilePath);
+
+    if (!videoMimeType) {
+      return buildToolResult({
+        success: false,
+        code: ERR_UNSUPPORTED_VIDEO_FORMAT,
+        message: '视频格式不支持，请使用 mp4、webm、mov 等常见视频格式',
+      });
+    }
+
+    visionMessages = buildVideoVisionMessages({
+      queryTarget,
+      videoDataUrl: buildDataUrl(buffer, videoMimeType),
+    });
+  } else {
+    const imagePayload = await prepareModelImagePayload(buffer);
+
+    if (!imagePayload.success) {
+      return buildToolResult({
+        success: false,
+        code: imagePayload.code,
+        message: imagePayload.message,
+      });
+    }
+
+    visionMessages = buildVisionMessages({
+      queryTarget,
+      imageDataUrl: buildDataUrl(imagePayload.buffer, imagePayload.mimeType),
     });
   }
 
@@ -231,15 +324,14 @@ export async function inspectImage(
     };
 
     const completion = await completeImageInspection({
-      queryTarget,
-      imageDataUrl: buildDataUrl(imagePayload.buffer, imagePayload.mimeType),
+      messages: visionMessages,
       modelConfig: visionModelConfig,
     });
 
     return buildToolResult({
       success: true,
       code: ERR_OK,
-      message: '图片识别完成',
+      message: '视觉识别完成',
       data: {
         analysis: completion.analysis,
       },
@@ -251,7 +343,7 @@ export async function inspectImage(
       return buildToolResult({
         success: false,
         code: ERR_ABORTED,
-        message: '图片识别已取消',
+        message: '视觉识别已取消',
       });
     }
 

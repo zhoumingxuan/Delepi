@@ -1,6 +1,6 @@
 /**
  * 工具执行相关常量
- * 归集自 run-shell.ts、run-with-python.ts、inspect-image.ts
+ * 归集自 run-shell.ts、run-with-python.ts、inspect-media.ts
  */
 
 // ============================================================

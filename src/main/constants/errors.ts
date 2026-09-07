@@ -1,6 +1,6 @@
 /**
  * 错误码常量
- * 归集自 executor-agent.ts、main-agent.ts、ipc-handlers.ts、run-shell.ts、run-with-python.ts、inspect-image.ts、result.ts
+ * 归集自 executor-agent.ts、main-agent.ts、ipc-handlers.ts、run-shell.ts、run-with-python.ts、inspect-media.ts、result.ts
  */
 
 // ============================================================
@@ -44,12 +44,13 @@ export const ERR_PROCESS_EXITED_NON_ZERO = 'PROCESS_EXITED_NON_ZERO';
 export const ERR_CONFIG_NOT_READY = 'CONFIG_NOT_READY';
 
 // ============================================================
-// inspect-image 错误码
+// inspect-media 错误码
 // ============================================================
 
 export const ERR_NOT_IMAGE_FILE = 'NOT_IMAGE_FILE';
 export const ERR_UNSUPPORTED_IMAGE_FORMAT = 'UNSUPPORTED_IMAGE_FORMAT';
 export const ERR_IMAGE_RESIZE_FAILED = 'IMAGE_RESIZE_FAILED';
+export const ERR_UNSUPPORTED_VIDEO_FORMAT = 'UNSUPPORTED_VIDEO_FORMAT';
 export const ERR_PATH_NOT_FILE = 'PATH_NOT_FILE';
 export const ERR_FILE_NOT_FOUND = 'FILE_NOT_FOUND';
 export const ERR_FILE_READ_ERROR = 'FILE_READ_ERROR';

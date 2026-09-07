@@ -41,7 +41,7 @@ export const MAX_SCRIPT_TOOLS = 32;
 
 /** 工具进度名称映射 */
 export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
-  inspect_image: '图片识别',
+  inspect_media: '视觉识别',
   run_with_python: 'Python 脚本执行',
   read_file: '文件读取',
   run_shell: '命令行执行',

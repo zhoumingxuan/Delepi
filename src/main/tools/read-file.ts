@@ -46,7 +46,7 @@ type ReadRangeResult = {
   readLines: number;
 };
 
-// 对齐 inspect-image.ts L70-72
+// 对齐 inspect-media.ts L70-72
 function normalizeFilePath(value: unknown): string {
   return normalizeString(value).replace(/^["']+|["']+$/g, '');
 }
@@ -349,7 +349,7 @@ export async function readFileTool(
 
   const resolvedFilePath = path.resolve(filePath);
 
-  // 校验：path 不存在 / 不是文件（4.2 校验表②③，对齐 inspect-image.ts L185-201）
+  // 校验：path 不存在 / 不是文件（4.2 校验表②③，对齐 inspect-media.ts L185-201）
   let fileStat;
 
   try {

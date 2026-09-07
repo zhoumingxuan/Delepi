@@ -2,7 +2,7 @@
  * 工具运行时上下文
  * 仅包含工具执行所需的会话标识。其他字段（signal/emit/rootDir/finalOutputDir/visionModelConfig）
  * 已从 ToolRuntimeContext 中移除：signal 由 main-agent/executor-agent 层通过独立 signal 链路透传，
- * 事件统一走 eventBus.emit，视觉模型配置由 inspect-image 直接从 configManager 读取。
+ * 事件统一走 eventBus.emit，视觉模型配置由 inspect-media 直接从 configManager 读取。
  */
 
 export interface ToolRuntimeContext {

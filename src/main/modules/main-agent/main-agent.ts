@@ -121,7 +121,7 @@ export interface MainAgentOptions {
   modelConfig: ModelConfig;
   /** Assistant 运行时配置 */
   assistantConfig: AssistantRuntimeConfig;
-  /** 视觉模型配置（传递给 inspect-image 工具） */
+  /** 视觉模型配置（传递给 inspect-media 工具） */
   visionModelConfig: ModelConfig;
   /** 中止信号 */
   signal?: AbortSignal;

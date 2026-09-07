@@ -70,7 +70,7 @@ export interface AppSettings {
   visionLlmApiKey: string;
   visionLlmBaseUrl: string;
   visionLlmModel: string;
-  /** 视觉识别总开关（默认 true）：关闭时 inspect_image 工具禁用，主智能体多模态同步关闭 */
+  /** 视觉识别总开关（默认 true）：关闭时 inspect_media 工具禁用，主智能体多模态同步关闭 */
   visionEnabled: boolean;
 
   // 模型档案（多槽位）
