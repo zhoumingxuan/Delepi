@@ -70,9 +70,6 @@ import {
   MAX_WORKFLOW_TEMPLATE_COUNT,
   EXECUTOR_WORKER_SKILLS_DIR,
   resolveExecutorToolProgressDisplayName,
-  MAX_EXECUTOR_FINAL_OUTPUT_REPAIR_ATTEMPTS,
-  EXECUTOR_OUTPUT_TRUNCATE_LENGTH,
-  EXECUTOR_INVALID_OUTPUT_TRUNCATE_LENGTH,
   EXECUTOR_DELIVERY_TYPE_SET,
   DELIVERY_TYPE_IMAGE,
   DELIVERY_TYPE_FILE_LINK,
@@ -80,10 +77,7 @@ import {
   LOCAL_FILES_FIELD_NAME,
   FILE_URLS_FIELD_NAME,
   EXECUTOR_INVALID_TOOL_CALL_NAME,
-  JSON_CODE_BLOCK_START,
-  JSON_CODE_BLOCK_END,
   ERR_DELEGATED_TASK_INVALID_INPUT,
-  ERR_DELEGATED_TASK_INVALID_OUTPUT,
   ERR_DELEGATED_TASK_FILE_DELIVERY_FAILED,
   ERR_ABORTED,
   type ExecutorDeliveryType
@@ -178,13 +172,6 @@ function extractAssistantReasoning(
 /** 首行【助手回复】标记字样（与 executor-system-prompt.ts L124 约定逐字一致） */
 const ASSISTANT_REPLY_MARKER = '【助手回复】';
 
-/** ★ 顺序保证 gate：单槽位生命周期内回复专用轮总预算（两个挂点共享；耗尽即降级放行任务） */
-const ASSISTANT_REPLY_GATE_MAX_ROUNDS = 2;
-/** ★ 运行期兜底：开槽后连续无正文完结的主轮轮数上限（达到即受控文案完结，防永挂） */
-const ASSISTANT_REPLY_FALLBACK_TURN_LIMIT = 3;
-/** ★ 运行期兜底完结文案（固定受控文案，非模型输出；不冒充 json/正文解析） */
-const ASSISTANT_REPLY_FALLBACK_TEXT = '（助手未返回回复文本，任务继续执行）';
-
 /**
  * 剥离正文中所有行首【助手回复】标记字样（保留标记行内其余文本；标记独占行剥离后为空行）。
  * 兼容两种模型输出形态：「标记独占成行」与「【助手回复】正文同行」。仅作用于显示/条目/解析
@@ -199,58 +186,6 @@ function stripAssistantReplyMarker(text: string): string {
         : line,
     )
     .join('\n');
-}
-
-/**
- * 轮 content 助手回复分流提取（★ 修复轮共存防御核心）：
- * - hadMarker：content 中存在行首【助手回复】标记（约定要求首行；放宽到任意行首命中，
- *   防御模型把标记写到正文中段的漂移形态）；
- * - remainder：剥离全部标记字样后的全文（```json 块原样保留）——最终输出解析唯一入口；
- *   fence 定位逻辑与 parseFinalOutputJson（executor-structured-payload.ts L126-135）逐字同源
- *   （indexOf(JSON_CODE_BLOCK_START) → lastIndexOf(JSON_CODE_BLOCK_END)），剥离不破坏 JSON 提取；
- * - replyText：remainder 剔除 ```json 代码块后的回复正文——「标记部分进助手回复条目、
- *   json 部分仍走最终输出解析」的双视图分离。
- */
-function splitAssistantReplyContent(content: string): {
-  hadMarker: boolean;
-  replyText: string;
-  remainder: string;
-} {
-  const lines = content.split('\n');
-  const hadMarker = lines.some((line) => line.trimStart().startsWith(ASSISTANT_REPLY_MARKER));
-  if (!hadMarker) {
-    return { hadMarker: false, replyText: '', remainder: content };
-  }
-  const remainder = stripAssistantReplyMarker(content).trim();
-  let replyText = remainder;
-  const jsonStart = remainder.indexOf(JSON_CODE_BLOCK_START);
-  if (jsonStart !== -1) {
-    const afterStart = remainder.slice(jsonStart + JSON_CODE_BLOCK_START.length);
-    const relativeEnd = afterStart.lastIndexOf(JSON_CODE_BLOCK_END);
-    const jsonBlockEnd = relativeEnd === -1
-      ? remainder.length   // json 块未闭合：其后视为无正文
-      : jsonStart + JSON_CODE_BLOCK_START.length + relativeEnd + JSON_CODE_BLOCK_END.length;
-    replyText = `${remainder.slice(0, jsonStart)}${remainder.slice(jsonBlockEnd)}`;
-  }
-  return { hadMarker: true, replyText: replyText.trim(), remainder };
-}
-
-/**
- * 轮正文 → 助手回复正文提取（单一语义源；主干轮收口与 gate 专用轮共用，杜绝两处语义漂移）。
- * - 命中【助手回复】标记：返回剔除 ```json 块后的正文（json 永不冒充回复正文）；
- * - 未命中标记且 tolerateUnmarkedText=true 且正文非空且不含 ```json：容忍模型漏写标记，
- *   全文（去标记字样）视作回复正文——沿用既有轮收口宽容语义，仅限无工具轮与 gate 专用轮
- *   （工具轮旁白文本多为模型自述，不冒充回复，同时保住 gate 补救机会）；
- * - 其余：返回 ''。
- */
-function extractAssistantReplyBody(content: string, tolerateUnmarkedText: boolean): string {
-  const replySplit = splitAssistantReplyContent(content);
-  if (replySplit.hadMarker) {
-    return replySplit.replyText;
-  }
-  return tolerateUnmarkedText && content && !content.includes(JSON_CODE_BLOCK_START)
-    ? stripAssistantReplyMarker(content).trim()
-    : '';
 }
 
 function normalizeTaskTags(value: unknown): TaskTagName[] {
@@ -1001,48 +936,6 @@ async function readWorkflowTemplates(
   return { contents, warnings };
 }
 
-function buildExecutorFinalOutputRepairPrompt(options: {
-  error: string;
-  output: string;
-}): string {
-  return `
-# 出错的值
-
-## 错误信息
-\`\`\`
-${options.error}
-\`\`\`
-
-## 上一次输出内容
-\`\`\`
-${options.output.substring(0, EXECUTOR_OUTPUT_TRUNCATE_LENGTH)}
-\`\`\`
-
-** 请修复并给出正确的【最终输出】**
-`.trim();
-}
-
-function formatInvalidExecutorOutput(
-  output: string,
-  error: string | null,
-): string {
-  const truncatedOutput = output.length > EXECUTOR_INVALID_OUTPUT_TRUNCATE_LENGTH
-    ? output.substring(0, EXECUTOR_INVALID_OUTPUT_TRUNCATE_LENGTH) + '...'
-    : output;
-
-  return `
-## 原始输出
-\`\`\`
-${truncatedOutput || '(空)'}
-\`\`\`
-
-## 解析错误
-\`\`\`
-${error || '未知'}
-\`\`\`
-`.trim();
-}
-
 type NormalizedExecutorToolCall = OpenAI.Chat.ChatCompletionMessageFunctionToolCall;
 
 function toToolCallText(value: unknown): string {
@@ -1212,56 +1105,6 @@ async function completeExecutorTurn(options: {
     assistantMessage.reasoning_content = streamResult.reasoning;
   }
   return { assistantMessage, content: streamResult.content };
-}
-
-/**
- * ★ 助手回复·顺序保证 gate（缺口②核心）：槽位开启时以「无工具」轮强制先产出回复正文，
- * 正文 seal 后调用方才放行后续工具执行。
- * - 有界：maxRounds 上界（槽位级预算由调用方管理），无锁、无等待原语、无条件变量 → 无死锁；
- * - gate 轮绝不触达最终输出解析/修复轮（独立有界小循环，不 break 主循环、不碰
- *   finalOutputRepairAttempts）→ 与修复轮零互扰；
- * - 幂等忽略幻觉 tool_calls（tools 未提供时模型仍虚构的工具调用不回填 tool_calls，
- *   杜绝产生「无 tool 应答」的非法消息序列）；abort 信号逐轮检查。
- */
-async function runAssistantReplyGate(options: {
-  assistantConfig: AssistantRuntimeConfig;
-  messages: RuntimeMessage[];
-  signal?: AbortSignal;
-  onThinking?: (delta: string) => void;
-  onStreamRetry?: () => void;
-  onTurnEnd?: (info: { reasoning: string; hasToolCalls: boolean }) => void;
-  recordSession?: ExecutorTaskRecordSession;
-  maxRounds: number;
-}): Promise<void> {
-  for (let round = 0; round < options.maxRounds; round += 1) {
-    if (options.signal?.aborted) {
-      throw options.signal.reason ?? new Error(ERR_ABORTED);
-    }
-    // ★ tools 传空数组 → completeExecutorTurn 不向模型提供任何工具（L1169 length 判断）
-    const { assistantMessage, content } = await completeExecutorTurn({
-      assistantConfig: options.assistantConfig,
-      messages: options.messages,
-      tools: [],
-      signal: options.signal,
-      onThinking: options.onThinking,
-      onStreamRetry: options.onStreamRetry,
-    });
-    const reasoning = extractAssistantReasoning(assistantMessage).trim();
-    const gateContent = content.trim();
-    const replyBody = extractAssistantReplyBody(gateContent, true);
-    if (replyBody) {
-      options.recordSession?.sealAssistantReply(replyBody);
-    }
-    options.onTurnEnd?.({ reasoning, hasToolCalls: false });
-    // 回填：剥离标记后的剩余文本进入模型上下文（与主干工具轮回填语义一致，L1551-1553）
-    options.messages.push(buildRuntimeAssistantMessage({
-      content: splitAssistantReplyContent(gateContent).remainder,
-      reasoning,
-    }) as RuntimeMessage);
-    if (replyBody) {
-      return;
-    }
-  }
 }
 
 // ============================================================
@@ -1499,39 +1342,17 @@ export async function runDelegatedTask(
     ? options.recordSession.adoptMessages(initialMessages)
     : initialMessages;
 
-  let finalOutput = '';
-  let finalOutputParseError: string | null = null;
-  let finalOutputRepairAttempts = 0;
   let structuredPayload: ExecutorStructuredPayload | null = null;
   const toolCallLogById = new Map<string, ExecutorExecutionLogToolCall>();
-
-  // ★ 助手回复修复三态变量（runDelegatedTask 闭包内局部，天然多任务隔离）
-  let replyGateExhausted = false;   // 当前槽位 gate 预算耗尽标记（槽位关闭时于 CP7 复位）
-  let replyPendingMainTurns = 0;    // 当前槽位连续无正文完结的主轮计数（CP7 兜底用）
-  let repairTurnPending = false;    // 修复轮待响应标记（gate 让位，防与修复轮互扰）
 
   // 工具调用循环
   while (true) {
 
     // ★ 任务级交互消息·安全点二（工具批次结束/循环轮起点）：到达此点必经 Promise.all 汇聚
-    //   （并发批次全部结束）+ 全部 role:'tool' 已 push 同步收口，或修复轮 continue（合成 user
-    //   已 push）；批次期间到达的排队消息在此注入（序位=数组末尾），本轮请求即携带——
+    //   （并发批次全部结束）+ 全部 role:'tool' 已 push 同步收口，或无工具轮回填
+    //   continue；批次期间到达的排队消息在此注入（序位=数组末尾），本轮请求即携带——
     //   批次收口到本轮 create 之间无 await，注入必然生效。
     options.recordSession?.consumePendingUserMessages();
-    // ★ Site 1（循环顶·工作轮之前）：槽位开启且预算未耗尽且非修复轮待响应 → 先回复后干活
-    if (!repairTurnPending && !replyGateExhausted && options.recordSession?.hasPendingAssistantReply()) {
-      await runAssistantReplyGate({
-        assistantConfig: options.assistantConfig,
-        messages: runtimeMessages,
-        signal: options.signal,
-        onThinking: (delta) => { options.onThinking?.(delta, { type: 'thinking' }); },
-        onStreamRetry: options.onStreamRetry,
-        onTurnEnd: options.onTurnEnd,
-        recordSession: options.recordSession,
-        maxRounds: ASSISTANT_REPLY_GATE_MAX_ROUNDS,
-      });
-      replyGateExhausted = true;   // 预算一次性标记耗尽（seal 成功则槽位关闭，CP7 自然复位）
-    }
     const { assistantMessage, content: turnContent } = await completeExecutorTurn({
       assistantConfig: options.assistantConfig,
       messages: runtimeMessages,
@@ -1547,7 +1368,6 @@ export async function runDelegatedTask(
       // ★ M14：重试复位回调透传（runDelegatedTask 调用方注入）
       onStreamRetry: options.onStreamRetry,
     });
-    repairTurnPending = false;
 
     const {
       toolCalls,
@@ -1555,53 +1375,23 @@ export async function runDelegatedTask(
     } = normalizeExecutorToolCalls((assistantMessage.tool_calls ?? []) as unknown[]);
     const thinking = extractAssistantReasoning(assistantMessage).trim();
     const assistantContent = turnContent.trim();
+    // ★ 剥离行首【助手回复】标记后的正文（无标记恒等变换；```json 围栏块原样保留）——
+    //   最终输出解析、助手回复条目与模型上下文回填共用的单一文本源
+    const remainder = stripAssistantReplyMarker(assistantContent).trim();
 
-    // ★ 助手回复·轮收口单点（工具轮/最终输出轮/修复轮三路径均经此）：先剥离标记、后进最终输出
-    //   解析——先标记后 json 的检测顺序即修复轮共存防御（L1421 起解析入口已切换为 remainder）。
-    //   - 命中标记：replyText（剔除 ```json 块的正文）完结条目（store 内部幂等：空正文/无 loading
-    //     槽位/冻结态均 no-op，故此处无需前置存在性判断，恒调用安全）；
-    //   - 未命中标记兜底（模型漏写标记）：仅当 content 非空且不含 ```json 时，全文（去标记字样）
-    //     视作漏写标记的回复正文宽容完结——用户可读性优先；json 输出一律不冒充回复正文。
-    const replySplit = splitAssistantReplyContent(assistantContent);   // remainder 仍由主循环使用（L1501/L1553）
-    const replyBody = extractAssistantReplyBody(assistantContent, toolCalls.length === 0);
-    if (replyBody) {
-      options.recordSession?.sealAssistantReply(replyBody);
-    }
-
-    // ★ 运行期兜底（缺口③）：开槽后连续 N 个主轮仍无正文完结 → 受控固定文案完结
-    //   （复用 completed 写点，无新增写点/状态）；槽位不存在时复位 gate 预算与计数
-    if (options.recordSession?.hasPendingAssistantReply()) {
-      replyPendingMainTurns += 1;
-      if (replyPendingMainTurns >= ASSISTANT_REPLY_FALLBACK_TURN_LIMIT) {
-        options.recordSession.sealAssistantReply(ASSISTANT_REPLY_FALLBACK_TEXT);
-        replyPendingMainTurns = 0;
-      }
-    } else {
-      replyPendingMainTurns = 0;
-      replyGateExhausted = false;
-    }
-
-    // ★ 新版方案 §7.1-3 轮收口回调：reasoning=executor 任务级思考权威全文（轮界 seal 数据源），
-    //   工具轮/最终输出轮/修复轮三路径均经此点
+    // ★ 单个 assistant message 处理顺序：① thinking → ② content → ③ tool_calls（三者可隶属
+    //   同一 message seq）
+    // ① thinking：既有 onTurnEnd 思考收口在前（reasoning=executor 任务级思考权威全文，
+    //   轮界 seal 思考条目）
     options.onTurnEnd?.({ reasoning: thinking, hasToolCalls: toolCalls.length > 0 });
 
-    // ★ 任务级交互消息·安全点一（思考段结束，仅工具轮）：此刻本轮 assistant(tool_calls) 尚未
-    //   push，注入序位=上一轮消息之后、本轮 assistant 之前，合法；工具轮必有下一轮，注入必然
-    //   被下一轮请求携带。无工具调用轮（最终输出/修复候选）不在此消费——该轮可能解析成功
-    //   break，消费交由循环顶安全点二或 markTerminal 终态清扫。
-    if (toolCalls.length > 0) {
-      options.recordSession?.consumePendingUserMessages();
-    }
-
-    // 无工具调用 → 解析最终输出
-    if (toolCalls.length === 0) {
-      // ★ 剥离标记后的剩余文本作为最终输出解析入口（共存分流：json 部分仍走
-      //   parseFinalOutputJson；无标记时 remainder === assistantContent（已 trim），
-      //   与原 (assistantMessage.content as string) ?? '' 在 parseFinalOutputJson 内部
-      //   normalized=raw.trim() 后行为完全一致）
-      finalOutput = replySplit.remainder;
+    // ② content：trim 为空 = 助手未回复，不动作；非空先抓取 ```json 围栏块并按既有
+    //   parseExecutorStructuredPayload 标准判定（语义不放宽）：合格 = 该输出实际为最终输出 →
+    //   停止执行任务（结构化落库于此完成；markTerminal/完成事件由本函数返回值经 main-agent
+    //   委派闭包既有路径触发——完结链路复用，仅触发点前移至 content 处理点）
+    if (assistantContent) {
       const parseResultPayload = await parseExecutorStructuredPayload({
-        raw: finalOutput,
+        raw: remainder,
         deliveryType,
         finalOutputDir: options.finalOutputDir,
         outputDir: options.outputDir,
@@ -1616,51 +1406,26 @@ export async function runDelegatedTask(
           warnings: structuredPayload.warnings,
           errors: structuredPayload.errors,
         });
-        finalOutputParseError = null;
         break;
       }
 
-      finalOutputParseError = parseResultPayload.error ?? '最终输出无法解析。';
-      executionLog.errors.push(finalOutputParseError);
+      // 不符合以上任意情况 = 助手回复：有【助手回复】首行标记则剥离标记取正文（上方剥离已完成），
+      // 无标记则全文即正文；作为完成态（非 loading）assistant-reply 条目写入记录存储供前端
+      // 一次性渲染（store 内部幂等：冻结态 no-op、空正文不落条目），随后任务继续执行（不终止、
+      // 不修复轮）
+      options.recordSession?.sealAssistantReply(remainder);
+    }
 
-      if (finalOutputRepairAttempts >= MAX_EXECUTOR_FINAL_OUTPUT_REPAIR_ATTEMPTS) {
-        break;
-      }
-
-      finalOutputRepairAttempts += 1;
+    // ③ tool_calls：无工具调用且 content 未构成最终输出（助手回复/未回复）→ 回填真实上下文后
+    //   任务继续（不终止、不修复轮）
+    if (toolCalls.length === 0) {
       runtimeMessages.push(
         buildRuntimeAssistantMessage({
-          // ★ 剥离标记后回填：修复轮聚焦最终输出格式本身（标记文本不进入修复上下文，
-          //   降低模型在修复轮重复输出标记的概率）
-          content: finalOutput,
+          content: remainder,
           reasoning: thinking,
         }) as RuntimeMessage,
       );
-      runtimeMessages.push({
-        role: 'user',
-        content: buildExecutorFinalOutputRepairPrompt({
-          error: finalOutputParseError,
-          output: finalOutput,
-        }),
-      });
-      repairTurnPending = true;
       continue;
-    }
-
-    // ★ Site 2（工具执行前）：本批工具执行前槽位仍开启（含 SP1 L1491-1493 刚开槽场景）→
-    //   先回复后干活；预算耗尽即降级放行（后续由 CP7 兜底/终态清扫兜底）
-    if (!replyGateExhausted && options.recordSession?.hasPendingAssistantReply()) {
-      await runAssistantReplyGate({
-        assistantConfig: options.assistantConfig,
-        messages: runtimeMessages,
-        signal: options.signal,
-        onThinking: (delta) => { options.onThinking?.(delta, { type: 'thinking' }); },
-        onStreamRetry: options.onStreamRetry,
-        onTurnEnd: options.onTurnEnd,
-        recordSession: options.recordSession,
-        maxRounds: ASSISTANT_REPLY_GATE_MAX_ROUNDS,
-      });
-      replyGateExhausted = true;
     }
 
     // 执行工具调用
@@ -1668,7 +1433,7 @@ export async function runDelegatedTask(
       buildRuntimeAssistantMessage({
         // ★ 剥离标记后回填：标记字样不进入后续模型上下文（阻断「输出标记」模式在历史中的
         //   强化回路）；正文原样保留——模型对已回复内容的记忆不受影响
-        content: replySplit.remainder,
+        content: remainder,
         reasoning: thinking,
         toolCalls,
       }) as RuntimeMessage,
@@ -1754,26 +1519,7 @@ export async function runDelegatedTask(
     }
   }
 
-  // 构建最终结果
-  if (!structuredPayload) {
-    const outputDetail = formatInvalidExecutorOutput(
-      finalOutput,
-      finalOutputParseError,
-    );
-
-    const failedResult = buildToolResult({
-      success: false,
-      code: ERR_DELEGATED_TASK_INVALID_OUTPUT,
-      message: `执行智能体返回内容无法解析为可用执行结果。\n${outputDetail}`,
-    });
-
-    return attachTaskOutputTimes({
-      result: failedResult,
-      log: executionLog,
-      finalOutputDir: options.finalOutputDir,
-      startAt: taskStartedAt,
-    });
-  }
+  // 构建最终结果（循环唯一 break 点即最终输出判定命中处，structuredPayload 必已赋值非空）
 
   // R5②：本次交付文件路径（源文件 + output 副本）需在临时路径清理前剔除，防止误删交付文件
   const deliveredFilePaths: string[] = [];

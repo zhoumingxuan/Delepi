@@ -25,7 +25,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactElement } from 'react';
-import { App, Button, Input, Spin, Tag, Typography, theme } from 'antd';
+import { App, Button, Input, Tag, Typography, theme } from 'antd';
 import {
   ArrowUpOutlined,
   CheckCircleFilled,
@@ -502,26 +502,23 @@ function UserMessageRecordItem(options: { record: ExecutorUserMessageRecord }): 
   );
 }
 
-/** 任务级助手回复条目（内聚子组件，不外泄）：
+/** 任务级助手回复条目（内聚子组件，不外泄；与 ThinkingRecordItem 为两个不同条目类型，互不复用、
+ *  严禁混淆）：
  *  - 头部行与用户消息/思考/工具/通知条目同构（12px/18px colorTextTertiary）："助手回复 · HH:mm:ss · 状态"，
- *    状态文案 回复中/已完成/未收到回复（对齐 UserMessageRecordItem 头部行三段式先例）；
- *  - loading：气泡区 antd Spin（size="small"，对齐 ChatMessageContent.tsx L810-816 消息级 Spin 形态先例）
- *    + 次级文案"正在生成回复…"；无任何打字机/流式动画（正文仅在 completed 后一次性写入，天然无中间态）；
- *  - completed：正文一次性经 RichMarkdown 渲染（后端轮收口已剥离首行【助手回复】标记，渲染源不含
- *    标记文本；此处行首标记字样兜底过滤为第二道防线——防御未来后端剥离回归）；复用
- *    .thinking-md-scope 局部样式作用域（13px/22px/colorText 与思考正文一致）；maxHeight 240px 内滚
- *    （复用 THINKING_EXPANDED_MAX_HEIGHT_PX 常量——500 字+长回复完整可读，不引入折叠状态机）；
- *  - aborted：气泡区次级文案"任务已结束，未收到回复"（colorTextSecondary + colorFillQuaternary 中性底，
- *    不借 colorError——与任务终态失败语义解耦，对齐 NoticeRecordItem 用色先例）；
- *  - 静态无动画：状态转移为内容变更（loading→completed 为一次性 DOM 结构替换），不新增任何
- *    动画类声明；入场沿用时间线既有 executor-record-entry-in。 */
+ *    状态文案 已完成/未收到回复（对齐 UserMessageRecordItem 头部行先例）；
+ *  - completed：正文一次性经 RichMarkdown 渲染（后端判定命中即写入完成态条目，无 loading 中间态；
+ *    后端已剥离首行【助手回复】标记，此处行首标记字样兜底过滤为第二道防线——防御历史残留）；复用
+ *    .thinking-md-scope 局部样式作用域（13px/22px/colorText，与思考正文观感一致但渲染独立）；
+ *    maxHeight 240px 内滚（复用 THINKING_EXPANDED_MAX_HEIGHT_PX 常量，不引入折叠状态机）；
+ *  - 历史库可能残留的旧 loading/aborted 态记录：最小兜底不渲染正文（仅保留头部行，不崩溃、
+ *    不新增任何等待态/提示展示）；
+ *  - 静态无动画：条目到达即一次性渲染，无中间态转移；入场沿用时间线既有 executor-record-entry-in。 */
 function AssistantReplyRecordItem(options: {
   record: ExecutorAssistantReplyRecord;
 }): ReactElement {
   const { record } = options;
   const { token } = theme.useToken();
-  const stateText =
-    record.state === 'loading' ? '回复中' : record.state === 'completed' ? '已完成' : '未收到回复';
+  const stateText = record.state === 'completed' ? '已完成' : '未收到回复';
   /** 标记字样兜底过滤（行首【助手回复】标记行剔除后重组；后端剥离正常时为恒等变换） */
   const displayText = useMemo(
     () =>
@@ -550,24 +547,7 @@ function AssistantReplyRecordItem(options: {
           助手回复 · {formatEntryClock(record.createdAt)} · {stateText}
         </span>
       </div>
-      {record.state === 'loading' ? (
-        /* loading 态：Spin + 次级文案（既有 Spin 形态，无打字机） */
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '6px 10px',
-            background: token.colorFillQuaternary,
-            borderRadius: token.borderRadiusSM,
-          }}
-        >
-          <Spin size="small" />
-          <span style={{ fontSize: 13, lineHeight: '22px', color: token.colorTextSecondary }}>
-            正在生成回复…
-          </span>
-        </div>
-      ) : record.state === 'completed' ? (
+      {record.state === 'completed' ? (
         /* completed 态：一次性完整渲染（RichMarkdown；240px 内滚承载长回复） */
         <div
           className="thinking-md-scope"
@@ -588,22 +568,7 @@ function AssistantReplyRecordItem(options: {
         >
           <RichMarkdown content={displayText} />
         </div>
-      ) : (
-        /* aborted 态：中性收敛文案 */
-        <div
-          style={{
-            fontSize: 13,
-            lineHeight: '22px',
-            color: token.colorTextSecondary,
-            background: token.colorFillQuaternary,
-            borderRadius: token.borderRadiusSM,
-            padding: '6px 10px',
-            wordBreak: 'break-word',
-          }}
-        >
-          任务已结束，未收到回复
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -938,10 +903,11 @@ export function ExecutorRecordDrawer(options: {
         ) : null}
       </div>
 
-      {/* ★ 底部任务级输入区（任务级交互消息）：running → 发送圆钮（primary + ArrowUpOutlined，
-          草稿 trim 为空置灰）与停止圆钮（规格对照 SenderBox 停止态：default 圆钮 + 10×10 圆角2
-          currentColor 方块图标）共存；终态 completed/failed/aborted（含归档态）→ 发送圆钮恒置灰、
-          停止圆钮隐藏；发送受理结果驱动反馈（成功清草稿/失败按 reason 轻提示且草稿保留） */}
+      {/* ★ 底部任务级输入区（任务级交互消息）：单按钮四态（判定依据 taskRunning 与
+          taskDraft.trim().length）——①执行中+有草稿=可发送（primary+ArrowUpOutlined 蓝箭头，
+          点击发送）；②执行中+无草稿=停止（default 圆钮+10×10 圆角2 currentColor 方块图标，
+          点击停止）；③/④非执行中（无论有无草稿）=不可发送（disabled 置灰箭头，禁止触发点击）；
+          发送受理结果驱动反馈（成功清草稿/失败按 reason 轻提示且草稿保留） */}
       <div
         style={{
           flexShrink: 0,
@@ -980,42 +946,50 @@ export function ExecutorRecordDrawer(options: {
               style={{ width: '100%', fontSize: token.fontSize }}
             />
           </div>
-          <Button
-            type="primary"
-            shape="circle"
-            style={{ flexShrink: 0 }}
-            icon={<ArrowUpOutlined />}
-            aria-label="发送消息"
-            title="发送消息"
-            disabled={!taskRunning || taskDraft.trim().length === 0}
-            onClick={handleTaskSend}
-          />
-          {taskRunning ? (
-            <Button
-              type="default"
-              shape="circle"
-              style={{
-                flexShrink: 0,
-                background: token.colorFillSecondary,
-                borderColor: token.colorBorderSecondary,
-                color: token.colorText,
-              }}
-              icon={
-                <span
-                  style={{
-                    display: 'block',
-                    width: 10,
-                    height: 10,
-                    background: 'currentColor',
-                    borderRadius: 2,
-                  }}
-                />
-              }
-              aria-label="停止此任务"
-              title="停止此任务"
-              onClick={handleTaskStop}
-            />
-          ) : null}
+          {(() => {
+            /* ★ 单按钮四态判定（完全收敛于此一个按钮的渲染与事件逻辑内，判定依据 taskRunning
+             *  与 taskDraft.trim().length）：
+             *  ① taskRunning=true 且 taskDraft.trim().length>0 → 可发送态（蓝色箭头，触发 handleTaskSend）；
+             *  ② taskRunning=true 且 taskDraft.trim().length===0 → 停止态（方块图标，触发 handleTaskStop）；
+             *  ③ taskRunning=false 且存在待发消息 → 不可发送态（disabled 置灰箭头，禁止触发点击）；
+             *  ④ taskRunning=false 且不存在待发消息 → 不可发送态（disabled 置灰箭头，禁止触发点击） */
+            const isStopState = taskRunning && taskDraft.trim().length === 0;
+            return (
+              <Button
+                type={isStopState ? 'default' : 'primary'}
+                shape="circle"
+                style={{
+                  flexShrink: 0,
+                  ...(isStopState
+                    ? {
+                        background: token.colorFillSecondary,
+                        borderColor: token.colorBorderSecondary,
+                        color: token.colorText,
+                      }
+                    : {}),
+                }}
+                icon={
+                  isStopState ? (
+                    <span
+                      style={{
+                        display: 'block',
+                        width: 10,
+                        height: 10,
+                        background: 'currentColor',
+                        borderRadius: 2,
+                      }}
+                    />
+                  ) : (
+                    <ArrowUpOutlined />
+                  )
+                }
+                aria-label={isStopState ? '停止此任务' : '发送消息'}
+                title={isStopState ? '停止此任务' : '发送消息'}
+                disabled={!taskRunning}
+                onClick={isStopState ? handleTaskStop : handleTaskSend}
+              />
+            );
+          })()}
         </div>
       </div>
     </div>

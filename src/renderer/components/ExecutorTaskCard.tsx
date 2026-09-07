@@ -19,7 +19,7 @@
 
 import { Flex } from 'antd';
 import { ThoughtChain } from '@ant-design/x';
-import { ProfileOutlined } from '@ant-design/icons';
+import { ArrowRightOutlined } from '@ant-design/icons';
 import { Button, theme } from 'antd';
 import { memo } from 'react';
 import type { ReactElement } from 'react';
@@ -104,7 +104,7 @@ export function ExecutorTaskCard(options: {
         <Button
           type="text"
           size="small"
-          icon={<ProfileOutlined style={{ fontSize: 13 }} />}
+          icon={<ArrowRightOutlined style={{ fontSize: 13 }} />}
           aria-label="查看任务执行记录"
           title="查看任务执行记录"
           onClick={(event) => {

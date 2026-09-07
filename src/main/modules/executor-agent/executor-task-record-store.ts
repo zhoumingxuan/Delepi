@@ -199,17 +199,10 @@ export interface ExecutorTaskRecordSession {
    *  push 即进入模型上下文），条目 state→delivered + mutatedSeqs 登记 + emitSignal(true)；
    *  守卫：stopRequested/terminal 时 no-op 返回 0（冻结后永不消费，终态清扫兜底） */
   consumePendingUserMessages(): number;
-  /** ★ 助手回复·待回复槽位开启（consumePendingUserMessages 消费成功后内部调用）：同步创建
-   *  state='loading' 条目——「插话已送达 → 前端立即可见 loading 态助手回复栏」的唯一开槽点；
-   *  单槽位（已存在 loading 条目则 no-op，多批插话合并至同一槽位）+ 立即信号 */
-  beginAssistantReplyPending(): void;
-  /** ★ 助手回复·正文完结（executor-agent 轮收口剥离【助手回复】标记后调用）：唯一 loading 条目 →
-   *  completed + text（净化）+ finishedAt + mutatedSeqs 原位登记 + 立即信号；
-   *  守卫：冻结态 no-op、空正文 no-op、无 loading 槽位 no-op（幂等） */
+  /** ★ 助手回复·完成态条目写入（executor-agent 主轮 content 判定为助手回复后调用）：判定命中
+   *  即同步插入 state='completed' 条目（text 净化 + createdAt/finishedAt）+ 立即信号——无
+   *  loading 中间态，前端一次性渲染；守卫：冻结态 no-op、空正文不落条目（幂等安全） */
   sealAssistantReply(text: string): void;
-  /** ★ 助手回复·槽位查询（只读，无状态写、无信号；executor-agent gate 与运行期兜底判定用）：
-   *  存在 state='loading' 条目即 true */
-  hasPendingAssistantReply(): boolean;
 }
 
 class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
@@ -270,18 +263,6 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       const record = this.records[i];
       if (record.kind === 'thinking') {
         return record.status === 'running' ? record : undefined;
-      }
-    }
-    return undefined;
-  }
-
-  /** 当前待回复（state='loading'）助手回复条目（至多一个；records 末尾优先反向查找，
-   *  首个 assistant-reply 条目即目标——loading 必为最新一条，已完结则无槽位） */
-  private get pendingAssistantReply(): ExecutorAssistantReplyRecord | undefined {
-    for (let i = this.records.length - 1; i >= 0; i -= 1) {
-      const record = this.records[i];
-      if (record.kind === 'assistant-reply') {
-        return record.state === 'loading' ? record : undefined;
       }
     }
     return undefined;
@@ -518,16 +499,6 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
         this.mutatedSeqs.add(record.seq);
       }
     }
-    // ★ 助手回复条目终态清扫：终态时仍处于 loading 的待回复条目收敛为 aborted——
-    //   任务已结束、回复永不再到来（与上方 pendingUserMessages→undelivered 同语义收敛；
-    //   不区分任务终态类型，统一"未收到回复"语义）
-    for (const record of this.records) {
-      if (record.kind === 'assistant-reply' && record.state === 'loading') {
-        record.state = 'aborted';
-        record.finishedAt = finishedAt;
-        this.mutatedSeqs.add(record.seq);   // 同 seq 状态转移：登记供增量查询补发
-      }
-    }
     this.pendingUserMessages.length = 0;
     this.status = status;
     this.finishedAt = finishedAt;
@@ -611,36 +582,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       }
       consumed += 1;
     }
-    if (consumed > 0) {
-      // ★ 助手回复开槽：送达即同步创建 loading 态条目（seq 紧随本批 delivered 消息之后）；
-      //   beginAssistantReplyPending 内部含 emitSignal(true)——一次立即信号同时覆盖
-      //   delivered 转移与开槽两个变化（信号只携带对账基准，内容一律由渲染端拉取）
-      this.beginAssistantReplyPending();
-    }
     return consumed;
-  }
-
-  hasPendingAssistantReply(): boolean {
-    return this.pendingAssistantReply !== undefined;
-  }
-
-  beginAssistantReplyPending(): void {
-    if (this.stopRequested || this.terminal) {
-      return;
-    }
-    // 单槽位守卫：已有待回复条目则复用（多批插话合并至同一槽位，杜绝多 loading 条目悬挂配对）
-    if (this.pendingAssistantReply) {
-      return;
-    }
-    this.records.push({
-      kind: 'assistant-reply',
-      seq: this.nextSeq(),
-      state: 'loading',
-      text: '',
-      createdAt: nowIso(),
-    });
-    this.evictOverflow();
-    this.emitSignal(true);   // 立即信号：loading 栏即时可见（对齐 enqueueUserMessage L560 立即回显先例）
   }
 
   sealAssistantReply(text: string): void {
@@ -648,18 +590,20 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       return;
     }
     const body = sanitizeDisplayText(text ?? '').trim();
-    // 空正文不完结：保持 loading 等待后续轮次提取（终态清扫兜底收敛）
+    // 空正文不落条目（首行标记剥离后为空 = 助手未给出正文）
     if (!body) {
       return;
     }
-    const pending = this.pendingAssistantReply;
-    if (!pending) {
-      return;   // 无待回复槽位（未开槽/已完结/已被逐出）：幂等 no-op
-    }
-    pending.state = 'completed';
-    pending.text = body;
-    pending.finishedAt = nowIso();
-    this.mutatedSeqs.add(pending.seq);   // 原 seq 状态转移：登记供增量查询补发
+    // 判定命中即插入完成态条目：无 loading 中间态，前端一次性渲染
+    this.records.push({
+      kind: 'assistant-reply',
+      seq: this.nextSeq(),
+      state: 'completed',
+      text: body,
+      createdAt: nowIso(),
+      finishedAt: nowIso(),
+    });
+    this.evictOverflow();
     this.emitSignal(true);
   }
 
