@@ -165,29 +165,6 @@ function extractAssistantReasoning(
   return typeof reasoning === 'string' ? reasoning : '';
 }
 
-// ============================================================
-// ★ 助手回复标记检测/剥离（executor-system-prompt.ts「# 用户提示处理」L124 约定的代码层兑现）
-// ============================================================
-
-/** 首行【助手回复】标记字样（与 executor-system-prompt.ts L124 约定逐字一致） */
-const ASSISTANT_REPLY_MARKER = '【助手回复】';
-
-/**
- * 剥离正文中所有行首【助手回复】标记字样（保留标记行内其余文本；标记独占行剥离后为空行）。
- * 兼容两种模型输出形态：「标记独占成行」与「【助手回复】正文同行」。仅作用于显示/条目/解析
- * 入口视图，不回改模型已生成的原始输出（真实上下文保真由回填层另行处理，见轮循环两处回填）。
- */
-function stripAssistantReplyMarker(text: string): string {
-  return text
-    .split('\n')
-    .map((line) =>
-      line.trimStart().startsWith(ASSISTANT_REPLY_MARKER)
-        ? line.trimStart().slice(ASSISTANT_REPLY_MARKER.length)
-        : line,
-    )
-    .join('\n');
-}
-
 function normalizeTaskTags(value: unknown): TaskTagName[] {
   if (!Array.isArray(value)) {
     return [];
@@ -1375,9 +1352,6 @@ export async function runDelegatedTask(
     } = normalizeExecutorToolCalls((assistantMessage.tool_calls ?? []) as unknown[]);
     const thinking = extractAssistantReasoning(assistantMessage).trim();
     const assistantContent = turnContent.trim();
-    // ★ 剥离行首【助手回复】标记后的正文（无标记恒等变换；```json 围栏块原样保留）——
-    //   最终输出解析、助手回复条目与模型上下文回填共用的单一文本源
-    const remainder = stripAssistantReplyMarker(assistantContent).trim();
 
     // ★ 单个 assistant message 处理顺序：① thinking → ② content → ③ tool_calls（三者可隶属
     //   同一 message seq）
@@ -1391,7 +1365,7 @@ export async function runDelegatedTask(
     //   委派闭包既有路径触发——完结链路复用，仅触发点前移至 content 处理点）
     if (assistantContent) {
       const parseResultPayload = await parseExecutorStructuredPayload({
-        raw: remainder,
+        raw: assistantContent,
         deliveryType,
         finalOutputDir: options.finalOutputDir,
         outputDir: options.outputDir,
@@ -1409,19 +1383,18 @@ export async function runDelegatedTask(
         break;
       }
 
-      // 不符合以上任意情况 = 助手回复：有【助手回复】首行标记则剥离标记取正文（上方剥离已完成），
-      // 无标记则全文即正文；作为完成态（非 loading）assistant-reply 条目写入记录存储供前端
-      // 一次性渲染（store 内部幂等：冻结态 no-op、空正文不落条目），随后任务继续执行（不终止、
-      // 不修复轮）
-      options.recordSession?.sealAssistantReply(remainder);
+      // 未命中最终输出判定 = 中间轮 content：以 assistantContent 原文（不剥任何标记、不做任何
+      // 回复判定）直接落一条完成态（非 loading）条目写入记录存储，供前端一次性原样渲染（store
+      // 内部幂等：冻结态 no-op、空正文不落条目），随后任务继续执行（不终止、不修复轮）
+      options.recordSession?.sealAssistantReply(assistantContent);
     }
 
-    // ③ tool_calls：无工具调用且 content 未构成最终输出（助手回复/未回复）→ 回填真实上下文后
+    // ③ tool_calls：无工具调用且 content 未构成最终输出（中间轮回复/未回复）→ 回填真实上下文后
     //   任务继续（不终止、不修复轮）
     if (toolCalls.length === 0) {
       runtimeMessages.push(
         buildRuntimeAssistantMessage({
-          content: remainder,
+          content: assistantContent,
           reasoning: thinking,
         }) as RuntimeMessage,
       );
@@ -1431,9 +1404,8 @@ export async function runDelegatedTask(
     // 执行工具调用
     runtimeMessages.push(
       buildRuntimeAssistantMessage({
-        // ★ 剥离标记后回填：标记字样不进入后续模型上下文（阻断「输出标记」模式在历史中的
-        //   强化回路）；正文原样保留——模型对已回复内容的记忆不受影响
-        content: remainder,
+        // ★ 原文回填：content 原样进入后续模型上下文（不剥任何标记）；模型对已回复内容的记忆不受影响
+        content: assistantContent,
         reasoning: thinking,
         toolCalls,
       }) as RuntimeMessage,

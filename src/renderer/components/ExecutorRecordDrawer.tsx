@@ -507,7 +507,7 @@ function UserMessageRecordItem(options: { record: ExecutorUserMessageRecord }): 
  *  - 头部行与用户消息/思考/工具/通知条目同构（12px/18px colorTextTertiary）："助手回复 · HH:mm:ss · 状态"，
  *    状态文案 已完成/未收到回复（对齐 UserMessageRecordItem 头部行先例）；
  *  - completed：正文一次性经 RichMarkdown 渲染（后端判定命中即写入完成态条目，无 loading 中间态；
- *    后端已剥离首行【助手回复】标记，此处行首标记字样兜底过滤为第二道防线——防御历史残留）；复用
+ *    record.text 原样渲染，不做任何标记过滤）；复用
  *    .thinking-md-scope 局部样式作用域（13px/22px/colorText，与思考正文观感一致但渲染独立）；
  *    maxHeight 240px 内滚（复用 THINKING_EXPANDED_MAX_HEIGHT_PX 常量，不引入折叠状态机）；
  *  - 历史库可能残留的旧 loading/aborted 态记录：最小兜底不渲染正文（仅保留头部行，不崩溃、
@@ -518,17 +518,19 @@ function AssistantReplyRecordItem(options: {
 }): ReactElement {
   const { record } = options;
   const { token } = theme.useToken();
-  const stateText = record.state === 'completed' ? '已完成' : '未收到回复';
-  /** 标记字样兜底过滤（行首【助手回复】标记行剔除后重组；后端剥离正常时为恒等变换） */
-  const displayText = useMemo(
-    () =>
-      record.text
-        .split('\n')
-        .filter((line) => !line.trimStart().startsWith('【助手回复】'))
-        .join('\n')
-        .trim(),
-    [record.text],
-  );
+  let stateText = "未收到回复";
+  if( record.state === 'completed' )
+  {
+      stateText="已完成";
+  }
+  else if(record.state === "loading")
+  {
+       stateText="回复中";
+  }
+  else
+  {
+       stateText="已取消";
+  }
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
       {/* 头部行：助手回复 · HH:mm:ss · 状态 */}
@@ -566,7 +568,7 @@ function AssistantReplyRecordItem(options: {
             } as CSSProperties
           }
         >
-          <RichMarkdown content={displayText} />
+          <RichMarkdown content={record.text} />
         </div>
       ) : null}
     </div>

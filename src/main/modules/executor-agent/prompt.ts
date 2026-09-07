@@ -79,9 +79,10 @@ function buildInspectImageDescription(): string {
 
 function buildScriptToolDescription(): string {
     return `
-    - 【经验工具库调用】用于查看和调用由执行经验积累而成的【经验工具库】。
-    - 使用任何工具前必须先查看目标【tool_name】的【协议】，明确该如何调用。
-    - 【适用条件】：在存在【可简化执行路径】或【其他工具】无法完成任务时可尝试使用此工具。
+    - 用于查看或实际调用由历史沉淀经验而得的【经验工具】的【中介工具】。
+    - 此【中介工具】是【经验工具】【查看协议或调用】的【最优、最佳、最权威、最简洁】途径和方式。
+    - 在使用任何【经验工具】前必须先查看目标【tool_name】的【协议】，明确该如何调用。
+    - 禁用run_with_python或run_shell直接调用【经验工具】。
     `;
 }
 

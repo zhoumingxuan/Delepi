@@ -199,9 +199,9 @@ export interface ExecutorTaskRecordSession {
    *  push 即进入模型上下文），条目 state→delivered + mutatedSeqs 登记 + emitSignal(true)；
    *  守卫：stopRequested/terminal 时 no-op 返回 0（冻结后永不消费，终态清扫兜底） */
   consumePendingUserMessages(): number;
-  /** ★ 助手回复·完成态条目写入（executor-agent 主轮 content 判定为助手回复后调用）：判定命中
-   *  即同步插入 state='completed' 条目（text 净化 + createdAt/finishedAt）+ 立即信号——无
-   *  loading 中间态，前端一次性渲染；守卫：冻结态 no-op、空正文不落条目（幂等安全） */
+  /** ★ 助手回复·完成态条目写入（executor-agent 主轮 content 未命中最终输出判定时以原文调用）：
+   *  调用即同步插入 state='completed' 条目（text 净化 + createdAt/finishedAt）+ 立即信号——无
+   *  loading 中间态，前端一次性原样渲染；守卫：冻结态 no-op、空正文不落条目（幂等安全） */
   sealAssistantReply(text: string): void;
 }
 
@@ -590,7 +590,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       return;
     }
     const body = sanitizeDisplayText(text ?? '').trim();
-    // 空正文不落条目（首行标记剥离后为空 = 助手未给出正文）
+    // 空正文不落条目（净化 trim 后为空 = 无正文）
     if (!body) {
       return;
     }
