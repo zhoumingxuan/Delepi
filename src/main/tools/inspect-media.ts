@@ -34,7 +34,7 @@ import {
   ERR_UNSUPPORTED_VIDEO_FORMAT,
 } from '../constants';
 
-type InspectImageInput = {
+type InspectMediaInput = {
   file_path?: unknown;
   query_target?: unknown;
   type?: unknown;
@@ -43,7 +43,7 @@ type InspectImageInput = {
 const VISION_SYSTEM_PROMPT = `
 # 角色
 \`\`\`
-你是图片事实分析助手。
+你是视觉特征分析,视觉信息抓取助手。
 \`\`\`
 
 # 任务
@@ -229,12 +229,12 @@ async function completeImageInspection(options: {
   };
 }
 
-export async function inspectImage(
+export async function InspectMedia(
   input: unknown,
   context: ToolRuntimeContext,
 ): Promise<ToolResult> {
   const resolvedInput =
-    input && typeof input === 'object' ? (input as InspectImageInput) : {};
+    input && typeof input === 'object' ? (input as InspectMediaInput) : {};
   const filePath = normalizeFilePath(resolvedInput.file_path);
   const queryTarget = normalizeString(resolvedInput.query_target);
   const mediaType = parseMediaType(resolvedInput.type);

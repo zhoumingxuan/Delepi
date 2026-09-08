@@ -1,7 +1,7 @@
 import { runWithPython } from '@/main/tools/run-with-python';
 import { runShell } from '@/main/tools/run-shell';
 import { readFileTool } from '@/main/tools/read-file';
-import { inspectImage } from '@/main/tools/inspect-media';
+import { InspectMedia } from '@/main/tools/inspect-media';
 import { fsSearch } from '@/main/tools/fs-search';
 import { scriptTool } from '@/main/tools/script-tool';
 
@@ -67,7 +67,7 @@ function buildFsSearchDescription(): string {
     `;
 }
 
-function buildInspectImageDescription(): string {
+function buildInspectMediaDescription(): string {
     return [
         '识别并分析本地图片或视频中的可见事实信息。',
         '凡是当前任务需要从图片或视频可见内容中获取、核对、提取或分析信息时，都可以调用；包括文字、数字、符号、界面元素、表格结构、物体场景、视觉状态、异常细节等等。',
@@ -254,7 +254,7 @@ export const EXECUTOR_TOOLS = {
         config: {
             name: 'inspect_media',
             displayName: '视觉识别',
-            buildDescription: buildInspectImageDescription(),
+            buildDescription: buildInspectMediaDescription(),
         },
         parameters: {
             type: 'object',
@@ -280,7 +280,7 @@ export const EXECUTOR_TOOLS = {
             required: ['file_path', 'query_target'],
             additionalProperties: false,
         },
-        execute: inspectImage,
+        execute: InspectMedia,
     },
     run_shell: {
         config: {
