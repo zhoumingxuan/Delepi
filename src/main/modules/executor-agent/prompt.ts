@@ -15,6 +15,7 @@ function getShellLabel(): string {
 function buildRunShellDescription(): string {
     const shellLabel = getShellLabel();
     return `
+    - 【最低优先级】
     - 在 ${shellLabel} 中执行单条操作系统命令：命令含换行即拒绝，复杂或多步逻辑请改用 run_with_python。
     - 传入的指令若被代码块或引号包裹会自动剥离；无法识别包裹时按原样执行。
     - 任意命令输出超过 16384 字符会触发截断。
@@ -30,6 +31,7 @@ function buildRunShellDescription(): string {
 function buildRunWithPythonDescription(): string {
 
     return `
+    - 【低优先级】
     - 执行 Python 代码工具，先写入脚本再运行，返回结构化结果。
     - 【新增/修改】文本文件，检索文件【关键信息】，则【最优先】使用的工具。
     - 同时适合较长逻辑、批处理逻辑、复杂解析以及稳定的文件改写任务。
@@ -44,6 +46,7 @@ function buildRunWithPythonDescription(): string {
 
 function buildReadFileDescription(): string {
     return `
+    - 【高优先级】
     - 读取【非结构化的文本文件】的工具，按行读取文件，会返回每一行行号，行号从 1 开始；同时支持分段读取和全部读取。
     - **此工具仅限于搜索本地文件读取，不适配远程文件读取**
     - **代码文件,MarkDown文件不算结构化文件，仅算有一定格式的文件**。
@@ -57,6 +60,7 @@ function buildReadFileDescription(): string {
 
 function buildFsSearchDescription(): string {
     return `
+    - 【高优先级】
     - 文件系统搜索工具，仅适配【文件名和目录名】以及【目录扫描】功能。
     - **此工具仅限于搜索本地文件系统，不适配远程文件系统**
     - 不填keyword则视作按depth扫描【目标目录】。
@@ -69,16 +73,17 @@ function buildFsSearchDescription(): string {
 
 function buildInspectMediaDescription(): string {
     return [
-        '识别并分析本地图片或视频中的可见事实信息。',
-        '凡是当前任务需要从图片或视频可见内容中获取、核对、提取或分析信息时，都可以调用；包括文字、数字、符号、界面元素、表格结构、物体场景、视觉状态、异常细节等等。',
+        '【高优先级】',
+        '【识别,提取或核对】本地图片或视频实际存在的事实信息',
+        '凡是当前任务需要从图片或视频可见内容中【提取或核对】各种【视觉特征包括细微视觉特征、视觉区域定位、视觉动作特征、视觉场景特征等】时，都可以调用。',
         '必须提供真实可读取的本地媒体文件路径；禁止虚构路径，禁止把非媒体文件当作图片或视频提交。',
-        '必须提供查询目标，用于限定需要查询的信息范围。',
-        '输出只能依据画面中可见内容；禁止把画面外信息、用户意图或不可见内容写成事实。',
+        '输出只能包含提供的【图片或视频】实际存在的事实，实际存在的视觉区域',
     ].join('\n');
 }
 
 function buildScriptToolDescription(): string {
     return `
+    - 【中优先级】
     - 用于查看或实际调用由历史沉淀经验而得的【经验工具】的【中介工具】。
     - 此【中介工具】是【经验工具】【查看协议或调用】的【最优、最佳、最权威、最简洁】途径和方式。
     - 在使用任何【经验工具】前必须先查看目标【tool_name】的【协议】，明确该如何调用。
