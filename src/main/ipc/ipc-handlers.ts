@@ -104,7 +104,6 @@ import {
   CUSTOM_TASK_TAG_LIMIT,
   CUSTOM_TEMPLATE_MAX_LENGTH,
 } from '../constants';
-import { MAX_UPLOAD_COUNT } from '@shared/constants';
 import {
   buildConversationUploadStorageKey,
   isConversationUploadStorageKey,
@@ -1218,7 +1217,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   /**
    * file:upload — 落盘单个文件到 conversations/{id}/uploads/{fileId}.ext
    * 原始展示名写入同名 .json 元数据，storageKey 不再携带用户上传文件名。
-   * 文件数限制：基于现有 uploads/ 有效 meta 条目数 +1 不超过 MAX_UPLOAD_COUNT=10
+   * 文件数限制：单次请求（当前待发送附件列表）上限 MAX_UPLOAD_COUNT=10，由渲染端预检拦截；主进程不按 uploads 目录累计存量拒绝。
    */
   ipcMain.handle(IPC_FILE.UPLOAD, async (_event, params: FileUploadParams): Promise<FileUploadResult> => {
     try {
@@ -1248,18 +1247,6 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       // 客户端上传直接写入当前会话 uploads/ 目录
       const uploadDir = resolveConversationUploadDir(conversationId);
       await mkdir(uploadDir, { recursive: true });
-
-      // 文件数限制（基于 uploads/ 现有有效 meta 条目，与 file:list 同口径）
-      const entries = await readdir(uploadDir).catch(() => [] as string[]);
-      let existingFileCount = 0;
-      for (const entryName of entries) {
-        if (await readUploadFileMeta(path.join(uploadDir, entryName))) {
-          existingFileCount += 1;
-        }
-      }
-      if (existingFileCount >= MAX_UPLOAD_COUNT) {
-        throw new Error(`[ERR_FILE_UPLOAD_LIMIT_EXCEEDED] 最多上传 ${MAX_UPLOAD_COUNT} 个文件。`);
-      }
 
       const fileId = uuidv4();
       const uploadedAt = new Date().toISOString();

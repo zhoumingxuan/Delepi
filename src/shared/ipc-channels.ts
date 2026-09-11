@@ -140,7 +140,7 @@ export const IPC_FILE = {
    *   主进程 fileInputToBuffer 同时兼容 Base64 string 与 ArrayBuffer/Uint8Array/number[]（向后兼容）
    * - R5：入口校验 conversationId 非空、name 非空、data 非空；整体 try/catch，
    *   失败写入 userData/logs/main.log（ERROR 级）后 rethrow；可预期错误带稳定错误码（ERR_FILE_UPLOAD_*）
-   * - 文件数限制 MAX_UPLOAD_COUNT=10（基于 uploads 目录现有有效 meta 条目数 +1）
+   * - 文件数限制：单次请求（当前待发送附件列表）上限 MAX_UPLOAD_COUNT=10，由渲染端预检拦截；主进程不按 uploads 目录累计存量拒绝。
    * - 落盘 conversations/{conversationId}/uploads/{fileId}.{ext}（原始展示名写入同名 .json 元数据）
    */
   UPLOAD: 'file:upload',
