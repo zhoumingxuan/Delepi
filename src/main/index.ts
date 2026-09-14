@@ -315,7 +315,7 @@ app.whenReady().then(async () => {
   }
 
   // 经验库根目录启动检查创建（script-tools 方案 R2）：不存在则创建；
-  // try-catch 包裹，失败仅记日志不阻断启动（委派期 script_tool 执行内核另有兜底重建，双层防护）。
+  // try-catch 包裹，失败仅记日志不阻断启动（委派期 use_script_tool 执行内核另有兜底重建，双层防护）。
   try {
     await ensureDir(SCRIPTS_TOOLS_DIR);
     writeMainLog('INFO', 'ensureScriptToolsDir', `OK path=${SCRIPTS_TOOLS_DIR}`);

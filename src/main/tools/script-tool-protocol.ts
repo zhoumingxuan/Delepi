@@ -51,9 +51,9 @@ export const SCRIPT_TOOL_CODES = {
 export interface ScriptToolProtocol {
   /** MCP 兼容工具名（=所在工具目录名；定位键=目录名，v2.0 R3/D2） */
   name: string;
-  /** 中文展示名（title；仅汉字 1-6 字，纯展示字段，不要求等于目录名） */
+  /** 中文展示名（title；纯展示字段，不要求等于目录名） */
   title: string;
-  /** 一句话能力说明（单行，≤200 字符） */
+  /** 一句话能力说明（单行） */
   description: string;
   /** 目标工具入参 JSON Schema（MCP inputSchema；顶层 type='object'；properties 顶层禁 context） */
   inputSchema: Record<string, unknown>;
@@ -61,7 +61,7 @@ export interface ScriptToolProtocol {
   timeoutSeconds: number;
   /** 调用期间进度文案中的工具名（缺省用 title） */
   progressName?: string;
-  /** 适用条件（可选；传入时非空、单行、≤100 字符；能力边界完全解耦声明，R6/D5） */
+  /** 适用条件（可选；传入时非空、单行；能力边界完全解耦声明，R6/D5） */
   applicableConditions?: string;
   /** 声明性依赖（仅展示不安装；应已存在于内置 Python 预置依赖或系统环境） */
   pythonDeps?: string[];
@@ -73,23 +73,12 @@ export type ScriptToolProtocolCheck =
 
 /** MCP 兼容工具名规范：1-64 位字母/数字/下划线/中划线（生态通行约定，见方案 D2 证据边界） */
 const MCP_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
-/** 中文展示名规范（title）：仅汉字，1~6 字 */
-const CHINESE_TITLE_PATTERN = /^[\u4e00-\u9fff]{1,6}$/;
 
 /** timeout_seconds 上限（对齐 dyn-tool-loader DYN_TOOL_TIMEOUT_MAX_SECONDS 语义） */
 export const SCRIPT_TOOL_TIMEOUT_MAX_SECONDS = 3600;
 
 /** timeout_seconds 缺省值 */
 export const SCRIPT_TOOL_TIMEOUT_DEFAULT_SECONDS = 180;
-
-/** description 最大长度 */
-const SCRIPT_TOOL_DESCRIPTION_MAX_LENGTH = 200;
-
-/** progress_name 最大长度 */
-const SCRIPT_TOOL_PROGRESS_NAME_MAX_LENGTH = 12;
-
-/** applicable_conditions 最大长度（R6/D5：适用条件单行 ≤100 字符） */
-const SCRIPT_TOOL_APPLICABILITY_MAX_LENGTH = 100;
 
 /** 严格模式：允许的协议字段全集（未知字段一律 PROTOCOL_INVALID，杜绝 timeout_sec 类手误） */
 const SCRIPT_TOOL_ALLOWED_FIELDS = new Set([
@@ -143,50 +132,11 @@ export function validateScriptToolProtocol(raw: unknown, dirName: string): Scrip
       error: `name(${name}) 与所在目录名(${dirName}) 不一致（定位键=目录名，name 为同值自校验标识）`,
     };
   }
-
-  // title：中文展示名（仅汉字 1-6 字；纯展示字段，不要求等于目录名）
   const title = typeof doc.title === 'string' ? doc.title.trim() : '';
-  if (!CHINESE_TITLE_PATTERN.test(title)) {
-    return {
-      ok: false,
-      code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-      error: `protocol.yaml title 必须为 1-6 个汉字：${JSON.stringify(doc.title)}`,
-    };
-  }
-
-  // description：非空、单行、≤200 字符
   const description = typeof doc.description === 'string' ? doc.description.trim() : '';
-  if (!description) {
-    return {
-      ok: false,
-      code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-      error: 'protocol.yaml description 必须为非空字符串（一句话能力说明）',
-    };
-  }
-  if (/[\r\n]/.test(description)) {
-    return {
-      ok: false,
-      code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-      error: 'protocol.yaml description 必须为单行（禁止换行）',
-    };
-  }
-  if (description.length > SCRIPT_TOOL_DESCRIPTION_MAX_LENGTH) {
-    return {
-      ok: false,
-      code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-      error: `protocol.yaml description 超过 ${SCRIPT_TOOL_DESCRIPTION_MAX_LENGTH} 字符（当前 ${description.length}）`,
-    };
-  }
 
-  // inputSchema：MCP inputSchema（JSON Schema 对象）；顶层 type='object'；properties 顶层禁保留字 context
   const inputSchema = doc.inputSchema;
-  if (!inputSchema || typeof inputSchema !== 'object' || Array.isArray(inputSchema)) {
-    return {
-      ok: false,
-      code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-      error: 'protocol.yaml inputSchema 必须为 JSON Schema 对象',
-    };
-  }
+  const progressName = typeof doc.progress_name === 'string' ? doc.progress_name.trim() : '';
   const params = inputSchema as Record<string, unknown>;
   if (params.type !== 'object') {
     return {
@@ -195,30 +145,13 @@ export function validateScriptToolProtocol(raw: unknown, dirName: string): Scrip
       error: 'protocol.yaml inputSchema.type 必须为 "object"',
     };
   }
-  const properties = params.properties;
-  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
-    return {
-      ok: false,
-      code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-      error: 'protocol.yaml inputSchema.properties 必须为对象',
-    };
-  }
-  if (Object.prototype.hasOwnProperty.call(properties, 'context')) {
-    return {
-      ok: false,
-      code: SCRIPT_TOOL_CODES.PROTOCOL_CONTEXT_RESERVED,
-      error: 'protocol.yaml inputSchema.properties 顶层不允许包含保留字 context（executor-registry.parseToolArguments 会剥离参数顶层 context，executor-registry.ts L140）',
-    };
-  }
 
   // timeout_seconds：可选，(0, 3600] 内数字；缺省 180
   let timeoutSeconds = SCRIPT_TOOL_TIMEOUT_DEFAULT_SECONDS;
   if (doc.timeout_seconds !== undefined) {
     if (
       typeof doc.timeout_seconds !== 'number' ||
-      !Number.isFinite(doc.timeout_seconds) ||
-      doc.timeout_seconds <= 0 ||
-      doc.timeout_seconds > SCRIPT_TOOL_TIMEOUT_MAX_SECONDS
+      !Number.isFinite(doc.timeout_seconds)
     ) {
       return {
         ok: false,
@@ -229,75 +162,17 @@ export function validateScriptToolProtocol(raw: unknown, dirName: string): Scrip
     timeoutSeconds = Math.floor(doc.timeout_seconds);
   }
 
-  // progress_name：可选，非空字符串，≤12 字
-  let progressName: string | undefined;
-  if (doc.progress_name !== undefined) {
-    if (typeof doc.progress_name !== 'string' || !doc.progress_name.trim()) {
-      return {
-        ok: false,
-        code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-        error: 'protocol.yaml progress_name 可选，但传入时必须为非空字符串',
-      };
-    }
-    const trimmedProgressName = doc.progress_name.trim();
-    if (trimmedProgressName.length > SCRIPT_TOOL_PROGRESS_NAME_MAX_LENGTH) {
-      return {
-        ok: false,
-        code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-        error: `protocol.yaml progress_name 超过 ${SCRIPT_TOOL_PROGRESS_NAME_MAX_LENGTH} 字（当前 ${trimmedProgressName.length}）`,
-      };
-    }
-    progressName = trimmedProgressName;
-  }
-
-  // applicable_conditions：可选；传入时非空、单行、≤100 字符（适用条件与工具能力边界一一对应，R6/D5）
-  let applicableConditions: string | undefined;
-  if (doc.applicable_conditions !== undefined) {
-    if (typeof doc.applicable_conditions !== 'string' || !doc.applicable_conditions.trim()) {
-      return {
-        ok: false,
-        code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-        error: 'protocol.yaml applicable_conditions 可选，但传入时必须为非空字符串',
-      };
-    }
-    const trimmedCond = doc.applicable_conditions.trim();
-    if (/[\r\n]/.test(trimmedCond)) {
-      return {
-        ok: false,
-        code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-        error: 'protocol.yaml applicable_conditions 必须为单行（禁止换行）',
-      };
-    }
-    if (trimmedCond.length > SCRIPT_TOOL_APPLICABILITY_MAX_LENGTH) {
-      return {
-        ok: false,
-        code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-        error: `protocol.yaml applicable_conditions 超过 ${SCRIPT_TOOL_APPLICABILITY_MAX_LENGTH} 字符（当前 ${trimmedCond.length}）`,
-      };
-    }
-    applicableConditions = trimmedCond;
-  }
+  // applicable_conditions：可选；传入时非空、单行（适用条件与工具能力边界一一对应，R6/D5）
+  const applicableConditions = typeof doc.applicable_conditions === 'string' ? doc.applicable_conditions.trim() : undefined;
 
   // python_deps：可选，元素为非空字符串（pip 包名形态；仅声明不安装）
-  let pythonDeps: string[] | undefined;
-  if (doc.python_deps !== undefined) {
-    if (!Array.isArray(doc.python_deps)) {
-      return {
-        ok: false,
-        code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-        error: 'protocol.yaml python_deps 必须为字符串数组',
-      };
-    }
+  let pythonDeps: string[] = [];
+  if (Array.isArray(doc.python_deps)) {
     const deps: string[] = [];
     for (const dep of doc.python_deps) {
-      if (typeof dep !== 'string' || !dep.trim()) {
-        return {
-          ok: false,
-          code: SCRIPT_TOOL_CODES.PROTOCOL_INVALID,
-          error: `protocol.yaml python_deps 元素必须为非空字符串：${JSON.stringify(dep)}`,
-        };
+      if (typeof dep === 'string') {
+        deps.push(dep.trim());
       }
-      deps.push(dep.trim());
     }
     pythonDeps = deps;
   }

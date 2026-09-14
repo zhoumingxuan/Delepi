@@ -29,7 +29,7 @@ export const OUTPUT_DIR_NAME = 'output';
 /** 上传目录名 */
 export const UPLOADS_DIR_NAME = 'uploads';
 
-/** 经验库根目录名（script_tool 门面工具的沉淀载体目录，与 skills/ 并排） */
+/** 经验库根目录名（use_script_tool 门面工具的沉淀载体目录，与 skills/ 并排） */
 export const SCRIPTS_TOOLS_DIR_NAME = 'script-tools';
 
 // ============================================================

@@ -92,7 +92,7 @@ function buildScriptToolDescription(): string {
 }
 
 /**
- * script_tool 参数 Schema 工厂（v2.0 R1）：tool_name 为自由字符串（不再动态目录名枚举）；
+ * use_script_tool 参数 Schema 工厂（v2.0 R1）：tool_name 为自由字符串（不再动态目录名枚举）；
  * 空库隐藏仍由委派组装点承担（executor-agent.ts：扫描无合法工具时不注入本工具）。
  * timeout（11:49 语义）：运行时一概不拦截——-1=挂起类型调用（只启动进程，不等待、不采集输出、不超时终止）；
  * 正整数=超时秒数；其余取值（0、非 -1 负数、小数）按『不设置超时限制』处理；未传时回落协议 timeout_seconds。
@@ -204,9 +204,9 @@ export const EXECUTOR_TOOLS = {
         },
         execute: readFileTool,
     },
-    script_tool: {
+    use_script_tool: {
         config: {
-            name: 'script_tool',
+            name: 'use_script_tool',
             displayName: '经验工具库调用',
             buildDescription: buildScriptToolDescription(),
         },

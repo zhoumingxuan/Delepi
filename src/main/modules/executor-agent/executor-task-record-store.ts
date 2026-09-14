@@ -94,16 +94,16 @@ function buildResultPreview(message: string): string {
 
 /**
  * 工具条目显示名解析（查询出口 buildIncrementalEntries 统一附加）：
- * - 非 script_tool 条目：维持既有三级回退映射（内置 EXECUTOR_TOOL_PROGRESS_NAMES[toolName] ?? toolName；
+ * - 非 use_script_tool 条目：维持既有三级回退映射（内置 EXECUTOR_TOOL_PROGRESS_NAMES[toolName] ?? toolName；
  *   动态工具 manifest.progressName→displayName→name），行为与改造前完全一致；
- * - script_tool 条目：按条目参数 action 两分支动态化——action='查看协议' → `查询 {tool_name} 工具协议`；
+ * - use_script_tool 条目：按条目参数 action 两分支动态化——action='查看协议' → `查询 {tool_name} 工具协议`；
  *   action='调用' → `调用 {tool_name} 工具`；参数数据缺失 / action 不属于两者 / tool_name 缺失或纯空白 /
- *   argsPreview 非合法 JSON 对象 → 一律回退内置映射兜底值（script_tool→'经验工具库调用'，映射本身不改）。
+ *   argsPreview 非合法 JSON 对象 → 一律回退内置映射兜底值（use_script_tool→'经验工具库调用'，映射本身不改）。
  *   数据来源 argsPreview：条目模型仅保存该参数预览（beginToolCall 由原始 args JSON 美化生成，合法 JSON
  *   可再次解析还原 action/tool_name 原值），出口侧不保存原始 args，故 argsPreview 为唯一参数载体。
  */
 function resolveToolRecordDisplayName(record: ExecutorToolRecord): string {
-  if (record.name !== 'script_tool') {
+  if (record.name !== 'use_script_tool') {
     return resolveExecutorToolProgressDisplayName(
       record.name,
       getDynamicExecutorToolMeta(record.name),

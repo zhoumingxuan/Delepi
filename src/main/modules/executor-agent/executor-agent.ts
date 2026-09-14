@@ -503,7 +503,7 @@ function buildScriptToolsInventoryBlock(entries: ScriptToolScanEntry[]): string 
     };
   });
   return `
-  # 经验工具库以及适用条件清单（**必须通过script_tool调用**）
+  # 经验工具库以及适用条件清单（**必须通过use_script_tool调用**）
   \`\`\`json
   ${JSON.stringify(lines)}
   \`\`\`
@@ -1270,13 +1270,13 @@ export async function runDelegatedTask(
   );
 
   // v2.0 R1/R5：tool_name 为自由字符串（无枚举）。委派组装期一次性扫描经验库：
-  // 空库（无合法工具）时不注入 script_tool；扫描结果同步构建『可适配的工具清单』文本块，
+  // 空库（无合法工具）时不注入 use_script_tool；扫描结果同步构建『可适配的工具清单』文本块，
   // 追加到用户提示词最后面（R5）。executor-registry.ts 保持零改动。
   const scriptToolEntries = await scanScriptToolsDir();
   const hasValidScriptTools = scriptToolEntries.some((entry) => entry.ok);
   const scriptToolsInventoryText = buildScriptToolsInventoryBlock(scriptToolEntries);
   const delegatedExecutorTools = executorTools.filter(
-    (tool) => !(tool.function.name === 'script_tool' && !hasValidScriptTools),
+    (tool) => !(tool.function.name === 'use_script_tool' && !hasValidScriptTools),
   );
 
   // 读取工作流模板（内置+自定义双源；自定义读取失败收集告警，最终附到委派结果 data）
