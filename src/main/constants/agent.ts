@@ -146,7 +146,7 @@ export const TASK_TYPE_VALUES = [
   '设计方案',
   '统筹规划',
   '执行落地',
-  '验收验证',
+  '全量验证',
   '编写用例',
 ] as const;
 export type TaskType = (typeof TASK_TYPE_VALUES)[number];
