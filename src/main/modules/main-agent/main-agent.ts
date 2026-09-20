@@ -436,6 +436,11 @@ function buildDelegatedTaskFailureResult(
   // 失败时刻取失败结果构造时刻，与正常路径 finishedAt 语义一致（formatCurrentDateTime，本地时间不带时区）
   const finishedAt = formatCurrentDateTime();
   const durationSeconds = computeTaskDurationSeconds(startAt, finishedAt);
+  // ★ API 报错保留现场（方案⑤5.4/⑥#13）：error.executionLogPath（executor-agent.ts throw 路径
+  //   catch 挂载）存在时注入 data.execution_log_path——与成功输出同构、读回链
+  //   extractExecutionLogPathFromToolResultText 零适配；缺失时保持空对象（降级安全；NR7：
+  //   非 Error 对象/无挂载路径经可选链安全降级为无路径）。
+  const executionLogPath = (error as { executionLogPath?: unknown } | null | undefined)?.executionLogPath;
   return {
     ...buildToolResult({
       success: false,
@@ -443,7 +448,9 @@ function buildDelegatedTaskFailureResult(
       message: aborted
         ? '执行子智能体任务已取消。'
         : `执行子智能体任务失败：${ensureErrorMessage(error)}`,
-      data: {},
+      data: typeof executionLogPath === 'string' && executionLogPath
+        ? { execution_log_path: executionLogPath }
+        : {},
     }),
     startAt,
     finishedAt,
@@ -577,6 +584,15 @@ export async function runMainAgent(
   // 仅在本次助手回复流程内有效，不入库、不传前端、不修改 tool_call.arguments
   let taskSeqCounter = 1;
   let completedTasks: CompletedTask[] = [];
+
+  // ★ 分时机落库（方案③3.2/⑥#1）：assistant 行幂等演进状态（同一 assistantMessageId 在库中
+  //   始终至多一行）——assistantPersistSeq 首次落库取号后钉死（防收尾轮覆盖漂移）、
+  //   assistantRowPersisted 行存在标志、assistantPersistedAt 首次 createdAt（覆盖写时回传防漂移）；
+  //   apiErrorHit：本轮委派任务 API 报错命中标志（轮末 tasks 重置豁免判定依据，方案⑤5.1/⑥#12）。
+  let assistantPersistSeq: number | null = null;
+  let assistantRowPersisted = false;
+  let assistantPersistedAt: string | undefined;
+  let apiErrorHit = false;
 
   const schedulePostProcessing = (includeTitleGeneration: boolean): void => {
     void (async () => {
@@ -713,6 +729,32 @@ export async function runMainAgent(
             ...(isContentFirstAppearance ? { forceNewReasoningSegment: true } : {}),
           });
         }
+        // ★ T-A（方案③3.1 时点A）：thinking 流结束信号（content 首个 delta，isContentFirstAppearance
+        //   既有判定）→ 半成品 assistant 行落库。insertMessage 同 id INSERT OR REPLACE 幂等演进：
+        //   thinking/segments 取更新后 running 快照、content 空串占位、不写 tool_calls；seq 首次
+        //   取号后钉死、createdAt 首落库时刻回传（防漂移）；重试复位后新 attempt 的 content 再次
+        //   首现时经 OR REPLACE 覆盖（此时行内容已被复位同步写回基线，见 onStreamRetry R2 同步）。
+        //   纯 thinking→tool_calls 流（无 content 边界）不经本时点，由 T-B 兜底合并落库。
+        if (isContentFirstAppearance) {
+          if (assistantPersistSeq === null) {
+            assistantPersistSeq = getNextMessageSeq(conversationId);
+            assistantPersistedAt = new Date().toISOString();
+          }
+          const taSnapshot = getRunningAssistantMessage(conversationId);
+          insertMessage({
+            conversationId,
+            id: assistantMessageId,
+            seq: assistantPersistSeq,
+            role: 'assistant',
+            payload: {
+              content: '',
+              thinking: taSnapshot?.thinking || undefined,
+              segments: taSnapshot?.segments,
+            },
+            createdAt: assistantPersistedAt,
+          });
+          assistantRowPersisted = true;
+        }
       },
       onThinking: (thinking) => {
         // ★ P1-C3：累积思考到 runningAssistantMessages
@@ -777,6 +819,23 @@ export async function runMainAgent(
           segments: retryBaseline.segments,
           forceNewReasoningSegment: false,
         });
+        // ★ R2 同步（方案③3.4/⑥#3）：复位内存后，若行已落库则同 id OR REPLACE 写回基线
+        //   payload——库内行与 running map/前端矫正事件三方一致，废弃 attempt 的 thinking
+        //   不残留库内。
+        if (assistantRowPersisted && assistantPersistSeq !== null) {
+          insertMessage({
+            conversationId,
+            id: assistantMessageId,
+            seq: assistantPersistSeq,
+            role: 'assistant',
+            payload: {
+              content: retryBaseline.content,
+              thinking: retryBaseline.thinking || undefined,
+              segments: retryBaseline.segments,
+            },
+            createdAt: assistantPersistedAt,
+          });
+        }
         // 矫正事件①：MAIN_AGENT_CHUNK_EVENT { delta:'', content:基线全量, reset:true }
         eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
           conversationId,
@@ -863,6 +922,22 @@ export async function runMainAgent(
         segments: retryBaseline.segments,
         forceNewReasoningSegment: false,
       });
+      // ★ R2 同步（方案③3.4/⑥#4）：参数校验复位与 onStreamRetry 同款——复位内存后同步
+      //   同 id OR REPLACE 写回基线 payload（库内行/内存/前端矫正事件三方一致）。
+      if (assistantRowPersisted && assistantPersistSeq !== null) {
+        insertMessage({
+          conversationId,
+          id: assistantMessageId,
+          seq: assistantPersistSeq,
+          role: 'assistant',
+          payload: {
+            content: retryBaseline.content,
+            thinking: retryBaseline.thinking || undefined,
+            segments: retryBaseline.segments,
+          },
+          createdAt: assistantPersistedAt,
+        });
+      }
       eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
         conversationId,
         delta: '',
@@ -921,6 +996,25 @@ export async function runMainAgent(
       segments: toolCallAssistantSegments,
       tool_calls: filteredToolCalls.length > 0 ? filteredToolCalls : undefined,
     };
+    // ★ T-B（方案③3.1 时点B/⑥#5）：tool_calls 到齐且参数校验通过后、委派闭包启动前，
+    //   同 id 同 seq OR REPLACE 补落完整 payload（content/thinking/segments/tool_calls）——
+    //   执行委派前 assistant message 已完整落库；纯 thinking→tool_calls 流（未经 T-A）由本
+    //   时点兜底合并落库。随后 deleteRunningAssistantMessage（D8，方案③3.6）：批次期间可见性
+    //   等价迁移至库行（下方 set 重建的 running 与库行内容一致，#18 running 恒优先替换下前端无感）。
+    if (assistantPersistSeq === null) {
+      assistantPersistSeq = getNextMessageSeq(conversationId);
+      assistantPersistedAt = new Date().toISOString();
+    }
+    insertMessage({
+      conversationId,
+      id: assistantMessageId,
+      seq: assistantPersistSeq,
+      role: 'assistant',
+      payload: assistantPayload,
+      createdAt: assistantPersistedAt,
+    });
+    assistantRowPersisted = true;
+    deleteRunningAssistantMessage(conversationId);
     setRunningAssistantMessage(conversationId, {
       id: assistantMessageId,
       role: 'assistant',
@@ -1199,6 +1293,12 @@ export async function runMainAgent(
           // ★ S2（文档 #8）：catch 内中止不再上抛中止错误——中止与非中止失败统一走下方失败消息化路径
           //   （对齐 ai_fr 出口② :897-948「不 throw——单个任务失败不阻塞其他任务」）
 
+          // ★ API 报错保留现场（方案⑤5.1/⑥#6）：委派任务 API 报错命中标记（isModelApiAbortError
+          //   覆盖 model-retry 重试耗尽与不可重试致命错误两类 ModelApiAbortError）——轮末重置
+          //   豁免判定依据（⑥#12）。
+          if (isModelApiAbortError(error)) {
+            apiErrorHit = true;
+          }
 
           const failureResult = buildDelegatedTaskFailureResult(
             error,
@@ -1321,23 +1421,27 @@ export async function runMainAgent(
       toolCallIds: filteredToolCalls.map((toolCall) => toolCall.id),
     });
 
-    // 批次末单事务配对落库（对齐 ai_fr :983-997）：assistant 声明（复用 assistantMessageId）
-    //   + 全部 tool 消息；seq 事务内一次取号连号、created_at 同值（S1 insertMessages 入口）
+    // 批次末单事务落库（对齐 ai_fr :983-997 配对语义）：仅全部 tool 消息——assistant 声明已在
+    //   T-B（执行委派前）同 id 幂等落库，此处不再重复插入（方案③3.3/⑥#7，R1 规避：insertMessages
+    //   只对 tool 消息连号取号，取号基点=已落库 assistant 行 seq 之后，顺序保持 assistant→tool）；
+    //   seq 事务内一次取号连号、created_at 同值（S1 insertMessages 入口）
     const pairedMessages = insertMessages({
       conversationId,
       messages: [
-        { id: assistantMessageId, role: 'assistant', payload: assistantPayload },
         ...pendingToolMessagePayloads,
       ],
     });
 
-    // seq 批次末统一采样（文档 #10c）
-    contextCompressionMaxMessageSeq = pairedMessages[pairedMessages.length - 1].seq;
+    // seq 批次末统一采样（文档 #10c）；空数组防御（方案⑥#8/NR1）：全部 toolCall 无 id 被过滤、
+    //   闭包全 skipped 的极值下回退 assistantPersistSeq（即本轮已落库最大 seq，语义正确）
+    contextCompressionMaxMessageSeq = pairedMessages.length > 0
+      ? pairedMessages[pairedMessages.length - 1].seq
+      : assistantPersistSeq;
 
     // TOOL_MESSAGE_CREATED 批次末统一 emit（文档 #10d）：载荷从 insertMessages 返回记录构造，
     //   结构与原成功/失败两路径一致（前端 useChat :2064-2087 消费不变）；
     //   isDelegatedExecutor 按工具名重推导（未知工具分支为 false）
-    for (const pairedMessage of pairedMessages.slice(1)) {
+    for (const pairedMessage of pairedMessages) {
       const toolPayload = pairedMessage.payload as {
         toolCallId: string;
         name: string;
@@ -1398,6 +1502,10 @@ export async function runMainAgent(
     deleteRunningAssistantMessage(conversationId);
 
     assistantMessageId = uuidv4();
+    // ★ 分时机落库（方案③3.2/⑥#10）：新一轮 assistant 行演进状态随 assistantMessageId 重建同步重置。
+    assistantPersistSeq = null;
+    assistantRowPersisted = false;
+    assistantPersistedAt = undefined;
     setRunningAssistantMessage(conversationId, {
       id: assistantMessageId,
       role: 'assistant',
@@ -1436,6 +1544,14 @@ export async function runMainAgent(
   const assistantMessage = insertMessage({
     conversationId,
     id: assistantMessageId,
+    // ★ 分时机落库（方案③3.2/⑥#11/NR8）：行已落库时显式传钉死 seq/createdAt——同 id 原位覆盖
+    //   零漂移（不依赖自动取号的删旧插新路径）；未落库时缺省自动取号（防御路径兜底）。
+    ...(assistantRowPersisted && assistantPersistSeq !== null
+      ? {
+          seq: assistantPersistSeq,
+          ...(assistantPersistedAt ? { createdAt: assistantPersistedAt } : {}),
+        }
+      : {}),
     role: 'assistant',
     payload: {
       content: fullContent,
@@ -1490,7 +1606,13 @@ export async function runMainAgent(
 
   // 对齐 E:\ai_fr：保留每个子任务的 finalOutputDir 到主智能体最终回复完成后，
   // 再统一清理整个 tasks/ 目录并重建，便于同一轮后续委派任务通过路径读取前序任务临时文件。
-  await resetConversationTasksDir(conversationId);
+  // ★ API 报错保留现场（方案⑤5.2/⑥#12/D-P3 拍板=整体豁免）：本轮命中委派任务 API 报错
+  //   （apiErrorHit）时豁免 resetConversationTasksDir——内存任务记录与磁盘 tasks 目录均保留，
+  //   保证报错轮 execution_log_path 指向的任务现场与终态任务记录回看窗口持续有效；下一次无
+  //   API 报错的轮末照常统一清理（豁免仅当轮生效；conv:delete 仍无条件清理，无泄漏死角）。
+  if (!apiErrorHit) {
+    await resetConversationTasksDir(conversationId);
+  }
 
   // 12. 对话后处理（适配 E:\ai_fr）：标题生成和上下文压缩均异步非阻塞
   schedulePostProcessing(true);

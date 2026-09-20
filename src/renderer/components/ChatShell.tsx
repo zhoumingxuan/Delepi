@@ -70,6 +70,7 @@ export function ChatShell() {
     showScrollToBottom,
     setShowScrollToBottom,
     stickToBottomRef,
+    scrollSettleTick,
     /** ★ BUG3 修复：取消待收口标记查询 / 可重发通知订阅 */
     isConversationCancelPendingSettle,
     onCancelPendingSettleReissue,
@@ -591,6 +592,7 @@ const { check, canCheck } = useConfigReadiness({
             conversationId={conversationId}
             messageListRef={messageListRef}
             stickToBottomRef={stickToBottomRef}
+            scrollSettleTick={scrollSettleTick}
             showScrollToBottom={showScrollToBottom}
             onShowScrollToBottomChange={setShowScrollToBottom}
             isStreaming={isStreaming}

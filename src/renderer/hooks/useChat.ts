@@ -559,6 +559,12 @@ export function useChat(options?: UseChatOptions) {
    */
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   /**
+   * ★ 滚动收敛：打开/切换对话的贴底收敛信号（递增）。
+   * ChatArea 监听该信号启动收敛事务；对静默重载二次提交 / 布局判定先行清标志鲁棒。
+   * 初值 0：挂载时不触发。
+   */
+  const [scrollSettleTick, setScrollSettleTick] = useState(0);
+  /**
    * P3-3 步骤 1：已完成（completed / failed / error）的工具调用 ID 集合
    * 切换会话时由 switchConversation 调 .clear() 清空
    */
@@ -1084,6 +1090,10 @@ const scheduleProjection = useCallback(() => {
       // 步骤 1：重置粘底滚动开关 + 隐藏"滚动到底部"按钮（视图瞬态，原语义保留）
       stickToBottomRef.current = true;
       setShowScrollToBottom(false);
+      if (id) {
+        // ★ 滚动收敛：打开/切换对话 → 发出贴底收敛信号（读序号递增；ChatArea 据此启动收敛事务）
+        setScrollSettleTick((tick) => tick + 1);
+      }
 
       setConversationId(id);
       conversationIdRef.current = id;
@@ -2153,6 +2163,8 @@ const scheduleProjection = useCallback(() => {
     /** P3-3 步骤 2：是否显示"滚动到底部"按钮 */
     showScrollToBottom,
     setShowScrollToBottom,
+    /** ★ 滚动收敛：打开/切换对话的贴底收敛信号（递增；ChatArea 据此启动收敛事务） */
+    scrollSettleTick,
     /** P3-3 步骤 1：已完成工具调用 ID 集合 ref */
     /** P3-3 步骤 2 关联：粘底滚动开关 ref */
     stickToBottomRef,

@@ -109,6 +109,21 @@ async function writeExecutorExecutionLog(
   }
 }
 
+/**
+ * ★ API 报错保留现场（方案⑤5.3/⑥#17）：throw 路径复用唯一写盘点生成 executor_messages.json。
+ * errors 追加错误信息后经 writeExecutorExecutionLog 写盘（与成功路径同目录同文件名），
+ * 返回绝对路径；写盘失败（内部 catch 返回 undefined）时返回 undefined——调用方据此不挂载
+ * 路径，错误原样上抛，失败结果 data 保持空对象（降级安全）。
+ */
+export async function saveExecutionLogOnError(options: {
+  log: ExecutorExecutionLog;
+  finalOutputDir?: string;
+  errorMessage: string;
+}): Promise<string | undefined> {
+  options.log.errors.push(options.errorMessage);
+  return writeExecutorExecutionLog(options.log, options.finalOutputDir);
+}
+
 function addExecutionLogPathToData(
   data: unknown,
   executionLogPath: string | undefined,

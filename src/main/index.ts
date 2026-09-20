@@ -8,7 +8,13 @@ import path from 'path';
 import { cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { getDb } from './db/sqlite-adapter';
-import { resetInterruptedRuntimeState } from './db';
+import {
+  resetInterruptedRuntimeState,
+  listConversations,
+  getLastStoredMessage,
+  insertMessage,
+  listStoredExecutionLogPaths,
+} from './db';
 import { registerIpcHandlers, writeMainLog } from './ipc/ipc-handlers';
 import { configManager } from './modules/config/config-manager';
 import { pythonManager } from './modules/python';
@@ -209,6 +215,17 @@ function createWindow(): void {
  * 同构）；uploads/output 等其余目录不受影响。
  */
 async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
+  // ★ D7 拍板豁免（方案⑧ D7 最终决策=启动清理对报错保留现场豁免）：库内 tool 消息
+  //   execution_log_path 引用的任务现场目录（tasks/<delegateCallId>/，运行期 apiErrorHit
+  //   豁免保留的磁盘现场）不参与启动清空重建——保证报错轮日志路径重启后持续有效；
+  //   未被引用的残留照常清理（BUG1 修复语义保持）。
+  let preservedTaskDirKeys = new Set<string>();
+  try {
+    preservedTaskDirKeys = collectPreservedTaskDirKeys();
+  } catch (err) {
+    // 引用清单构建失败（库读取异常）→ 退化为原无条件清理（不因豁免逻辑阻断既有修复）
+    writeMainLog('WARN', 'cleanupStaleTasksDirsOnStartup', 'execution_log_path 引用清单构建失败，退化为无条件清理', err);
+  }
   const conversationsRootDir = resolveConversationsRootDir();
   const conversationEntries = await readdir(conversationsRootDir, {
     withFileTypes: true,
@@ -226,13 +243,121 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
         .find((entry) => entry.name === 'tasks' && entry.isDirectory());
       if (!tasksEntry) continue;
       const tasksDir = path.join(conversationDir, tasksEntry.name);
-      await rm(tasksDir, { recursive: true, force: true });
-      await mkdir(tasksDir, { recursive: true });
+      const tasksSubEntries = await readdir(tasksDir, { withFileTypes: true });
+      const preservedCount = tasksSubEntries.filter(
+        (entry) => entry.isDirectory()
+          && preservedTaskDirKeys.has(path.resolve(path.join(tasksDir, entry.name)).toLowerCase()),
+      ).length;
+      if (preservedCount === 0) {
+        await rm(tasksDir, { recursive: true, force: true });
+        await mkdir(tasksDir, { recursive: true });
+        continue;
+      }
+      // 存在被库内 execution_log_path 引用的任务现场：仅清空未被引用的残留条目，
+      // 被引用的现场目录原样保留（D7 拍板豁免；下次成功轮末照常统一清理）
+      writeMainLog('INFO', 'cleanupStaleTasksDirsOnStartup',
+        `会话 tasks 含 API 报错保留现场（${preservedCount} 个目录），启动清理豁免: ${tasksDir}`);
+      for (const subEntry of tasksSubEntries) {
+        if (subEntry.isDirectory()
+          && preservedTaskDirKeys.has(path.resolve(path.join(tasksDir, subEntry.name)).toLowerCase())) {
+          continue;
+        }
+        await rm(path.join(tasksDir, subEntry.name), { recursive: true, force: true });
+      }
     } catch (err) {
       // 单个会话 tasks 清理失败（如 Windows 文件占用）时仅记录告警，不阻断启动
       console.warn(`[StartupCleanup] 清理会话 tasks 目录失败，已跳过: ${conversationDir}`, err);
     }
   }
+}
+
+/**
+ * ★ D7 拍板豁免支撑：库内 tool 消息引用的 execution_log_path → 其所在任务现场目录
+ * （tasks/<delegateCallId>）归一化键集合（path.resolve + 小写，Windows 路径归一）。
+ * cleanupStaleTasksDirsOnStartup 据此豁免被引用现场的清空重建，保证报错轮日志路径
+ * 重启后持续有效（D7 拍板：启动清理对报错保留现场豁免）。
+ */
+function collectPreservedTaskDirKeys(): Set<string> {
+  const keys = new Set<string>();
+  for (const logPath of listStoredExecutionLogPaths()) {
+    if (typeof logPath !== 'string' || !logPath) {
+      continue;
+    }
+    keys.add(path.resolve(path.dirname(logPath)).toLowerCase());
+  }
+  return keys;
+}
+
+/**
+ * ★ 启动自愈（方案④4.2-4.4/⑥#15）：孤儿 assistant(tool_calls) 检测与补写。
+ * 客户端在任务执行中途被关闭（进程终止）时批次末 tool 消息未落库，库内末条为含
+ * tool_calls 的 assistant 行（孤儿态）——下次回放（按 seq 直读）将出现 tool_calls 无配对
+ * tool 结果。此处逐会话取末条 message：role=assistant 且 payload.tool_calls（双键名兼容
+ * toolCalls）为非空数组时，逐 tool_call 补一条 role='tool' 的『任务取消』消息闭环配对
+ * （补写 payload 逐键对齐 B15 结构，读侧零适配）。
+ * 必须先于 createWindow / registerIpcHandlers（首轮 conv:get-messages 读取与 chat:send
+ * 回放/取号均要求孤儿已补写）；insertMessage 单条写入不动 conversations.updated_at（会话
+ * 列表排序不变）；异常仅记日志不阻断启动（对齐启动链既有容错惯例）。
+ * @returns 本次补写的 tool 消息总条数
+ */
+async function healOrphanToolCallMessages(): Promise<number> {
+  const conversations = listConversations();
+  let healedCount = 0;
+  for (const conversation of conversations) {
+    try {
+      const lastMessage = getLastStoredMessage(conversation.id);
+      if (!lastMessage || lastMessage.role !== 'assistant') {
+        continue;
+      }
+      const payload = lastMessage.payload;
+      const rawToolCalls = Array.isArray(payload.tool_calls)
+        ? payload.tool_calls
+        : Array.isArray(payload.toolCalls)
+          ? payload.toolCalls
+          : undefined;
+      if (!rawToolCalls || rawToolCalls.length === 0) {
+        continue;
+      }
+      const healedAt = new Date().toISOString();
+      for (const toolCallValue of rawToolCalls) {
+        const toolCall = toolCallValue as {
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        };
+        insertMessage({
+          conversationId: conversation.id,
+          role: 'tool',
+          payload: {
+            toolCallId: toolCall.id ?? '',
+            name: toolCall.function?.name ?? '',
+            arguments: toolCall.function?.arguments ?? '',
+            result: JSON.stringify(
+              {
+                current_task_execution_result: {
+                  success: false,
+                  message: '客户端在任务执行期间关闭，该委派任务已取消（启动自愈补记），未产生执行结果。',
+                  data: {},
+                },
+              },
+              null,
+              2,
+            ),
+            isError: true,
+            startedAt: lastMessage.createdAt,
+            finishedAt: healedAt,
+          },
+        });
+        healedCount += 1;
+      }
+      writeMainLog('INFO', 'healOrphanToolCallMessages',
+        `孤儿 tool_calls 已补记 conversationId=${conversation.id} assistantSeq=${lastMessage.seq} toolCallCount=${rawToolCalls.length}`);
+    } catch (err) {
+      // 单会话检测/补写失败仅记日志不阻断启动（含外键极值/脏数据场景，见方案④4.4 外键安全性论证）
+      writeMainLog('WARN', 'healOrphanToolCallMessages',
+        `会话孤儿检测/补写失败，已跳过 conversationId=${conversation.id}`, err);
+    }
+  }
+  return healedCount;
 }
 /**
  * 启动一次性迁移：script-tools 沉淀经验库载体从“旧安装目录/项目根位置”迁至 userData（重装不覆盖治本）。
@@ -302,6 +427,16 @@ app.whenReady().then(async () => {
     writeMainLog('INFO', 'resetInterruptedRuntimeState', 'OK');
   } catch (err) {
     writeMainLog('ERROR', 'resetInterruptedRuntimeState', '失败', err);
+  }
+
+  // ★ 启动自愈（方案④4.4/⑥#15）：孤儿 assistant(tool_calls) 补写 role=tool 任务取消消息——
+  //   紧随 resetInterruptedRuntimeState（同为启动期数据库状态修复，语义聚类）；必须先于
+  //   createWindow/registerIpcHandlers（首轮 conv:get-messages 读取与 chat:send 回放/取号要求闭环）。
+  try {
+    const healedToolMessageCount = await healOrphanToolCallMessages();
+    writeMainLog('INFO', 'healOrphanToolCallMessages', `OK 补记消息条数=${healedToolMessageCount}`);
+  } catch (err) {
+    writeMainLog('ERROR', 'healOrphanToolCallMessages', '失败', err);
   }
 
   // 【重装不覆盖治本】script-tools 旧载体一次性迁移：必须位于 ensureScriptToolsDir（下方）之前执行——

@@ -137,6 +137,8 @@ interface ChatAreaProps {
   showScrollToBottom?: boolean;
   /** P3-3 向上回调：ChatArea 内部判定后通过此回调通知 useChat */
   onShowScrollToBottomChange?: (show: boolean) => void;
+  /** ★ 滚动收敛：打开/切换对话触发的贴底收敛信号（递增；初值 0 不触发） */
+  scrollSettleTick?: number;
   isStreaming?: boolean;
   /**
    * ★ 对齐 ai_fr：消息加载过渡态，true 时显示 Spin 占位
@@ -163,6 +165,7 @@ export const ChatArea = memo(function ChatArea({
   stickToBottomRef,
   showScrollToBottom = false,
   onShowScrollToBottomChange,
+  scrollSettleTick = 0,
   isStreaming = false,
   /**
    * ★ 对齐 ai_fr：消息加载过渡态
@@ -178,12 +181,103 @@ export const ChatArea = memo(function ChatArea({
   const stickRef = stickToBottomRef ?? internalStickRef;
   /** ★ P0-B item 引用缓存：msg 引用未变 ⇒ item 全部派生字段未变 ⇒ 复用整 item（extraInfo 随之稳定） */
   const bubbleItemCacheRef = useRef(new Map<string, BubbleItemType>());
+  /**
+   * ★ 滚动收敛事务（scroll settle）状态与策略：
+   * - 贴底滚动从「单次采样目标 + 单次滚动」升级为「持续校正的收敛事务」；
+   *   scrollSettleRafRef 为事务循环帧句柄；scrollSettleIntentRef 为贴底意图（与 stickRef
+   *   的「当前是否贴底」布局读数语义分离）；scrollSettleStateRef 为帧间采样（停滞/稳定判定）。
+   * - 事务存续只受：稳定收口 / 用户手势取消 / 保险上限；不经由贴底 effect 的清理链路。
+   */
+  const scrollSettleRafRef = useRef<number | null>(null);
+  const scrollSettleIntentRef = useRef(false);
+  const scrollSettleStateRef = useRef<{
+    lastTop: number;
+    lastHeight: number;
+    stableFrames: number;
+    reaimCooldown: number;
+    startedAt: number;
+    lastProgressAt: number;
+  } | null>(null);
+  /** 收敛事务策略常量：稳定窗口 ≈0.5s（60Hz）/ 重瞄冷却 4 帧 / 无进展退让 2.5s / 总时长保险 12s */
+  const SCROLL_SETTLE_STABLE_FRAMES = 30;
+  const SCROLL_SETTLE_REAIM_COOLDOWN_FRAMES = 4;
+  const SCROLL_SETTLE_STALL_GIVEUP_MS = 2500;
+  const SCROLL_SETTLE_MAX_MS = 12000;
 
   const scrollToBottom = useCallback(
     (behavior: ScrollBehavior = 'smooth') => {
       const el = scrollRef.current;
       if (!el) return;
+      // 贴底意图置位：事务存续期间不受「滚动过程中的非底部读数」（第228行覆写）影响
+      scrollSettleIntentRef.current = true;
+      // 首滚 / 重瞄：目标为「最新采样」的真实底部；后续增长由事务循环重瞄持续校正
       el.scrollTo({ top: el.scrollHeight, behavior });
+      if (scrollSettleRafRef.current !== null) {
+        return; // 已有活动事务：本次仅重瞄（刷新目标），循环继续做落点校正
+      }
+      const state = {
+        lastTop: el.scrollTop,
+        lastHeight: el.scrollHeight,
+        stableFrames: 0,
+        reaimCooldown: SCROLL_SETTLE_REAIM_COOLDOWN_FRAMES,
+        startedAt: performance.now(),
+        lastProgressAt: performance.now(),
+      };
+      scrollSettleStateRef.current = state;
+      const tick = () => {
+        scrollSettleRafRef.current = null;
+        if (!scrollSettleIntentRef.current) {
+          scrollSettleStateRef.current = null;
+          return;
+        }
+        const node = scrollRef.current;
+        if (!node) {
+          scrollSettleStateRef.current = null;
+          return;
+        }
+        const now = performance.now();
+        const top = node.scrollTop;
+        const height = node.scrollHeight;
+        const distance = height - top - node.clientHeight;
+        const moved = Math.abs(top - state.lastTop) >= 0.5;
+        const grown = height !== state.lastHeight;
+        if (moved || grown) {
+          state.lastProgressAt = now;
+        }
+        if (distance <= AT_BOTTOM_THRESHOLD_PX && !moved && !grown) {
+          state.stableFrames += 1;
+          if (state.stableFrames >= SCROLL_SETTLE_STABLE_FRAMES) {
+            // 成功收口：到达底部、无位移、无高度增长，连续稳定
+            scrollSettleStateRef.current = null;
+            scrollSettleIntentRef.current = false;
+            return;
+          }
+        } else {
+          state.stableFrames = 0;
+          if (
+            (now - state.startedAt > SCROLL_SETTLE_MAX_MS ||
+              now - state.lastProgressAt > SCROLL_SETTLE_STALL_GIVEUP_MS) &&
+            distance > AT_BOTTOM_THRESHOLD_PX
+          ) {
+            // 保险 / 无进展退让：受控终止（防病态空转；正常路径远早于此处收口）
+            scrollSettleStateRef.current = null;
+            scrollSettleIntentRef.current = false;
+            return;
+          }
+          if (!moved && distance > AT_BOTTOM_THRESHOLD_PX && state.reaimCooldown <= 0) {
+            // 停滞且未到底：以最新 scrollHeight 重瞄（估高真实化等增长由本次重新采样携带）
+            node.scrollTo({ top: height, behavior });
+            state.reaimCooldown = SCROLL_SETTLE_REAIM_COOLDOWN_FRAMES;
+          }
+        }
+        if (state.reaimCooldown > 0) {
+          state.reaimCooldown -= 1;
+        }
+        state.lastTop = top;
+        state.lastHeight = height;
+        scrollSettleRafRef.current = requestAnimationFrame(tick);
+      };
+      scrollSettleRafRef.current = requestAnimationFrame(tick);
     },
     [scrollRef],
   );
@@ -232,7 +326,7 @@ export const ChatArea = memo(function ChatArea({
     });
   }, [scrollRef, showScrollToBottom, onShowScrollToBottomChange]);
 
-  // P05：卸载时取消挂起的布局读取帧（防卸载后回调读 ref）
+  // P05：卸载时取消挂起的布局读取帧与滚动收敛事务（防卸载后回调读 ref）
   useEffect(() => () => {
     if (scrollStateRafRef.current !== null) {
       cancelAnimationFrame(scrollStateRafRef.current);
@@ -242,6 +336,12 @@ export const ChatArea = memo(function ChatArea({
       cancelAnimationFrame(scrollFollowRafRef.current);
       scrollFollowRafRef.current = null;
     }
+    if (scrollSettleRafRef.current !== null) {
+      cancelAnimationFrame(scrollSettleRafRef.current);
+      scrollSettleRafRef.current = null;
+    }
+    scrollSettleIntentRef.current = false;
+    scrollSettleStateRef.current = null;
   }, []);
 
   useEffect(() => {
@@ -252,7 +352,8 @@ export const ChatArea = memo(function ChatArea({
           const el = scrollRef.current;
           // rAF 回调时重读 stickRef（最新）：调度与回调之间用户上滚 → 跳过，保住「上滚停跟」语义
           if (el && stickRef.current) {
-            el.scrollTo({ top: el.scrollHeight, behavior: isStreaming ? 'auto' : 'smooth' });
+            // ★ 滚动收敛：经收敛事务入口滚动（首滚即时；增长由事务循环重瞄持续校正）
+            scrollToBottom(isStreaming ? 'auto' : 'smooth');
           }
         });
       }
@@ -265,7 +366,47 @@ export const ChatArea = memo(function ChatArea({
         scrollFollowRafRef.current = null;
       }
     };
-  }, [mergedMessages, isStreaming, scrollRef, stickRef, updateScrollBottomState]);
+  }, [mergedMessages, isStreaming, scrollRef, stickRef, scrollToBottom, updateScrollBottomState]);
+  // ★ 滚动收敛：打开/切换对话信号（scrollSettleTick 递增）→ 启动贴底收敛事务。
+  //   事务独立于贴底 effect 的「单次调度帧 + 清理取消 + stick 复核」链路：静默重载二次提交
+  //   造成的同帧取消与布局判定先行清标志均不影响本事务（时序断点修复）。
+  const lastScrollSettleTickRef = useRef(0);
+  useEffect(() => {
+    if (scrollSettleTick === 0 || scrollSettleTick === lastScrollSettleTickRef.current) {
+      return;
+    }
+    lastScrollSettleTickRef.current = scrollSettleTick;
+    scrollToBottom(isStreaming ? 'auto' : 'smooth');
+  }, [scrollSettleTick, isStreaming, scrollToBottom]);
+  // ★ 滚动收敛：用户手势（滚轮/指针按下/触摸/键盘上翻）→ 立即取消收敛事务。
+  //   程序不与被禁止的「用户滚动」竞争：用户接管后不再重瞄，直到下次显式贴底请求。
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const cancelScrollSettle = () => {
+      scrollSettleIntentRef.current = false;
+      if (scrollSettleRafRef.current !== null) {
+        cancelAnimationFrame(scrollSettleRafRef.current);
+        scrollSettleRafRef.current = null;
+      }
+      scrollSettleStateRef.current = null;
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'ArrowUp' || event.key === 'PageUp' || event.key === 'Home') {
+        cancelScrollSettle();
+      }
+    };
+    el.addEventListener('wheel', cancelScrollSettle, { passive: true });
+    el.addEventListener('pointerdown', cancelScrollSettle, { passive: true });
+    el.addEventListener('touchstart', cancelScrollSettle, { passive: true });
+    el.addEventListener('keydown', handleKeyDown);
+    return () => {
+      el.removeEventListener('wheel', cancelScrollSettle);
+      el.removeEventListener('pointerdown', cancelScrollSettle);
+      el.removeEventListener('touchstart', cancelScrollSettle);
+      el.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [scrollRef]);
 
   const renderUserMessageFooter = useCallback(
     (

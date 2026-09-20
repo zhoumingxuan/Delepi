@@ -1115,17 +1115,24 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   /**
    * conv:get-messages — 获取对话的历史消息列表
    * 读取 messages 表，按 seq 升序排列，反序列化 payload_json 为 ChatMessage 数组
-   * ★ P1-C3：若存在 runningAssistantMessages 中正在流式累积的 assistant 消息
-   *   且该消息尚未入库（id 不在已读 rows 中），则附加到返回列表末尾
+   * ★ P1-C3：若存在 runningAssistantMessages 中正在流式累积的 assistant 消息，
+   *   则附加到返回列表末尾
    *   确保前端 conv:get-messages 在流式过程中也能拉到正在累积的 assistant 消息
+   * ★ 分时机落库 D8（方案③3.6/⑥#18）：running 恒优先——running 存在时先从已读列表移除
+   *   同 id 库行再附加 running（T-A 落库后库行已含 assistantMessageId，原『id 不在已读行中
+   *   才附加』条件会跳过 running，前端只能读到 T-A 半成品库行，流式窗口内丢失实时视图）
    */
   ipcMain.handle(IPC_CONV.GET_MESSAGES, async (_event, conversationId: string) => {
     const list = listRendererMessages(conversationId);
-    const persistedIds = new Set(list.map((message) => message.id));
 
-    // ★ P1-C3：附加正在流式累积的 assistant 消息
+    // ★ P1-C3 + 分时机落库 D8（⑥#18）：running 恒优先替换同 id 库行
     const runningMsg = getRunningAssistantMessage(conversationId);
-    if (runningMsg && !persistedIds.has(runningMsg.id)) {
+    if (runningMsg) {
+      for (let index = list.length - 1; index >= 0; index -= 1) {
+        if (list[index].id === runningMsg.id) {
+          list.splice(index, 1);
+        }
+      }
       list.push(runningMsg as unknown as typeof list[number]);
     }
 

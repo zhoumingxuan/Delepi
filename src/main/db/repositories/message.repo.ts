@@ -291,3 +291,83 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
     };
   });
 }
+
+/**
+ * ★ 启动自愈（方案④4.1/⑥#14）：取指定会话最后一条 message。
+ * SQL 形态 ORDER BY seq DESC LIMIT 1 由索引 idx_messages_conversation_seq(conversation_id, seq)
+ * 直接支持（每会话一次倒序 LIMIT 1 索引扫描）；行映射与 listStoredMessages 一致；无行返回 null。
+ */
+export function getLastStoredMessage(conversationId: string): StoredMessageRecord | null {
+  const db = getDb();
+  const row = db.prepare(`
+    SELECT id, conversation_id, seq, role, payload_json, created_at
+    FROM messages
+    WHERE conversation_id = ?
+    ORDER BY seq DESC
+    LIMIT 1
+  `).get(conversationId) as {
+    id: string;
+    conversation_id: string;
+    seq: number;
+    role: MessageRole;
+    payload_json: string;
+    created_at: string;
+  } | undefined;
+  if (!row) {
+    return null;
+  }
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    seq: row.seq,
+    role: row.role,
+    payload: parseJsonObject(row.payload_json),
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * ★ API 报错保留现场·D7 拍板豁免支撑：列出库内 tool 消息结果文本中引用的全部
+ * execution_log_path（current_task_execution_result.data.execution_log_path，读侧解析
+ * 对齐 extractExecutionLogPathFromToolResultText 先例）。启动清理 cleanupStaleTasksDirsOnStartup
+ * 据此跳过被库内引用的任务现场目录，保证报错轮 execution_log_path 重启后持续有效。
+ */
+export function listStoredExecutionLogPaths(): string[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT payload_json
+    FROM messages
+    WHERE role = 'tool' AND payload_json LIKE '%execution_log_path%'
+  `).all() as Array<{ payload_json: string }>;
+  const paths: string[] = [];
+  for (const row of rows) {
+    const payload = parseJsonObject(row.payload_json);
+    const resultText = typeof payload.result === 'string' ? payload.result : '';
+    if (!resultText) {
+      continue;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(resultText);
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== 'object') {
+      continue;
+    }
+    const currentTaskExecutionResult =
+      (parsed as { current_task_execution_result?: unknown }).current_task_execution_result;
+    if (!currentTaskExecutionResult || typeof currentTaskExecutionResult !== 'object') {
+      continue;
+    }
+    const data = (currentTaskExecutionResult as { data?: unknown }).data;
+    if (!data || typeof data !== 'object') {
+      continue;
+    }
+    const logPath = (data as { execution_log_path?: unknown }).execution_log_path;
+    if (typeof logPath === 'string' && logPath) {
+      paths.push(logPath);
+    }
+  }
+  return paths;
+}

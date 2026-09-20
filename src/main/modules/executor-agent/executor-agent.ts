@@ -95,6 +95,7 @@ import {
   attachExecutionLogPathToResult,
   completeExecutionLogToolCall,
   createExecutorExecutionLog,
+  saveExecutionLogOnError,
   setExecutionLogStructuredOutput,
   type ExecutorExecutionLog,
   type ExecutorExecutionLogToolCall,
@@ -1230,6 +1231,12 @@ export async function runDelegatedTask(
     inputIssues: parseResult.issues,
   });
 
+  // ★ API 报错保留现场（方案⑤5.3/⑥#16）：runDelegatedTask 主体整体包裹 try/catch——
+  //   任何 throw 路径（含 executor streamChat 抛出的 ModelApiAbortError）先经
+  //   saveExecutionLogOnError 复用唯一写盘点生成 executor_messages.json 快照，并把绝对
+  //   路径挂载到 error.executionLogPath 后原样 rethrow（仅包装不吞错，既有上抛语义不变；
+  //   主体语句保持原缩进不动，符合最小变更铁律）。
+  try {
   if (!parseResult.input) {
     const message = buildDelegateExecutorInputIssueMessage(parseResult.issues);
     const failedResult = buildToolResult({
@@ -1560,5 +1567,18 @@ export async function runDelegatedTask(
         deliveredFilePaths,
       ),
     );
+  }
+  } catch (error) {
+    // ★ API 报错保留现场（方案⑤5.3/⑥#16）：写盘失败（saveExecutionLogOnError 返回
+    //   undefined）时不挂载路径，错误原样上抛——失败结果 data 保持空对象，降级安全。
+    const executionLogPathOnError = await saveExecutionLogOnError({
+      log: executionLog,
+      finalOutputDir: options.finalOutputDir,
+      errorMessage: ensureErrorMessage(error),
+    });
+    if (executionLogPathOnError) {
+      (error as Error & { executionLogPath?: string }).executionLogPath = executionLogPathOnError;
+    }
+    throw error;
   }
 }
