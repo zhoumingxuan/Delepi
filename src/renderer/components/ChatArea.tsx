@@ -775,6 +775,7 @@ export const ChatArea = memo(function ChatArea({
         </div>
         {showScrollToBottom ? (
           <Button
+            className="scroll-to-bottom-fab"
             shape="circle"
             icon={<DownOutlined />}
             aria-label="滚动到底部"
