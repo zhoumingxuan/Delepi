@@ -41,6 +41,7 @@ const BUILD_DIR = path.join(__dirname, '.build');
 const OUTPUT_DIR = path.join(__dirname, '..', 'resources', 'python', `python-${PYTHON_VERSION}`);
 const PRESET_MARKER_FILE = '.beez-preset';
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
+const PIP_INDEX_URL = process.env.DELEPI_PIP_INDEX_URL || 'https://mirrors.cloud.tencent.com/pypi/simple/';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const EXEC_TIMEOUT_MS = 1800_000;  // 2026-09-04 fix: 预装依赖大包下载在慢速源下超过 600s 会被杀；换源后仍留充足余量
 
@@ -280,6 +281,48 @@ function runCommand(
       resolve({ stdout, stderr });
     });
   });
+}
+
+async function bundleMacOdbc(sitePackagesDir: string): Promise<void> {
+  const libraryNames = ['libodbc.2.dylib', 'libiconv.2.dylib'];
+  const libraryDirs = [
+    process.env.DELEPI_UNIXODBC_LIB_DIR,
+    '/opt/homebrew/opt/unixodbc/lib',
+    '/opt/anaconda3/lib',
+  ].filter((dir): dir is string => Boolean(dir));
+  const libraryDir = libraryDirs.find((dir) =>
+    libraryNames.every((name) => existsSync(path.join(dir, name))),
+  );
+  if (!libraryDir) {
+    throw new Error('mac 版 pyodbc 需要兼容的 libodbc.2.dylib 和 libiconv.2.dylib；请设置 DELEPI_UNIXODBC_LIB_DIR');
+  }
+
+  const pyodbcName = (await readdir(sitePackagesDir)).find((name) => /^pyodbc\..*\.so$/.test(name));
+  if (!pyodbcName) throw new Error('mac 版 pyodbc 二进制文件未找到');
+  const pyodbcPath = path.join(sitePackagesDir, pyodbcName);
+  for (const name of libraryNames) {
+    await copyFile(path.join(libraryDir, name), path.join(sitePackagesDir, name));
+  }
+
+  const relink = async (binary: string, name: string): Promise<void> => {
+    const { stdout } = await runCommand('otool', ['-L', binary]);
+    const dependency = stdout.split(/\r?\n/).slice(1)
+      .map((line) => line.trim().split(' (')[0])
+      .find((item) => path.basename(item) === name);
+    if (!dependency) throw new Error(`${binary} 未链接 ${name}`);
+    const relativePath = `@loader_path/${name}`;
+    if (dependency !== relativePath) {
+      await runCommand('install_name_tool', ['-change', dependency, relativePath, binary]);
+    }
+  };
+
+  const odbcPath = path.join(sitePackagesDir, libraryNames[0]);
+  await relink(pyodbcPath, libraryNames[0]);
+  await relink(odbcPath, libraryNames[1]);
+  for (const binary of [pyodbcPath, ...libraryNames.map((name) => path.join(sitePackagesDir, name))]) {
+    await runCommand('codesign', ['--force', '--sign', '-', binary]);
+  }
+  log(`mac 版 ODBC 库已内置: ${libraryDir}`);
 }
 
 /** 配置 _pth 文件：取消注释 import site、添加 Lib/site-packages */
@@ -590,7 +633,7 @@ async function main() {
   // pip 默认构建隔离注入 sitecustomize 失效，需关闭隔离并由宿主 site-packages 提供 setuptools.build_meta
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', 'https://mirrors.cloud.tencent.com/pypi/simple/', 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', PIP_INDEX_URL, 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
     buildPythonDir,
   );
   const pkgSpecs: string[] = [];
@@ -599,10 +642,13 @@ async function main() {
   }
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '--no-build-isolation', '-i', 'https://mirrors.cloud.tencent.com/pypi/simple/', ...pkgSpecs, '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '--no-build-isolation', '-i', PIP_INDEX_URL, ...pkgSpecs, '--target', sitePackagesDir],
     buildPythonDir,
   );
   log(`预装依赖安装完成: ${pkgSpecs.length} 个包`);
+  if (VARIANT_KEY === 'mac') {
+    await bundleMacOdbc(sitePackagesDir);
+  }
 
   // ---- Step 6: 清理 ----
   log('清理构建产物...');
