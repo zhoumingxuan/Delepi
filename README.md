@@ -16,6 +16,11 @@ Delepi（智能协作、准确交付）是一款基于 Electron + React + TypeSc
 
 以上能力均随安装包内置、开箱即用；各项能力的具体使用方法见第 6 章“特色功能与使用方法”。
 
+### 双智能体整体运作逻辑图
+
+<img width="2100" height="1235" alt="layer" src="https://github.com/user-attachments/assets/abf555c8-e4dc-462e-ba6f-8f10cd653677" />
+
+
 ### 1.1 协作模式
 
 Delepi 采用编排者—执行者模式，由两类智能体完成“理解—委派—执行—回传—再决策”的完整闭环：
