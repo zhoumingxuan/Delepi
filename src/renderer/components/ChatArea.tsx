@@ -7,7 +7,7 @@
  * - 切换会话时 useChat.switchConversation 已重置 stickToBottomRef=true
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactElement, ReactNode } from 'react';
 import { Actions, Bubble, Welcome } from '@ant-design/x';
 import type { BubbleItemType } from '@ant-design/x';
@@ -326,6 +326,33 @@ export const ChatArea = memo(function ChatArea({
     });
   }, [scrollRef, showScrollToBottom, onShowScrollToBottomChange]);
 
+  // ★ 2026-09-29 FAB 3 秒自动隐藏：showScrollToBottom=true → 按钮立即可见并启动 3000ms 渐隐计时，
+  //   到期置不可见；=false（贴底/切换会话/发送消息/流式置 false）→ 清计时器并置不可见。
+  //   hover / :focus-visible 渐显由 globals.css 既有规则原样保留（透明态仍可命中 hover）。
+  const [fabVisible, setFabVisible] = useState(false);
+  const fabHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!showScrollToBottom) {
+      if (fabHideTimerRef.current !== null) {
+        clearTimeout(fabHideTimerRef.current);
+        fabHideTimerRef.current = null;
+      }
+      setFabVisible(false);
+      return;
+    }
+    setFabVisible(true);
+    fabHideTimerRef.current = setTimeout(() => {
+      fabHideTimerRef.current = null;
+      setFabVisible(false);
+    }, 3000);
+    return () => {
+      if (fabHideTimerRef.current !== null) {
+        clearTimeout(fabHideTimerRef.current);
+        fabHideTimerRef.current = null;
+      }
+    };
+  }, [showScrollToBottom]);
+
   // P05：卸载时取消挂起的布局读取帧与滚动收敛事务（防卸载后回调读 ref）
   useEffect(() => () => {
     if (scrollStateRafRef.current !== null) {
@@ -597,7 +624,21 @@ export const ChatArea = memo(function ChatArea({
     >
       <div
         ref={scrollRef}
-        onScroll={updateScrollBottomState}
+        onScroll={() => {
+          updateScrollBottomState();
+          // ★ 滚动期间持续重置 3 秒隐藏计时：条件成立时每次滚动清除旧计时并开启新计时，
+          //   停止滚动 3 秒后才渐隐；重新滚动时按钮回到可见态。
+          if (showScrollToBottom) {
+            if (fabHideTimerRef.current !== null) {
+              clearTimeout(fabHideTimerRef.current);
+            }
+            setFabVisible(true);
+            fabHideTimerRef.current = setTimeout(() => {
+              fabHideTimerRef.current = null;
+              setFabVisible(false);
+            }, 3000);
+          }
+        }}
         style={{
           flex: 1,
           minHeight: 0,
@@ -775,7 +816,7 @@ export const ChatArea = memo(function ChatArea({
         </div>
         {showScrollToBottom ? (
           <Button
-            className="scroll-to-bottom-fab"
+            className={`scroll-to-bottom-fab${fabVisible ? ' scroll-to-bottom-fab-visible' : ''}`}
             shape="circle"
             icon={<DownOutlined />}
             aria-label="滚动到底部"

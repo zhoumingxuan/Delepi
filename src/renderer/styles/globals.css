@@ -139,3 +139,7 @@ textarea {
 .scroll-to-bottom-fab:focus-visible {
   opacity: 1;
 }
+
+.scroll-to-bottom-fab.scroll-to-bottom-fab-visible {
+  opacity: 1;
+}
