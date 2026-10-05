@@ -129,3 +129,17 @@ textarea {
     contain-intrinsic-size: auto 160px;
   }
 }
+
+.scroll-to-bottom-fab {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.scroll-to-bottom-fab:hover,
+.scroll-to-bottom-fab:focus-visible {
+  opacity: 1;
+}
+
+.scroll-to-bottom-fab.scroll-to-bottom-fab-visible {
+  opacity: 1;
+}

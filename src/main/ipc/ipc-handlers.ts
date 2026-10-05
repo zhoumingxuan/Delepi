@@ -127,6 +127,7 @@ import {
 } from '../modules/chat/conversation-runtime';
 
 import type { ConversationCleanupOptions } from '@shared/types/conversation-cleanup';
+import { DEFAULT_APP_SETTINGS } from '@shared/constants';
 import {
   computeConversationCleanupPreview,
   executeConversationCleanup,
@@ -662,6 +663,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC_CONFIG.SAVE, async (_event, params: ConfigSaveParams): Promise<void> => {
+    // 【F2·守卫前置】在本次写入（saveSetting/setSetting）之前记录该键的运行时旧值，
+    // 供链路C 做「方案现值 === 写入前运行时旧值」一致性比较；
+    // 禁止改用写入后的新值参与比较（否则守卫恒真失效）。
+    const prevRuntimeValue = (configManager.getSettings() as unknown as Record<string, unknown>)[params.key];
     saveSetting(params.key, params.value);
 
     // 同步到 configManager
@@ -683,11 +688,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         const profiles = [...s.modelProfiles];
         const idx = profiles.findIndex((item) => item.id === activeId);
         if (idx >= 0) {
-          const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
-          next[params.key] = params.value;
-          profiles[idx] = next as ModelProfile;
-          saveSetting('modelProfiles', profiles);
-          configManager.setSetting('modelProfiles', profiles);
+          // 【F2·快照一致性守卫】仅当「该键在激活方案对象中的现值」与「本次写入前的运行时旧值」
+          // 一致（即用户改动的确源于当前方案上下文）时，才把新值同步写进激活方案并落库 modelProfiles；
+          // 错位态（如删除激活方案后转移未应用新方案配置导致的「激活=满配置方案、运行时=旧值」）
+          // 下跳过方案同步，仅完成上方单键运行时保存，不报错、不阻断保存。
+          const profileValue = (profiles[idx] as unknown as Record<string, unknown>)[params.key];
+          if (profileValue === prevRuntimeValue) {
+            const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
+            next[params.key] = params.value;
+            profiles[idx] = next as ModelProfile;
+            saveSetting('modelProfiles', profiles);
+            configManager.setSetting('modelProfiles', profiles);
+          }
         }
       }
     }
@@ -704,7 +716,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // ================================================================
 
   type ProfileListResult = { profiles: ModelProfile[]; activeProfileId: string };
-  type ProfileSaveParams = { name: string };
+  type ProfileSaveParams = { name: string; blank?: boolean };
   type ProfileDeleteParams = { id: string };
   type ProfileSwitchParams = { id: string };
   type ProfileSwitchResult = { activeProfileId: string; profileName: string };
@@ -735,26 +747,47 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     if (!name) {
       throw new Error('档案名称不能为空');
     }
-    // 另存为：以主进程当前生效配置（九键+开关/档位）为权威快照源；同名档案覆盖并保留原 id
+    // 另存为：以主进程当前生效配置（九键+开关/档位）为权威快照源；同名档案覆盖并保留原 id。
+    // blank=true：新建空白方案——9 个文本键取空串，开关/档位取 DEFAULT_APP_SETTINGS 默认值
+    // （禁止存空串：config-manager reload() 过滤空串，重启后默认值回填会造成方案内容漂移）；
+    // blank 为 undefined/null 时走原复制快照逻辑（另存为语义，向后兼容）。
     const settings = configManager.getSettings();
     const profiles = [...settings.modelProfiles];
     const existingIndex = profiles.findIndex((item) => item.name === name);
-    const profile: ModelProfile = {
-      id: existingIndex >= 0 ? profiles[existingIndex].id : uuidv4(),
-      name,
-      mainModelBaseUrl: settings.mainModelBaseUrl,
-      mainModelApiKey: settings.mainModelApiKey,
-      mainModelName: settings.mainModelName,
-      mainModelMultimodal: settings.mainModelMultimodal,
-      mainThinkingLevel: settings.mainThinkingLevel,
-      executorModelBaseUrl: settings.executorModelBaseUrl,
-      executorModelApiKey: settings.executorModelApiKey,
-      executorModelName: settings.executorModelName,
-      executorThinkingLevel: settings.executorThinkingLevel,
-      visionLlmBaseUrl: settings.visionLlmBaseUrl,
-      visionLlmApiKey: settings.visionLlmApiKey,
-      visionLlmModel: settings.visionLlmModel,
-    };
+    const blank = params.blank === true;
+    const profile: ModelProfile = blank
+      ? {
+          id: existingIndex >= 0 ? profiles[existingIndex].id : uuidv4(),
+          name,
+          mainModelBaseUrl: '',
+          mainModelApiKey: '',
+          mainModelName: '',
+          mainModelMultimodal: DEFAULT_APP_SETTINGS.mainModelMultimodal,
+          mainThinkingLevel: DEFAULT_APP_SETTINGS.mainThinkingLevel,
+          executorModelBaseUrl: '',
+          executorModelApiKey: '',
+          executorModelName: '',
+          executorThinkingLevel: DEFAULT_APP_SETTINGS.executorThinkingLevel,
+          visionLlmBaseUrl: '',
+          visionLlmApiKey: '',
+          visionLlmModel: '',
+        }
+      : {
+          id: existingIndex >= 0 ? profiles[existingIndex].id : uuidv4(),
+          name,
+          mainModelBaseUrl: settings.mainModelBaseUrl,
+          mainModelApiKey: settings.mainModelApiKey,
+          mainModelName: settings.mainModelName,
+          mainModelMultimodal: settings.mainModelMultimodal,
+          mainThinkingLevel: settings.mainThinkingLevel,
+          executorModelBaseUrl: settings.executorModelBaseUrl,
+          executorModelApiKey: settings.executorModelApiKey,
+          executorModelName: settings.executorModelName,
+          executorThinkingLevel: settings.executorThinkingLevel,
+          visionLlmBaseUrl: settings.visionLlmBaseUrl,
+          visionLlmApiKey: settings.visionLlmApiKey,
+          visionLlmModel: settings.visionLlmModel,
+        };
     if (existingIndex >= 0) {
       profiles[existingIndex] = profile;
     } else {
@@ -777,11 +810,23 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const settings = configManager.getSettings();
     const profiles = settings.modelProfiles.filter((item) => item.id !== params.id);
     let activeProfileId = settings.activeProfileId;
-    // 【模型配置方案使能】删除激活方案后的激活态转移：剩余非空时自动补选第一个为 activeProfileId
-    // （当前生效九键保持不变，链路C 修改写回链路继续生效）；剩余为空时置空且不报错；
+    // 【模型配置方案使能】删除激活方案后的激活态转移：剩余非空时自动补选第一个为 activeProfileId，
+    // 并在写 activeProfileId 之前按新激活方案以 PROFILES_SWITCH 同语义应用其 12 键
+    //（逐键 if value===undefined continue; saveSetting; setSetting），使「激活方案」与「运行时九键」
+    // 始终一致，杜绝「激活=满配置方案、运行时=旧值」错位态经链路C 污染其他方案存储；
+    // 剩余为空（activeProfileId===''）时不应用任何键，九键保持现状且不报错；
     // 激活 id 为空或悬空（指向已不存在的方案）时同样统一补选，禁止本分支静默失效。
     if (!profiles.some((item) => item.id === activeProfileId)) {
       activeProfileId = profiles.length > 0 ? profiles[0].id : '';
+      if (activeProfileId) {
+        const nextActiveProfile = profiles[0];
+        for (const key of PROFILE_CONFIG_KEYS) {
+          const value = nextActiveProfile[key];
+          if (value === undefined) continue;
+          saveSetting(key, value);
+          configManager.setSetting(key, value);
+        }
+      }
       saveSetting('activeProfileId', activeProfileId);
       configManager.setSetting('activeProfileId', activeProfileId);
     }

@@ -22,6 +22,7 @@ import {
 import {
   ioPrint,
 } from '../utils/index';
+import { killProcessTree } from '../utils/process-kill';
 import {
   DEFAULT_TIMEOUT_SECONDS,
   TOOL_TIMEOUT_MAX_SECONDS,
@@ -324,7 +325,7 @@ async function runSpawnCommand(
     let settled = false;
     let timer: NodeJS.Timeout | null = setTimeout(() => {
       timedOut = true;
-      child.kill();
+      killProcessTree(child, 'run-with-python');
     }, options.timeoutMs);
 
     const abortHandler = () => {
@@ -336,7 +337,7 @@ async function runSpawnCommand(
         clearTimeout(timer);
         timer = null;
       }
-      child.kill();
+      killProcessTree(child, 'run-with-python');
     };
 
     if (signal) {

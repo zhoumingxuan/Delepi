@@ -5,6 +5,7 @@
  */
 
 import {
+  type ComponentProps,
   type ReactElement,
   memo,
   useCallback,
@@ -21,6 +22,7 @@ import {
   Flex,
   Form,
   Input,
+  type InputRef,
   Modal,
   Popconfirm,
   Select,
@@ -65,7 +67,7 @@ interface ProfileSwitchResult {
  */
 type ProfilesConfigApi = {
   listProfiles: () => Promise<ProfileListResult>;
-  saveProfile: (params: { name: string }) => Promise<ProfileListResult>;
+  saveProfile: (params: { name: string; blank?: boolean }) => Promise<ProfileListResult>;
   deleteProfile: (params: { id: string }) => Promise<ProfileListResult>;
   switchProfile: (params: { id: string }) => Promise<ProfileSwitchResult>;
 };
@@ -168,6 +170,33 @@ const REASONING_EFFORT_OPTIONS: Array<{ value: string; label: string | ReactElem
   { value: 'max', label: 'max' },
 ];
 
+/**
+ * API 密钥密码框包装组件：受控可见性切换 + 焦点接管。
+ * antd Input.Password 眼睛控件的 mousedown/up 均 preventDefault（防焦点丢失/光标移动），
+ * 点击眼睛后焦点仍停留在切换前所在控件（如模型名称框），Ctrl+A/Ctrl+C 的作用对象由
+ * 焦点历史决定，偶发复制到模型名称。此处以对象式受控 visibilityToggle（visible 与
+ * onVisibleChange 成对实现）接管切换，并在显示分支 requestAnimationFrame 将焦点确定性
+ * 移入密钥输入框（cursor:'end' 不打断后续编辑），使鼠标点击眼睛与键盘 Enter/Space 切换后
+ * 复制目标恒为 API 密钥值。
+ */
+function ApiKeyPassword(props: ComponentProps<typeof Input.Password>) {
+  const [visible, setVisible] = useState(false);
+  const inputRef = useRef<InputRef>(null);
+  return (
+    <Input.Password
+      {...props}
+      ref={inputRef}
+      visibilityToggle={{
+        visible,
+        onVisibleChange: (v) => {
+          setVisible(v);
+          requestAnimationFrame(() => inputRef.current?.focus({ cursor: 'end' }));
+        },
+      }}
+    />
+  );
+}
+
 interface ConfigDrawerProps {
   open: boolean;
   onClose: () => void;
@@ -248,12 +277,16 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     async (key: keyof AppSettings) => {
       try {
         const value = form.getFieldValue(key);
+        // 【F4】同值跳过：表单待保存值与最近运行时值一致时不发起 config:save
+        //（config 经 saveConfig 乐观更新后即含最近值），消除失焦/焦点迁移类噪声写库
+        //（如 ApiKeyPassword 点眼睛经 requestAnimationFrame 聚焦再失焦产生的同值 onBlur）。
+        if (value === config[key]) return;
         await onSave(key, value);
       } catch (err) {
         antdMessage.error('保存失败');
       }
     },
-    [form, onSave, antdMessage],
+    [form, onSave, antdMessage, config],
   );
 
   // ---- 配置方案（多槽位）状态与操作 ----
@@ -381,11 +414,12 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     profiles.some((item) => item.name === profileCreateNameTrimmed);
 
   /**
-   * 新建方案（禁止重名）：经 profilesApi.saveProfile({ name }) 以主进程当前生效配置为快照创建
-   * （前端不自行拼装方案对象写库）；随后取新方案 id（saveProfile 返回按唯一名匹配，缺失时回退
+   * 新建方案（禁止重名）：经 profilesApi.saveProfile({ name, blank: true }) 创建空白方案
+   * （主进程 blank 分支：9 个文本键取空串、开关/档位取 DEFAULT_APP_SETTINGS 默认值；前端
+   * 不自行拼装方案对象写库）；随后取新方案 id（saveProfile 返回按唯一名匹配，缺失时回退
    * listProfiles 匹配），经等价 switchProfile 链路自动激活切换（与 handleSwitchProfile 同语义：
-   * 写 12 键 + activeProfileId、回填表单、onReload 刷新全局 config），最后 loadProfiles 刷新
-   * 方案列表。全程不写旧方案任何内容，此后字段修改经链路C 写入新方案。
+   * 写 12 键 + activeProfileId、回填表单为空白值、onReload 刷新全局 config），最后 loadProfiles
+   * 刷新方案列表。全程不写旧方案任何内容，此后字段修改经链路C 写入新方案。
    * 注：不直接复用 handleSwitchProfile，因其闭包内的 profiles 为创建前快照、找不到新方案，
    * 表单回填分支会被跳过；此处在拿到新方案对象后执行等价链路，行为与其完全一致。
    */
@@ -402,7 +436,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
     setProfileActionLoading(true);
     try {
-      const result = await profilesApi.saveProfile({ name });
+      const result = await profilesApi.saveProfile({ name, blank: true });
       let newProfiles = result?.profiles ?? [];
       let target = newProfiles.find((item) => item.name === name);
       if (!target) {
@@ -434,7 +468,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
   }, [profilesApi, profileCreateNameTrimmed, profiles, form, antdMessage, onReload, loadProfiles]);
 
-  /** 删除方案：删除激活方案后激活态自动转移至剩余第一个方案（剩余为空则置空，下次加载时主进程重建默认方案），当前生效配置保持不变 */
+  /** 删除方案：删除激活方案后激活态自动转移至剩余第一个方案并应用其配置（F1+F3，删除后表单所见=新激活方案内容）；剩余为空则置空且九键保持现状，下次加载时主进程重建默认方案 */
   const handleDeleteProfile = useCallback(
     (id: string) => {
       if (!profilesApi || !id) return;
@@ -444,7 +478,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         title: '删除配置方案',
         content: isActive
           ? profiles.length > 1
-            ? `确定删除当前使用的方案「${target?.name ?? ''}」？正在使用的配置不变，激活方案将自动切换为剩余的第一个方案。`
+            ? `确定删除当前使用的方案「${target?.name ?? ''}」？激活方案将自动切换为剩余的第一个方案，并应用其配置。`
             : `确定删除当前使用的方案「${target?.name ?? ''}」？正在使用的配置不变，删除后将暂无方案（下次加载时自动重建默认方案）。`
           : `确定删除方案「${target?.name ?? ''}」？`,
         okText: '删除',
@@ -453,12 +487,26 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         onOk: async () => {
           try {
             const result = await profilesApi.deleteProfile({ id });
-            setProfiles(result?.profiles ?? []);
-            setActiveProfileId(result?.activeProfileId ?? '');
+            const nextProfiles = result?.profiles ?? [];
+            const nextActiveId = result?.activeProfileId ?? '';
+            setProfiles(nextProfiles);
+            setActiveProfileId(nextActiveId);
             if (isActive) {
               await onReload();
               // 删除激活方案后主进程已转移/重建激活态，重拉方案列表保持 Select 显示与主进程一致
               await loadProfiles();
+              // 【F3】onReload+loadProfiles 之后，从删除返回的最新方案列表按新激活 id 定位方案对象，
+              // 以与 handleSwitchProfile 同语义全量回填表单，保证「表单所见=新激活方案内容」；
+              // setFieldsValue 不受 isFieldTouched 限制，可纠正链路B 不再同步的已编辑字段
+              const nextProfile = nextProfiles.find((item) => item.id === nextActiveId);
+              if (nextProfile) {
+                const { id: _nextProfileId, name: _nextProfileName, ...profileValues } = nextProfile;
+                const merged = { ...DEFAULT_APP_SETTINGS, ...profileValues };
+                const clean = Object.fromEntries(
+                  Object.entries(merged).filter(([, v]) => v !== undefined),
+                );
+                form.setFieldsValue(clean);
+              }
             }
             antdMessage.success('方案已删除');
           } catch (err) {
@@ -467,7 +515,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         },
       });
     },
-    [profilesApi, profiles, activeProfileId, antdModal, antdMessage, onReload, loadProfiles],
+    [profilesApi, profiles, activeProfileId, antdModal, antdMessage, onReload, loadProfiles, form],
   );
 
   // ---- 技能管理（方向2：内部自治；与聊天流零连接点，故 useChat.ts 零改动） ----
@@ -766,7 +814,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         style={{ minWidth: 220, flex: 1 }}
                         placeholder={
                           profiles.length === 0
-                            ? "暂无保存的方案：点「＋」以当前配置新建方案"
+                            ? "暂无保存的方案：点「＋」新建空白方案"
                             : "选择方案一键切换"
                         }
                         value={activeProfileId || undefined}
@@ -886,7 +934,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         }
                         name="mainModelApiKey"
                       >
-                        <Input.Password
+                        <ApiKeyPassword
                           placeholder="在模型服务商官网申请，如 sk-..."
                           onBlur={() => handleSave("mainModelApiKey")}
                         />
@@ -941,9 +989,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       >
                         <Switch
                           disabled={!config.visionEnabled}
-                          onChange={(value) =>
-                            onSave("mainModelMultimodal", value)
-                          }
+                          onChange={(value) => {
+                            // 【F4】同值跳过：值未变化不发起 config:save
+                            if (value === config.mainModelMultimodal) return;
+                            onSave("mainModelMultimodal", value);
+                          }}
                         />
                       </Form.Item>
 
@@ -962,9 +1012,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       >
                         <Select
                           options={REASONING_EFFORT_OPTIONS}
-                          onChange={(value) =>
-                            onSave("mainThinkingLevel", value)
-                          }
+                          onChange={(value) => {
+                            // 【F4】同值跳过：值未变化不发起 config:save
+                            if (value === config.mainThinkingLevel) return;
+                            onSave("mainThinkingLevel", value);
+                          }}
                           style={{ maxWidth: 220 }}
                         />
                       </Form.Item>
@@ -1028,7 +1080,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         }
                         name="executorModelApiKey"
                       >
-                        <Input.Password
+                        <ApiKeyPassword
                           placeholder="在模型服务商官网申请，如 sk-..."
                           onBlur={() => handleSave("executorModelApiKey")}
                         />
@@ -1077,9 +1129,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       >
                         <Select
                           options={REASONING_EFFORT_OPTIONS}
-                          onChange={(value) =>
-                            onSave("executorThinkingLevel", value)
-                          }
+                          onChange={(value) => {
+                            // 【F4】同值跳过：值未变化不发起 config:save
+                            if (value === config.executorThinkingLevel) return;
+                            onSave("executorThinkingLevel", value);
+                          }}
                           style={{ maxWidth: 220 }}
                         />
                       </Form.Item>
@@ -1132,6 +1186,8 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       >
                         <Switch
                           onChange={(value) => {
+                            // 【F4】同值跳过：值未变化不发起 config:save（提示随保存一并跳过，避免同值噪声）
+                            if (value === config.visionEnabled) return;
                             if (value) {
                               antdMessage.info(
                                 "开启视觉识别需配置模型 API，否则视觉识别会报错",
@@ -1175,7 +1231,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         }
                         name="visionLlmApiKey"
                       >
-                        <Input.Password
+                        <ApiKeyPassword
                           disabled={configLoading || !config.visionEnabled}
                           placeholder="在模型服务商官网申请，如 sk-..."
                           onBlur={() => handleSave("visionLlmApiKey")}
@@ -1488,7 +1544,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
           />
         </Modal>
 
-        {/* 新建配置方案：以当前生效配置为快照创建（重名实时拦截），创建后自动切换为当前方案 */}
+        {/* 新建配置方案：创建空白方案（重名实时拦截），创建后自动切换为当前方案 */}
         <Modal
           title="新建配置方案"
           open={profileCreateModalOpen}
@@ -1505,7 +1561,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
           okButtonProps={{ disabled: profileCreateNameDuplicate }}
         >
           <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            将以当前生效的模型配置为内容创建新方案，创建后自动切换为当前方案；已有方案不受影响，此后改动自动保存到新方案。
+            将创建一个空白方案（三组模型配置从零填写，档位与开关取默认值），创建后自动切换为当前方案；新方案需完成配置后方可对话。
           </Typography.Paragraph>
           <Input
             placeholder="方案名称，如：DeepSeek-生产 / GLM-测试"

@@ -15,6 +15,7 @@ import path from 'node:path';
 import { normalizeOptionalString, type ToolRuntimeContext } from './runtime-context';
 import { buildExecutedToolResultData, buildToolResult, truncateToolOutput, type ToolResult } from './result';
 import { ensureErrorMessage } from '../utils/index';
+import { killProcessTree } from '../utils/process-kill';
 import {
   DEFAULT_TIMEOUT_SECONDS,
   TOOL_TIMEOUT_MAX_SECONDS,
@@ -176,12 +177,12 @@ async function runSpawnCommand(
     let timedOut = false;
     let aborted = false;
     let settled = false;
-    let timer: NodeJS.Timeout | null = setTimeout(() => { timedOut = true; child.kill(); }, options.timeoutMs);
+    let timer: NodeJS.Timeout | null = setTimeout(() => { timedOut = true; killProcessTree(child, 'run-shell'); }, options.timeoutMs);
     const abortHandler = () => {
       if (settled) return;
       aborted = true;
       if (timer) { clearTimeout(timer); timer = null; }
-      child.kill();
+      killProcessTree(child, 'run-shell');
     };
     if (signal) {
       signal.addEventListener('abort', abortHandler, { once: true });

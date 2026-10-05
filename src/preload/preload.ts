@@ -44,8 +44,8 @@ const electronAPI = {
     reload: () => ipcRenderer.invoke(IPC_CONFIG.RELOAD),
     /** 列出全部模型档案与当前激活档案 id */
     listProfiles: () => ipcRenderer.invoke(IPC_CONFIG.PROFILES_LIST),
-    /** 另存为模型档案：主进程把当前生效配置（九键+开关/档位）快照为新档案，同名覆盖 */
-    saveProfile: (params: { name: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SAVE, params),
+    /** 另存为模型档案：主进程把当前生效配置（九键+开关/档位）快照为新档案，同名覆盖；blank=true 时创建空白方案（9 文本键空串+开关/档位取默认值） */
+    saveProfile: (params: { name: string; blank?: boolean }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SAVE, params),
     /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状 */
     deleteProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_DELETE, params),
     /** 切换模型档案：主进程批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId */
