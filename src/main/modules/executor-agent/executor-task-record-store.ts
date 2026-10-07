@@ -194,6 +194,10 @@ export interface ExecutorTaskRecordSession {
    *  queue-full 拒收；records 新增 state=queued 条目（净化文本）+ pendingUserMessages 入队
    *  （原文，真实视图零加工）+ emitSignal(true) 立即信号；返回受理结果） */
   enqueueUserMessage(text: string): ExecutorTaskMessageSendResult;
+  /** ★ 阶段四（方案 §5.2）：注册适配器 insert 双写通道（模型上下文注入源；显示视图权威仍在 record 侧） */
+  registerAdapterInsertSink(
+    sink: (message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number },
+  ): void;
   /** 安全点消费（executor-agent 循环 SP1/SP2 调用）：FIFO 消费 pendingUserMessages，逐条经
    *  buildExecutorUserTaskMessage 包装后 push 进 this.modelMessages（与 runtimeMessages 同引用，
    *  push 即进入模型上下文），条目 state→delivered + mutatedSeqs 登记 + emitSignal(true)；
@@ -237,6 +241,8 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   /** ★ 任务级交互消息排队队列（真实视图原文，FIFO；安全点消费入口：executor-agent 循环
    *  SP1/SP2 调用 consumePendingUserMessages） */
   private pendingUserMessages: Array<{ seq: number; text: string }> = [];
+  /** ★ 阶段四（方案 §5.2）：适配器 insert 双写通道（runDelegatedTask 注册；模型上下文注入源） */
+  private adapterInsertSink: ((message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number }) | null = null;
   /** 200ms leading+trailing 节流状态 */
   private lastSignalEmitAt = 0;
   private pendingSignal: ExecutorTaskRecordSignal | null = null;
@@ -561,9 +567,26 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       createdAt: nowIso(),
     });
     this.pendingUserMessages.push({ seq, text });   // 真实视图：原文零加工
+    // ★ 阶段四（方案 §5.2 双写）：适配器队列同步双写（模型上下文注入源）——与显示记录
+    //   同一次同步调用栈内完成（无时序窗口）；content 为包装后形态（与原 L576 push 形态
+    //   逐字节一致：buildExecutorUserTaskMessage(item.text)，纯函数入队时求值等价）；
+    //   适配器自带同构守卫（terminal/stop-requested/queue-full/invalid），双拒收一致时行为等价
+    if (this.adapterInsertSink) {
+      this.adapterInsertSink({ role: 'user', content: buildExecutorUserTaskMessage(text) });
+    }
     this.evictOverflow();
     this.emitSignal(true);               // 立即信号：用户即时回显优先
     return { accepted: true };
+  }
+
+  /**
+   * ★ 阶段四（方案 §5.2）：注册适配器 insert 通道（runDelegatedTask 创建适配器实例后注册）。
+   * record 队列保留为显示视图权威；适配器队列成为模型上下文注入源（P9 包装不替换）。
+   */
+  registerAdapterInsertSink(
+    sink: (message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number },
+  ): void {
+    this.adapterInsertSink = sink;
   }
 
   consumePendingUserMessages(): number {
@@ -573,7 +596,13 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     let consumed = 0;
     while (this.pendingUserMessages.length > 0) {
       const item = this.pendingUserMessages.shift()!;
-      this.modelMessages.push({ role: 'user', content: buildExecutorUserTaskMessage(item.text) });
+      // ★ 阶段四（方案 §5.2 L576 单行职责移交）：modelMessages.push 单行移交适配器——
+      //   adapter.sendMessage 在构建协议请求体之前、同步（无 await）排空适配器队列，
+      //   FIFO 追加宿主同引用数组（modelMessages，领养语义 executor-agent.ts L1322-1327 不变）
+      //   尾部。三项硬等价（§5.3）：注入时点=同一安全点紧随的 sendMessage 内部；注入序位=
+      //   同数组同尾部；无 await=排水纯同步（shift+push）。唯一差异=数组写入者从 record store
+      //   换成适配器（数组与内容不变）。
+      //   显示状态转移（queued→delivered）与 mutatedSeqs 登记保留（显示视图权威在 record 侧）。
       const record = this.records.find((entry) => entry.seq === item.seq);
       if (record && record.kind === 'user-message' && record.state === 'queued') {
         record.state = 'delivered';

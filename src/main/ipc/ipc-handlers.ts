@@ -423,7 +423,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
 
-      if (errMsg === ERR_ABORTED) {
+      // ★ 取消态统一吞错（同机制补齐）：本 run 的 abortController.signal.aborted=true 时，
+      //   runMainAgent 抛出的一切错误一律按取消收敛（取消提示已由 chat:abort →
+      //   MAIN_AGENT_ABORTED_EVENT 先行时序 + 渲染层归一化气泡单独承担）——覆盖取消+API
+      //   错误竞态（取消瞬间恰逢 ModelApiAbortError，如重试耗尽/探查降级链失败并发取消：
+      //   主 catch 已不发事件，此处不再让其 message≠'ABORTED' 的错误漏到渲染层错误条）；
+      //   非取消场景（signal.aborted=false）仅保留原 ERR_ABORTED 精确匹配，行为不变。
+      if (errMsg === ERR_ABORTED || abortController.signal.aborted) {
         return {
           messageId,
           conversationId,

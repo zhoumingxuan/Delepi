@@ -17,6 +17,8 @@ import { v4 as uuidv4 } from 'uuid';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { streamChat, type ModelConfig } from '../llm/openai-client';
+import { initAdapterWithFallback, warnCodingPlanMismatch } from '../llm/adapters/adapter-factory';
+import type { ProtocolAdapter, AdapterInitConfig } from '../llm/adapters/protocol-adapter';
 import { isModelApiAbortError } from '../llm/model-retry';
 import { configManager } from '../config/config-manager';
 import {
@@ -585,6 +587,203 @@ export async function runMainAgent(
   let taskSeqCounter = 1;
   let completedTasks: CompletedTask[] = [];
 
+  // ============================================================
+  // ★ 多协议适配器（协议探查降级链，目标三）：每轮对话新起实例（P3 非常驻）——
+  //   CC = 现状 streamChat 零变化包装（openai-client.ts 一行不改）；
+  //   Responses = 智谱 /api/v1/responses 翻译层。协议选择不再读取
+  //   AppSettings.modelProtocol：先 Responses 后 CC 两级 await init（init 内 POST 探
+  //   端点，404=协议不支持），任一成功即采用；两级均失败 = 请求大模型 API 完全失败
+  //   （降级链置于本轮 try 内，抛 ModelApiAbortError 携带两次探查原因接入既有错误面）；
+  //   warnCodingPlanMismatch 基于实际生效协议告警；实例边界 = runMainAgent 一次调用，
+  //   finally 内 close 释放（两级均失败时 adapter 尚为 null，?. 安全跳过），
+  //   配置切换随下一轮 init 自然生效（§六.4）。
+  // ============================================================
+  let adapter: ProtocolAdapter | null = null;
+  // ★ M13 重试复位基线容器（init.hooks 闭包引用位）：循环内每次 sendMessage 调用前
+  //   捕获的 retryBaseline 更新至此（捕获时点与现状 L686-696 完全一致，仅引用方式变化）
+  let currentRetryBaseline: { content: string; thinking: string; segments: AssistantMessageSegment[] } = {
+    content: '',
+    thinking: '',
+    segments: [],
+  };
+  // onChunk 消费函数体（现状 L703-757，零改动——仅事件源经适配器拆分映射接入）
+  const adapterOnChunk = (chunk: { delta: string; content: string; finishReason: string | null }) => {
+    // 流式快照推送到 EventBus → IPC → 前端
+    // ★ P0 修复：chunk 事件只推送文本 content delta，
+    //   reasoning 增量由独立的 chat:thinking 事件承担
+    //   解决 reasoning_split 模型同 packet 同时返回 content+reasoning 时正文被丢弃的问题
+    // ★ Phase 3 P3-7 转发 finishReason 到 IPC,前端 useChat.ts 据此设置消息 status
+    // ★ F4 新增：content 首次出现时记录"reasoning 段封口"标记，onThinking 下次触发会新开 reasoning 段
+    //   解决 reasoning_split 模型下 packet 同时返回 content+reasoning 时的跨段粘连
+    const runningForContent = getRunningAssistantMessage(conversationId);
+    const isContentFirstAppearance = runningForContent
+      && (runningForContent.content === '' || runningForContent.content === undefined)
+      && (chunk.content || '').length > 0;
+
+    eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
+      conversationId,
+      delta: chunk.delta,
+      content: chunk.content,
+      isThinking: false,  // ★ chunk 事件永远为 false（reasoning 由 chat:thinking 单独推送）
+      finishReason: chunk.finishReason,
+    });
+    // ★ P1-C3 + F4：累积内容到 runningAssistantMessages
+    //   content 首次出现 → 在 runningMessage 中标记 forceNewReasoningSegment=true
+    //   后续 onThinking 检测到该标记时新开 reasoning 段（避免跨段粘连）
+    if (runningForContent) {
+      updateRunningAssistantMessage(conversationId, {
+        content: (runningForContent.content || '') + (chunk.delta || ''),
+        ...(isContentFirstAppearance ? { forceNewReasoningSegment: true } : {}),
+      });
+    }
+    // ★ T-A（方案③3.1 时点A）：thinking 流结束信号（content 首个 delta，isContentFirstAppearance
+    //   既有判定）→ 半成品 assistant 行落库。insertMessage 同 id INSERT OR REPLACE 幂等演进：
+    //   thinking/segments 取更新后 running 快照、content 空串占位、不写 tool_calls；seq 首次
+    //   取号后钉死、createdAt 首落库时刻回传（防漂移）；重试复位后新 attempt 的 content 再次
+    //   首现时经 OR REPLACE 覆盖（此时行内容已被复位同步写回基线，见 onStreamRetry R2 同步）。
+    //   纯 thinking→tool_calls 流（无 content 边界）不经本时点，由 T-B 兜底合并落库。
+    if (isContentFirstAppearance) {
+      if (assistantPersistSeq === null) {
+        assistantPersistSeq = getNextMessageSeq(conversationId);
+        assistantPersistedAt = new Date().toISOString();
+      }
+      const taSnapshot = getRunningAssistantMessage(conversationId);
+      insertMessage({
+        conversationId,
+        id: assistantMessageId,
+        seq: assistantPersistSeq,
+        role: 'assistant',
+        payload: {
+          content: '',
+          thinking: taSnapshot?.thinking || undefined,
+          segments: taSnapshot?.segments,
+        },
+        createdAt: assistantPersistedAt,
+      });
+      assistantRowPersisted = true;
+    }
+  };
+  // onThinking 消费函数体（现状 L759-810，零改动——reasoning 类 chunk 与现状 onThinking
+  // 同源同频接入：仅 reasoningDelta 非空触发，"有值传没值空"语义保持）
+  const adapterOnThinking = (thinking: string) => {
+    // ★ P1-C3：累积思考到 runningAssistantMessages
+    //   让 conv:get-messages 在流式过程中也能返回最新思考内容
+    const running = getRunningAssistantMessage(conversationId);
+    if (running) {
+      // ★ F2/F4 新增：累积 segments（与 ai_fr openai.ts L171-190 appendReasoningSegment 同款）
+      //   策略：若 forceNewReasoningSegment=true（content 已出现），丢弃旧 segments 强制新开 reasoning 段；
+      //     否则若末段是 reasoning 则追加到该段 text；否则新开一段 reasoning。
+      const forceNew = Boolean(running.forceNewReasoningSegment);
+      const baseSegments: AssistantMessageSegment[] = Array.isArray(running.segments)
+        ? [...running.segments]
+        : [];
+      const existingSegments: AssistantMessageSegment[] = forceNew ? [] : baseSegments;
+      const lastSegment = existingSegments[existingSegments.length - 1];
+      if (lastSegment && lastSegment.type === 'reasoning' && !forceNew) {
+        lastSegment.text = (lastSegment.text || '') + thinking;
+      } else {
+        existingSegments.push({
+          id: crypto.randomUUID(),
+          type: 'reasoning',
+          text: thinking,
+        });
+      }
+      const newThinking = (running.thinking || '') + thinking;
+      // ★ 回填 thinking + segments 到 runningAssistantMessages，并清除 forceNewReasoningSegment 标记
+      updateRunningAssistantMessage(conversationId, {
+        thinking: newThinking,
+        segments: existingSegments,
+        forceNewReasoningSegment: false,
+      });
+      // ★ F2 新增：发送完整 thinking + segments（与 ai_fr assistant.message.snapshot 载荷对齐）
+      //   前端 ChatMessageContent 优先使用 payload.thinking/segments（F6 配套），否则用 delta
+      //   ★ 类型断言：event-bus.ts L43-46 thinking 事件 payload 类型定义为 {conversationId, delta}，
+      //     F2 需要扩展为 {conversationId, delta, thinking?, segments?}。在不修改 event-bus.ts
+      //     （任务约束"只修改 main-agent.ts"）的前提下，使用 as any 让 TypeScript 接受扩展字段。
+      //     运行时值与原 typed emit 一致；前端 IPC 接收完整 payload 后由 F6 决定如何使用。
+      eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
+        conversationId,
+        delta: thinking,
+        thinking: newThinking,
+        // ★ F4 修复：使用 existingSegments（含 F4 forceNew 时的新段），而不是 baseSegments
+        //   forceNew=true 时 baseSegments 仍是旧 segments，existingSegments 才是新段
+        segments: existingSegments,
+      });
+    } else {
+      // running 不存在时（如未走 P1-C3 初始化路径），退化为原始 emit
+      eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
+        conversationId,
+        delta: thinking,
+      });
+    }
+  };
+  // ★ init 配置对象（目标一成败化契约的入参）：原样承载 api 三键 / 档位 getter /
+  //   systemMessage / MAIN_TOOLS live-binding / M13 重试复位 hooks；由下方 try 内的
+  //   协议探查降级链 await 消费（两级 init 共用同一份配置）。
+  // stateful 内聚整改（2026-10-07）：宿主侧不再外放 stateful 接线——ResponsesAdapter 内部
+  //   恒 stateful=true 起步，经首轮 store 回显验证自动判定端点是否支持 ID 续接（支持→缓存
+  //   previous_response_id 续接增量；不支持→本实例自动禁用退全量重传防静默丢历史）。
+  const adapterInitConfig: AdapterInitConfig = {
+    api: {
+      baseUrl: options.modelConfig.baseUrl,
+      apiKey: options.modelConfig.apiKey,
+      model: options.modelConfig.model,
+    },
+    // 档位 getter：每次 sendMessage 组装思考参数时实时读取 AppSettings.mainThinkingLevel
+    //   （禁止清单⑨——禁 init 快照缓存，与现状 L702 每轮读取语义一致）
+    thinkingLevel: () => configManager.getSettings().mainThinkingLevel,
+    systemMessage: systemPrompt,
+    // MAIN_TOOLS live-binding getter：每次 sendMessage resolve（P7 禁快照；refreshMainTools
+    //   四处刷新 ipc-handlers L329/L711/L949/L967 经 live-binding 自动生效）
+    tools: () => MAIN_TOOLS,
+    hooks: {
+      // ★ M13 重试复位（红线 R7/禁止清单⑤）：model-retry 重试边界（onRetry）经适配器
+      //   hooks.onStreamRetry 原时序承载——复位 running+DB 同步写回 → 双矫正事件顺序不可乱；
+      //   基线取 currentRetryBaseline（循环内每次 sendMessage 调用前捕获更新，时点不变）
+      onStreamRetry: () => {
+        const retryBaseline = currentRetryBaseline;
+        updateRunningAssistantMessage(conversationId, {
+          content: retryBaseline.content,
+          thinking: retryBaseline.thinking,
+          segments: retryBaseline.segments,
+          forceNewReasoningSegment: false,
+        });
+        // ★ R2 同步（方案③3.4/⑥#3）：复位内存后，若行已落库则同 id OR REPLACE 写回基线
+        //   payload——库内行与 running map/前端矫正事件三方一致，废弃 attempt 的 thinking
+        //   不残留库内。
+        if (assistantRowPersisted && assistantPersistSeq !== null) {
+          insertMessage({
+            conversationId,
+            id: assistantMessageId,
+            seq: assistantPersistSeq,
+            role: 'assistant',
+            payload: {
+              content: retryBaseline.content,
+              thinking: retryBaseline.thinking || undefined,
+              segments: retryBaseline.segments,
+            },
+            createdAt: assistantPersistedAt,
+          });
+        }
+        // 矫正事件①：MAIN_AGENT_CHUNK_EVENT { delta:'', content:基线全量, reset:true }
+        eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
+          conversationId,
+          delta: '',
+          content: retryBaseline.content,
+          isThinking: false,
+          reset: true,
+        } as { conversationId: string; delta: string; content: string; isThinking: boolean; finishReason?: string | null });
+        // 矫正事件②：MAIN_AGENT_THINKING_EVENT { delta:'', thinking:基线全量, segments:基线 }
+        eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
+          conversationId,
+          delta: '',
+          thinking: retryBaseline.thinking,
+          segments: retryBaseline.segments,
+        });
+      },
+    },
+  };
+
   // ★ 分时机落库（方案③3.2/⑥#1）：assistant 行幂等演进状态（同一 assistantMessageId 在库中
   //   始终至多一行）——assistantPersistSeq 首次落库取号后钉死（防收尾轮覆盖漂移）、
   //   assistantRowPersisted 行存在标志、assistantPersistedAt 首次 createdAt（覆盖写时回传防漂移）；
@@ -678,6 +877,37 @@ export async function runMainAgent(
   let delegateArgsRetryCount = 0;
 
   try {
+    // ★ 协议探查降级链（目标三）：两级 init 探查置于本轮 try 内——先 Responses
+    //   （探 {baseUrl}/responses）后 CC（探 {baseUrl}/chat/completions），两级均失败 =
+    //   请求大模型 API 完全失败，initAdapterWithFallback 抛 ModelApiAbortError（携带
+    //   两次探查失败原因）走下方既有 catch（MAIN_AGENT_ERROR_EVENT / MODEL_API_ERROR）
+    //   与 finally 收口；协议选择不再读取 AppSettings.modelProtocol。
+    const adapterSetup = await initAdapterWithFallback(adapterInitConfig);
+    adapter = adapterSetup.adapter;
+    warnCodingPlanMismatch(adapterSetup.protocol, options.modelConfig.baseUrl);
+    // 三回调注册（onChunk 单通道拆分映射见循环内接线；onToolCall=通知模式默认；
+    //   onFinished=轮级权威终结，现状消费经 await 返回值路径等价承载，不额外接线）
+    adapter.onChunk((adapterChunk) => {
+      // ★ 阶段一接线（§三.2.2）：适配器单通道 onChunk 拆分映射回现状双通道消费链——
+      //   reasoning 类（仅非空 delta，end 信号跳过）→ onThinking 处理链（同源同频，
+      //   "有值传没值空"语义保持）；content 类（适配器对现状每次回调必发，含 finish 帧
+      //   delta=''+finishReason 透传）→ onChunk 处理链（IPC chat:chunk.finishReason 通道依赖）；
+      //   S1/S2/S3（end 枚举）为可选瞬时信号，现状无消费（方案 §七.1：消费完全可选），跳过。
+      if (adapterChunk.type === 'reasoning') {
+        if (adapterChunk.delta) {
+          adapterOnThinking(adapterChunk.delta);
+        }
+        return;
+      }
+      if (adapterChunk.end !== undefined) {
+        return;
+      }
+      adapterOnChunk({
+        delta: adapterChunk.delta,
+        content: adapterChunk.cumulative,
+        finishReason: adapterChunk.finishReason ?? null,
+      });
+    });
     while (true) {
 
     if (options.signal?.aborted) {
@@ -694,165 +924,18 @@ export async function runMainAgent(
         ? baselineRunning.segments.map((segment) => ({ ...segment }))
         : [],
     };
-    const streamResult = await streamChat({
-      modelConfig: options.modelConfig,
-      messages: turnMessages,
-      tools: MAIN_TOOLS,
-      signal: options.signal,
-      thinking: { reasoningEffort: configManager.getSettings().mainThinkingLevel },
-      onChunk: (chunk) => {
-        // 流式快照推送到 EventBus → IPC → 前端
-        // ★ P0 修复：chunk 事件只推送文本 content delta，
-        //   reasoning 增量由独立的 chat:thinking 事件承担
-        //   解决 reasoning_split 模型同 packet 同时返回 content+reasoning 时正文被丢弃的问题
-        // ★ Phase 3 P3-7 转发 finishReason 到 IPC,前端 useChat.ts 据此设置消息 status
-        // ★ F4 新增：content 首次出现时记录"reasoning 段封口"标记，onThinking 下次触发会新开 reasoning 段
-        //   解决 reasoning_split 模型下 packet 同时返回 content+reasoning 时的跨段粘连
-        const runningForContent = getRunningAssistantMessage(conversationId);
-        const isContentFirstAppearance = runningForContent
-          && (runningForContent.content === '' || runningForContent.content === undefined)
-          && (chunk.content || '').length > 0;
+    // ★ 阶段一接线：本轮基线同步到 init.hooks.onStreamRetry 闭包引用容器
+    //   （捕获时点与现状完全一致——abort 检查后、sendMessage 调用紧前）
+    currentRetryBaseline = retryBaseline;
+    // ★ 阶段一接线（方案 §四.1 改法 2）：L697 streamChat 调用替换为 adapter.sendMessage——
+    //   modelConfig/messages/tools/thinking 四传参并入 init 与 sendMessage（返回形态对齐
+    //   StreamChatResult，await 后既有后处理代码零改动可用）；onChunk/onThinking 消费
+    //   函数体零改动（已上移为 adapterOnChunk/adapterOnThinking，事件源经适配器拆分映射）。
+    const streamResult = await adapter.sendMessage(
+      turnMessages as unknown as Array<Record<string, unknown>>,
+      { multimodal: multimodalEnabled, signal: options.signal },
+    );
 
-        eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
-          conversationId,
-          delta: chunk.delta,
-          content: chunk.content,
-          isThinking: false,  // ★ chunk 事件永远为 false（reasoning 由 chat:thinking 单独推送）
-          finishReason: chunk.finishReason,
-        });
-        // ★ P1-C3 + F4：累积内容到 runningAssistantMessages
-        //   content 首次出现 → 在 runningMessage 中标记 forceNewReasoningSegment=true
-        //   后续 onThinking 检测到该标记时新开 reasoning 段（避免跨段粘连）
-        if (runningForContent) {
-          updateRunningAssistantMessage(conversationId, {
-            content: (runningForContent.content || '') + (chunk.delta || ''),
-            ...(isContentFirstAppearance ? { forceNewReasoningSegment: true } : {}),
-          });
-        }
-        // ★ T-A（方案③3.1 时点A）：thinking 流结束信号（content 首个 delta，isContentFirstAppearance
-        //   既有判定）→ 半成品 assistant 行落库。insertMessage 同 id INSERT OR REPLACE 幂等演进：
-        //   thinking/segments 取更新后 running 快照、content 空串占位、不写 tool_calls；seq 首次
-        //   取号后钉死、createdAt 首落库时刻回传（防漂移）；重试复位后新 attempt 的 content 再次
-        //   首现时经 OR REPLACE 覆盖（此时行内容已被复位同步写回基线，见 onStreamRetry R2 同步）。
-        //   纯 thinking→tool_calls 流（无 content 边界）不经本时点，由 T-B 兜底合并落库。
-        if (isContentFirstAppearance) {
-          if (assistantPersistSeq === null) {
-            assistantPersistSeq = getNextMessageSeq(conversationId);
-            assistantPersistedAt = new Date().toISOString();
-          }
-          const taSnapshot = getRunningAssistantMessage(conversationId);
-          insertMessage({
-            conversationId,
-            id: assistantMessageId,
-            seq: assistantPersistSeq,
-            role: 'assistant',
-            payload: {
-              content: '',
-              thinking: taSnapshot?.thinking || undefined,
-              segments: taSnapshot?.segments,
-            },
-            createdAt: assistantPersistedAt,
-          });
-          assistantRowPersisted = true;
-        }
-      },
-      onThinking: (thinking) => {
-        // ★ P1-C3：累积思考到 runningAssistantMessages
-        //   让 conv:get-messages 在流式过程中也能返回最新思考内容
-        const running = getRunningAssistantMessage(conversationId);
-        if (running) {
-          // ★ F2/F4 新增：累积 segments（与 ai_fr openai.ts L171-190 appendReasoningSegment 同款）
-          //   策略：若 forceNewReasoningSegment=true（content 已出现），丢弃旧 segments 强制新开 reasoning 段；
-          //     否则若末段是 reasoning 则追加到该段 text；否则新开一段 reasoning。
-          const forceNew = Boolean(running.forceNewReasoningSegment);
-          const baseSegments: AssistantMessageSegment[] = Array.isArray(running.segments)
-            ? [...running.segments]
-            : [];
-          const existingSegments: AssistantMessageSegment[] = forceNew ? [] : baseSegments;
-          const lastSegment = existingSegments[existingSegments.length - 1];
-          if (lastSegment && lastSegment.type === 'reasoning' && !forceNew) {
-            lastSegment.text = (lastSegment.text || '') + thinking;
-          } else {
-            existingSegments.push({
-              id: crypto.randomUUID(),
-              type: 'reasoning',
-              text: thinking,
-            });
-          }
-          const newThinking = (running.thinking || '') + thinking;
-          // ★ 回填 thinking + segments 到 runningAssistantMessages，并清除 forceNewReasoningSegment 标记
-          updateRunningAssistantMessage(conversationId, {
-            thinking: newThinking,
-            segments: existingSegments,
-            forceNewReasoningSegment: false,
-          });
-          // ★ F2 新增：发送完整 thinking + segments（与 ai_fr assistant.message.snapshot 载荷对齐）
-          //   前端 ChatMessageContent 优先使用 payload.thinking/segments（F6 配套），否则用 delta
-          //   ★ 类型断言：event-bus.ts L43-46 thinking 事件 payload 类型定义为 {conversationId, delta}，
-          //     F2 需要扩展为 {conversationId, delta, thinking?, segments?}。在不修改 event-bus.ts
-          //     （任务约束"只修改 main-agent.ts"）的前提下，使用 as any 让 TypeScript 接受扩展字段。
-          //     运行时值与原 typed emit 一致；前端 IPC 接收完整 payload 后由 F6 决定如何使用。
-          eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
-            conversationId,
-            delta: thinking,
-            thinking: newThinking,
-            // ★ F4 修复：使用 existingSegments（含 F4 forceNew 时的新段），而不是 baseSegments
-            //   forceNew=true 时 baseSegments 仍是旧 segments，existingSegments 才是新段
-            segments: existingSegments,
-          });
-        } else {
-          // running 不存在时（如未走 P1-C3 初始化路径），退化为原始 emit
-          eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
-            conversationId,
-            delta: thinking,
-          });
-        }
-      },
-      // ★ M13 重试复位：model-retry 层重试边界回调（M12 onRetry → onStreamRetry）——
-      //   复位 running 消息到本轮基线，并发两条矫正事件截断渲染端双份累积：
-      //   ① chunk 全量覆盖（reset 标记，沿既有"扩展字段经 as 透传"先例，不改 event-bus.ts 本体）
-      //   ② thinking/segments 全量覆盖（复用既有全量载荷通道）
-      onStreamRetry: () => {
-        updateRunningAssistantMessage(conversationId, {
-          content: retryBaseline.content,
-          thinking: retryBaseline.thinking,
-          segments: retryBaseline.segments,
-          forceNewReasoningSegment: false,
-        });
-        // ★ R2 同步（方案③3.4/⑥#3）：复位内存后，若行已落库则同 id OR REPLACE 写回基线
-        //   payload——库内行与 running map/前端矫正事件三方一致，废弃 attempt 的 thinking
-        //   不残留库内。
-        if (assistantRowPersisted && assistantPersistSeq !== null) {
-          insertMessage({
-            conversationId,
-            id: assistantMessageId,
-            seq: assistantPersistSeq,
-            role: 'assistant',
-            payload: {
-              content: retryBaseline.content,
-              thinking: retryBaseline.thinking || undefined,
-              segments: retryBaseline.segments,
-            },
-            createdAt: assistantPersistedAt,
-          });
-        }
-        // 矫正事件①：MAIN_AGENT_CHUNK_EVENT { delta:'', content:基线全量, reset:true }
-        eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
-          conversationId,
-          delta: '',
-          content: retryBaseline.content,
-          isThinking: false,
-          reset: true,
-        } as { conversationId: string; delta: string; content: string; isThinking: boolean; finishReason?: string | null });
-        // 矫正事件②：MAIN_AGENT_THINKING_EVENT { delta:'', thinking:基线全量, segments:基线 }
-        eventBus.emit(MAIN_AGENT_THINKING_EVENT, {
-          conversationId,
-          delta: '',
-          thinking: retryBaseline.thinking,
-          segments: retryBaseline.segments,
-        });
-      },
-    });
     fullContent = streamResult.content;
     fullThinking = streamResult.reasoning || '';
 
@@ -1344,12 +1427,18 @@ export async function runMainAgent(
           });
 
 
-          // 发送错误事件
-          eventBus.emit(MAIN_AGENT_ERROR_EVENT, {
-            conversationId,
-            error: failureResult.message,
-            errorType: ERROR_TYPE_EXECUTOR_ERROR,
-          });
+          // 发送错误事件（★ 取消去重：用户取消场景（taskStopController.signal.aborted=true，
+          //   含会话级取消桥接与任务级单独停止双来源，与上方 buildDelegatedTaskFailureResult
+          //   aborted 判定同源）不再 emit——取消提示已由 chat:abort → MAIN_AGENT_ABORTED_EVENT
+          //   先行时序 + 渲染层归一化气泡（tool-result 覆盖'执行子智能体任务已取消。'）单独
+          //   承担，不再叠加 chat:error toast；仅失败（非取消）场景保留 toast 职责不变）
+          if (!taskStopController.signal.aborted) {
+            eventBus.emit(MAIN_AGENT_ERROR_EVENT, {
+              conversationId,
+              error: failureResult.message,
+              errorType: ERROR_TYPE_EXECUTOR_ERROR,
+            });
+          }
           return { toolCall, status: 'failed' as const };
         } finally {
           // ★ 任务级隔离停止生命周期：任务收敛（成功收口 / catch 收口 / 异常上抛均经此公共路径）——
@@ -1626,20 +1715,22 @@ export async function runMainAgent(
   } catch (error) {
     const modelApiAbortError = isModelApiAbortError(error);
 
-    // 如果模型 API 不可重试且未被用户主动中止，触发 abort 信号
-    if (modelApiAbortError && !options.signal?.aborted) {
-      // 模型 API 致命错误（重试耗尽后），发出 error 事件
-    }
-
-    if (modelApiAbortError) {
+    // ★ 取消+API 错误竞态修复（C4）：取消判定优先于 modelApiAbortError——已取消
+    //   （options.signal.aborted=true）时一律按取消处理，不发任何 MODEL_API_ERROR/
+    //   UNKNOWN_ERROR 事件（取消提示已由 chat:abort → MAIN_AGENT_ABORTED_EVENT 先行时序 +
+    //   渲染层归一化气泡单独承担），杜绝取消瞬间恰逢 ModelApiAbortError（重试耗尽/
+    //   探查降级链失败竞态）时的双弹；仅失败（非取消）场景保留既有错误面——
+    //   ModelApiAbortError（含探查两级失败）仍发 MODEL_API_ERROR，其余仍发 UNKNOWN_ERROR。
+    if (options.signal?.aborted) {
+      schedulePostProcessing(false);
+      // aborted 事件已由 ipc-handlers chat:abort → MAIN_AGENT_ABORTED_EVENT 发出
+    } else if (modelApiAbortError) {
+      // 模型 API 致命错误（重试耗尽/探查降级链两级失败后），发出 error 事件
       eventBus.emit(MAIN_AGENT_ERROR_EVENT, {
         conversationId,
         error: ensureErrorMessage(error),
         errorType: 'MODEL_API_ERROR',
       });
-    } else if (options.signal?.aborted) {
-      schedulePostProcessing(false);
-      // aborted 事件已由 ipc-handlers chat:abort → MAIN_AGENT_ABORTED_EVENT 发出
     } else {
       eventBus.emit(MAIN_AGENT_ERROR_EVENT, {
         conversationId,
@@ -1650,6 +1741,11 @@ export async function runMainAgent(
 
     throw error;
   } finally {
+    // ★ 阶段一接线（方案 §四.1/§六.2）：适配器实例随对话轮结束释放（幂等）——
+    //   排队残留上报后清空、回调注册表注销、close 后任何操作成员 → terminal 错误；
+    //   标题/压缩/视觉三辅助链路直调 openai-client 不经适配器，close 清单不含它们
+    //   （降级链两级均失败时 adapter 尚为 null——?. 跳过，无实例可释放）
+    adapter?.close();
     taskSeqCounter = 1;
     completedTasks = [];
     deleteRunningAssistantMessage(conversationId);

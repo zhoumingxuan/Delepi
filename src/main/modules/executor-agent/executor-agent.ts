@@ -18,6 +18,8 @@ import path from 'node:path';
 import type OpenAI from 'openai';
 
 import { streamChat } from '../llm/openai-client';
+import { initAdapterWithFallback, warnCodingPlanMismatch } from '../llm/adapters/adapter-factory';
+import type { ProtocolAdapter, AdapterInitConfig } from '../llm/adapters/protocol-adapter';
 import { isModelApiAbortError } from '../llm/model-retry';
 import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
@@ -1040,6 +1042,8 @@ function normalizeExecutorToolCalls(rawToolCalls: unknown[]): {
  */
 async function completeExecutorTurn(options: {
   assistantConfig: AssistantRuntimeConfig;
+  /** ★ 阶段一接线（方案 §四.2）：任务级适配器实例（runDelegatedTask 创建/init/finally close） */
+  adapter: ProtocolAdapter;
   messages: RuntimeMessage[];
   tools: Array<{
     type: 'function';
@@ -1052,31 +1056,30 @@ async function completeExecutorTurn(options: {
   signal?: AbortSignal;
   /** S1-2/A1-2 流式思考增量回调：每收到一个 reasoning delta 触发一次（delta 粒度推送） */
   onThinking?: (delta: string) => void;
-  /** ★ M14 重试回调重置协议（可选）：透传给 streamChat.onStreamRetry */
+  /** ★ M14 重试回调重置协议（可选）：经 init.hooks.onStreamRetry 承载（任务级注册一次） */
   onStreamRetry?: () => void;
 }): Promise<{ assistantMessage: OpenAI.Chat.ChatCompletionMessage; content: string }> {
-  const streamResult = await streamChat({
-    modelConfig: {
-      baseUrl: options.assistantConfig.executorModel.baseUrl,
-      apiKey: options.assistantConfig.executorModel.apiKey,
-      model: options.assistantConfig.executorModel.model,
-    },
-    messages: options.messages,
-    tools: options.tools.length ? options.tools : undefined,
-    signal: options.signal,
-    // 思考档位配置化（A1-5 档位随流式请求携带）：读 AppSettings.executorThinkingLevel（默认 'max'），
-    // 同一意图经 streamChatOnce 的 thinking 参数传入（buildThinkingParams 统一翻译）
-    thinking: { reasoningEffort: configManager.getSettings().executorThinkingLevel },
-    // A1-1/A1-3 增量推送源：reasoning delta 逐个透传给上层（轮内 token 级可见）
-    onThinking: options.onThinking,
-    // ★ M14 重试回调重置协议：透传（M12 onRetry → onStreamRetry）
-    onStreamRetry: options.onStreamRetry,
+  // ★ 阶段一接线：L1058 streamChat 调用替换为 adapter.sendMessage——
+  //   modelConfig（执行者三键）/tools/thinking（档位 getter 实时重读）并入 init；
+  //   reasoning 类 chunk → onThinking 透传链（同源同频，仅 reasoningDelta 非空触发）；
+  //   onStreamRetry 经 init.hooks 承载（M14 复位链时序不变）；executor 链路现状无
+  //   chunk 消费（content/end 信号不接线——方案 §四.2"事件源只替换模型流事件源"）
+  options.adapter.onChunk((adapterChunk) => {
+    // reasoning 类且 delta 非空才透传（S1/S3 挂靠 reasoning 时 delta=''——end 信号
+    // 跳过，"有值传没值空"语义保持，禁止清单⑩）
+    if (adapterChunk.type === 'reasoning' && !adapterChunk.end && adapterChunk.delta) {
+      options.onThinking?.(adapterChunk.delta);
+    }
   });
+  const streamResult = await options.adapter.sendMessage(
+    options.messages as unknown as Array<Record<string, unknown>>,
+    { multimodal: false, signal: options.signal },
+  );
 
   // A1-2 聚合收口：把聚合后的 reasoning 以 reasoning_content 挂回 assistantMessage
   //   （nonStreamChat 的 message 由服务端原样携带 reasoning_content；此处流式聚合后补挂同名字段，
   //    extractAssistantReasoning 读取 reasoning_content ?? reasoning 保持不变）
-  const assistantMessage = streamResult.assistantMessage as OpenAI.Chat.ChatCompletionMessage & {
+  const assistantMessage = streamResult.assistantMessage as unknown as OpenAI.Chat.ChatCompletionMessage & {
     reasoning_content?: string;
   };
   if (streamResult.reasoning) {
@@ -1326,6 +1329,45 @@ export async function runDelegatedTask(
     ? options.recordSession.adoptMessages(initialMessages)
     : initialMessages;
 
+  // ============================================================
+  // ★ 多协议适配器（协议探查降级链，目标三）：每任务一实例（P3 非常驻）——
+  //   tools 传 delegatedExecutorTools 静态数组（L1285-1287 每任务局部构建，天然最新）；
+  //   档位传 getter（每次 sendMessage 组装思考参数时实时重读 executorThinkingLevel，
+  //   禁止清单⑨——init 注入值仅缺省兜底，与现状 L1069 每轮读取语义一致）；
+  //   M14 复位链经 init.hooks.onStreamRetry 承载（重试边界时序不变）；
+  //   协议选择不再读取 AppSettings.modelProtocol：先 Responses（探 {baseUrl}/responses）
+  //   后 CC（探 {baseUrl}/chat/completions）两级 await init，任一成功即采用；两级均
+  //   失败 = 请求大模型 API 完全失败——initAdapterWithFallback 抛 ModelApiAbortError
+  //   （携带两次探查失败原因）→ 本函数既有 catch saveExecutionLogOnError 后 rethrow →
+  //   主链路委派失败消息化；warnCodingPlanMismatch 基于实际生效协议告警；
+  //   实例边界 = runDelegatedTask 一次调用，finally 内 close 释放（§六.1）。
+  // ============================================================
+  // stateful 内聚整改（2026-10-07）：宿主侧不再外放 stateful 接线——ResponsesAdapter 内部
+  //   恒 stateful=true 起步，经首轮 store 回显验证自动判定端点是否支持 ID 续接（支持→缓存
+  //   previous_response_id 续接增量；不支持→本实例自动禁用退全量重传防静默丢历史）。
+  const adapterInitConfig: AdapterInitConfig = {
+    api: {
+      baseUrl: options.assistantConfig.executorModel.baseUrl,
+      apiKey: options.assistantConfig.executorModel.apiKey,
+      model: options.assistantConfig.executorModel.model,
+    },
+    thinkingLevel: () => configManager.getSettings().executorThinkingLevel,
+    systemMessage: String(initialMessages[0]?.content ?? ''),
+    tools: delegatedExecutorTools as unknown as Array<Record<string, unknown>>,
+    hooks: {
+      // ★ M14 重试复位（红线 R7 等价承载）：底层重试边界触发 → recordSession.resetThinkingDraft()
+      onStreamRetry: () => options.onStreamRetry?.(),
+    },
+  };
+  const adapterSetup = await initAdapterWithFallback(adapterInitConfig);
+  const adapter = adapterSetup.adapter;
+  warnCodingPlanMismatch(adapterSetup.protocol, options.assistantConfig.executorModel.baseUrl);
+  // ★ 阶段四（方案 §5.2）：适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；
+  //   消费侧 L576 职责已移交 adapter.sendMessage 排水——显示视图权威仍在 record 侧）
+  if (options.recordSession) {
+    options.recordSession.registerAdapterInsertSink((message) => adapter.insertMessage(message));
+  }
+
   let structuredPayload: ExecutorStructuredPayload | null = null;
   const toolCallLogById = new Map<string, ExecutorExecutionLogToolCall>();
 
@@ -1339,6 +1381,7 @@ export async function runDelegatedTask(
     options.recordSession?.consumePendingUserMessages();
     const { assistantMessage, content: turnContent } = await completeExecutorTurn({
       assistantConfig: options.assistantConfig,
+      adapter,
       messages: runtimeMessages,
       tools: delegatedExecutorTools,
       signal: options.signal,
@@ -1561,6 +1604,10 @@ export async function runDelegatedTask(
       startAt: taskStartedAt,
     });
   } finally {
+    // ★ 阶段一接线（方案 §四.2/§六.2）：适配器实例随任务结束释放（幂等）——
+    //   insert 排队残留上报后清空、回调注册表注销；任务失败统一消息化路径（不上抛）
+    //   与 apiErrorHit 现场保留豁免均不因 close 受影响
+    adapter.close();
     await removeTemporaryPaths(
       excludeDeliveredPathsFromTemporaryPaths(
         structuredPayload.temporaryPaths,

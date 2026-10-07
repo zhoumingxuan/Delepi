@@ -7,6 +7,8 @@
  * - 仅保留核心功能：beginConversationRun / finishConversationRun / abortConversationRun
  */
 
+import { ERR_ABORTED } from '../../constants';
+
 /**
  * 全局对话运行状态：conversationId → AbortController
  * ★ 闸门生命周期与 run 实例绑定模型：条目在 beginConversationRun 创建后，仅由持有
@@ -53,6 +55,11 @@ export function finishConversationRun(
 /**
  * 中止对话运行
  * 触发 AbortController.abort() 并返回是否成功
+ * ★ 取消 reason 统一：abort 携带 ERR_ABORTED('ABORTED') 的 Error 形态（对齐 main-agent
+ *   taskStopController.abort(new Error(ERR_ABORTED)) 与 executor-task-record-store
+ *   stopExecutorTask 既有先例）——中止原因沿 signal.reason 上抛链（model-retry / 适配器
+ *   中止判定 / main-agent 主 catch）统一为 message='ABORTED'，由 ipc-handlers chat:send
+ *   catch 的 ERR_ABORTED 精确吞错判定收敛，渲染层不再出现 DOMException 英文错误条。
  * ★ 缺陷①根因修复（闸门生命周期与 run 实例绑定）：abort 只触发控制器取消，不再
  *   立即删除闸门条目——条目由该 run 真实 settle（chat:send finally）经
  *   finishConversationRun 实例归属校验后释放。取消-settle 窗口内同会话新 chat:send
@@ -66,6 +73,6 @@ export function abortConversationRun(conversationId: string): boolean {
     return false;
   }
 
-  controller.abort();
+  controller.abort(new Error(ERR_ABORTED));
   return true;
 }
