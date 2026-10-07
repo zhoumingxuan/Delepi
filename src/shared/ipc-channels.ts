@@ -69,6 +69,10 @@ export const IPC_CONFIG = {
   PROFILES_DELETE: 'config:profiles-delete',
   /** 切换模型档案：批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId（渲染→主，invoke） */
   PROFILES_SWITCH: 'config:profiles-switch',
+  /** 导出模型档案到 JSON 文件（渲染→主，invoke：main 直调另存为对话框，ModelProfile 原样序列化落盘） */
+  PROFILES_EXPORT: 'config:profiles-export',
+  /** 从 JSON 文件导入模型档案（渲染→主，invoke：12 配置键白名单容错提取+补位，新 uuid 追加，不自动激活） */
+  PROFILES_IMPORT: 'config:profiles-import',
 } as const;
 
 // --- 对话管理 IPC 通道 ---

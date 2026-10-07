@@ -872,6 +872,169 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return { activeProfileId: profile.id, profileName: profile.name };
   });
 
+  // ---- 方案导出/导入（文件 IO）：导出=ModelProfile 原样序列化落盘（密钥明文）；导入=白名单容错提取+补位，新档案追加不激活 ----
+  type ProfileExportParams = { profileId: string };
+  type ProfileExportResult =
+    | { ok: true; filePath: string }
+    | { ok: false; canceled?: boolean; error?: string };
+  type ProfileImportParams = { filePath: string };
+  type ProfileImportResult =
+    | {
+        ok: true;
+        profile: ModelProfile;
+        profiles: ModelProfile[];
+        activeProfileId: string;
+        importedCount: number;
+        skippedCount: number;
+        renamed: boolean;
+      }
+    | { ok: false; code: 'READ_ERROR' | 'INVALID_JSON' | 'NOT_A_PROFILE'; error?: string };
+
+  ipcMain.handle(IPC_CONFIG.PROFILES_EXPORT, async (_event, params: ProfileExportParams): Promise<ProfileExportResult> => {
+    const settings = configManager.getSettings();
+    const profile = settings.modelProfiles.find((item) => item.id === params?.profileId);
+    if (!profile) {
+      return { ok: false, error: '方案不存在或已被删除' };
+    }
+    const win = BrowserWindow.getAllWindows()[0];
+    if (!win || win.isDestroyed()) {
+      return { ok: false, error: '窗口不可用，无法导出' };
+    }
+    // 默认文件名：方案名替换 Windows 非法字符 [\\/:*?"<>|] 为 '-'（空名兜底 '方案'）
+    const safeName = profile.name.replace(/[\\/:*?"<>|]/g, '-').trim() || '方案';
+    const result = await dialog.showSaveDialog(win, {
+      title: '导出配置方案',
+      defaultPath: `${safeName}.json`,
+      filters: [{ name: 'Delepi 配置方案', extensions: ['json'] }],
+    });
+    if (result.canceled || !result.filePath) {
+      return { ok: false, canceled: true };
+    }
+    try {
+      // ModelProfile 原样序列化（2 空格缩进、UTF-8 无 BOM）：三处 API Key 为明文原值，不脱敏/不截断/不掩码
+      await writeFile(result.filePath, JSON.stringify(profile, null, 2), 'utf-8');
+      return { ok: true, filePath: result.filePath };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  ipcMain.handle(IPC_CONFIG.PROFILES_IMPORT, async (_event, params: ProfileImportParams): Promise<ProfileImportResult> => {
+    let rawText = '';
+    try {
+      rawText = await readFile(params?.filePath, 'utf-8');
+    } catch (error) {
+      return { ok: false, code: 'READ_ERROR', error: error instanceof Error ? error.message : String(error) };
+    }
+    let parsed: unknown = null;
+    try {
+      // 先剥离 UTF-8 BOM（旧版记事本保存的 JSON 常带 BOM，属编码噪声而非内容错误）
+      parsed = JSON.parse(rawText.replace(/^\uFEFF/, ''));
+    } catch {
+      return { ok: false, code: 'INVALID_JSON' };
+    }
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return { ok: false, code: 'NOT_A_PROFILE' };
+    }
+    const source = parsed as Record<string, unknown>;
+    // 「有什么则导入什么」：12 配置键白名单容错提取——类型合法取文件值，缺失/非法按补位规则
+    //（9 文本键 ''、开关/档位取 DEFAULT_APP_SETTINGS 实值；档位禁存空串：'' 与缺失/非法同等对待，
+    //  防 config-manager reload() 空串过滤+默认值回填造成方案内容漂移）。文件 id 一律忽略，恒新 uuid。
+    const validThinkingLevels: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+    const newProfile: ModelProfile = {
+      id: uuidv4(),
+      name: '',
+      mainModelBaseUrl: '',
+      mainModelApiKey: '',
+      mainModelName: '',
+      mainModelMultimodal: DEFAULT_APP_SETTINGS.mainModelMultimodal,
+      mainThinkingLevel: DEFAULT_APP_SETTINGS.mainThinkingLevel,
+      executorModelBaseUrl: '',
+      executorModelApiKey: '',
+      executorModelName: '',
+      executorThinkingLevel: DEFAULT_APP_SETTINGS.executorThinkingLevel,
+      visionLlmBaseUrl: '',
+      visionLlmApiKey: '',
+      visionLlmModel: '',
+    };
+    let importedCount = 0;
+    let skippedCount = 0;
+    const textConfigKeys = [
+      'mainModelBaseUrl',
+      'mainModelApiKey',
+      'mainModelName',
+      'executorModelBaseUrl',
+      'executorModelApiKey',
+      'executorModelName',
+      'visionLlmBaseUrl',
+      'visionLlmApiKey',
+      'visionLlmModel',
+    ] as const;
+    for (const key of textConfigKeys) {
+      const value = source[key];
+      if (typeof value === 'string') {
+        newProfile[key] = value;
+        importedCount += 1;
+      } else if (key in source) {
+        skippedCount += 1;
+      }
+    }
+    if (typeof source.mainModelMultimodal === 'boolean') {
+      newProfile.mainModelMultimodal = source.mainModelMultimodal;
+      importedCount += 1;
+    } else if ('mainModelMultimodal' in source) {
+      skippedCount += 1;
+    }
+    const readValidThinkingLevel = (value: unknown): ModelProfile['mainThinkingLevel'] | null =>
+      typeof value === 'string' && validThinkingLevels.includes(value)
+        ? (value as ModelProfile['mainThinkingLevel'])
+        : null;
+    const mainThinkingLevel = readValidThinkingLevel(source.mainThinkingLevel);
+    if (mainThinkingLevel !== null) {
+      newProfile.mainThinkingLevel = mainThinkingLevel;
+      importedCount += 1;
+    } else if ('mainThinkingLevel' in source) {
+      skippedCount += 1;
+    }
+    const executorThinkingLevel = readValidThinkingLevel(source.executorThinkingLevel);
+    if (executorThinkingLevel !== null) {
+      newProfile.executorThinkingLevel = executorThinkingLevel;
+      importedCount += 1;
+    } else if ('executorThinkingLevel' in source) {
+      skippedCount += 1;
+    }
+    // 有效性判据：12 配置键中 ≥1 个存在且类型合法才视为方案文件（拦截 {} / 误选 package.json 等）
+    if (importedCount === 0) {
+      return { ok: false, code: 'NOT_A_PROFILE' };
+    }
+    // name：文件值（trim 非空）优先，否则文件名去扩展兜底，再空则 '导入方案'
+    const fileValueName = typeof source.name === 'string' ? source.name.trim() : '';
+    let name = fileValueName || path.basename(params.filePath, '.json').trim() || '导入方案';
+    // 重名：自动追加序号（glm-5.3 → glm-5.3-2 → 再撞 -3 递增，上限 100 次防御），零覆盖既有方案
+    const settings = configManager.getSettings();
+    const profiles = [...settings.modelProfiles];
+    let renamed = false;
+    if (profiles.some((item) => item.name === name)) {
+      renamed = true;
+      let suffix = 2;
+      while (suffix <= 100 && profiles.some((item) => item.name === `${name}-${suffix}`)) {
+        suffix += 1;
+      }
+      name = `${name}-${suffix}`;
+    }
+    newProfile.name = name;
+    profiles.push(newProfile);
+    saveSetting('modelProfiles', profiles);
+    configManager.setSetting('modelProfiles', profiles);
+    // 防御性激活补位：仅 activeProfileId 为空时指向新方案（正常态由 config-manager.reload() 保证非空）
+    let activeProfileId = settings.activeProfileId;
+    if (activeProfileId === '') {
+      activeProfileId = newProfile.id;
+      saveSetting('activeProfileId', activeProfileId);
+      configManager.setSetting('activeProfileId', activeProfileId);
+    }
+    return { ok: true, profile: newProfile, profiles, activeProfileId, importedCount, skippedCount, renamed };
+  });
   // ================================================================
   // 自定义技能处理器（方向2：skills 三通道；内置8标签只读锁定，自定义标签/模板管理）
   // ================================================================

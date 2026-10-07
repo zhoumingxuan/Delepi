@@ -37,13 +37,14 @@ import {
 import {
   ApiOutlined,
   PlusOutlined,
-  SaveOutlined,
   DeleteOutlined,
   ProfileOutlined,
   RobotOutlined,
   ThunderboltOutlined,
   TagsOutlined,
   EyeOutlined,
+  DownloadOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import type { AppSettings, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { DEFAULT_APP_SETTINGS } from '@shared/constants';
@@ -61,15 +62,40 @@ interface ProfileSwitchResult {
   profileName: string;
 }
 
+/** 方案导出结果：成功含落盘完整路径；canceled=true 为用户取消（渲染层静默不反馈） */
+type ProfileExportResult =
+  | { ok: true; filePath: string }
+  | { ok: false; canceled?: boolean; error?: string };
+
+/** 方案导入结果：失败附 code（READ_ERROR/INVALID_JSON/NOT_A_PROFILE）供文案一一映射 */
+type ProfileImportResult =
+  | {
+      ok: true;
+      profile: ModelProfile;
+      profiles: ModelProfile[];
+      activeProfileId: string;
+      importedCount: number;
+      skippedCount: number;
+      renamed: boolean;
+    }
+  | { ok: false; code: 'READ_ERROR' | 'INVALID_JSON' | 'NOT_A_PROFILE'; error?: string };
+
 /**
  * 方案操作 API 局部类型：window.electronAPI 的全局类型声明（electron.d.ts）不在本次改动白名单内，
- * preload 已暴露下列四个方法，此处以局部类型断言安全对接（运行时经 contextBridge 正常可达）。
+ * preload 已暴露下列六个方法，此处以局部类型断言安全对接（运行时经 contextBridge 正常可达）。
  */
 type ProfilesConfigApi = {
   listProfiles: () => Promise<ProfileListResult>;
   saveProfile: (params: { name: string; blank?: boolean }) => Promise<ProfileListResult>;
   deleteProfile: (params: { id: string }) => Promise<ProfileListResult>;
   switchProfile: (params: { id: string }) => Promise<ProfileSwitchResult>;
+  exportProfile: (params: { profileId: string }) => Promise<ProfileExportResult>;
+  importProfile: (params: { filePath: string }) => Promise<ProfileImportResult>;
+};
+
+/** 文件选择对话框 API 局部类型：electron.d.ts 无 dialog 声明且不在改动白名单，preload 已暴露 showOpenDialog */
+type DialogApi = {
+  showOpenDialog: (options: unknown) => Promise<{ canceled: boolean; filePaths: string[] }>;
 };
 
 /** 内置技能标签只读条目（skills:list 返回；内置8项不可编辑/删除） */
@@ -294,10 +320,12 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     () => window.electronAPI?.config as unknown as ProfilesConfigApi | undefined,
     [],
   );
+  const dialogApi = useMemo(
+    () => (window as unknown as { electronAPI?: { dialog?: DialogApi } }).electronAPI?.dialog,
+    [],
+  );
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState('');
-  const [profileNameModalOpen, setProfileNameModalOpen] = useState(false);
-  const [profileNameInput, setProfileNameInput] = useState('');
   const [profileCreateModalOpen, setProfileCreateModalOpen] = useState(false);
   const [profileCreateNameInput, setProfileCreateNameInput] = useState('');
   const [profileActionLoading, setProfileActionLoading] = useState(false);
@@ -382,30 +410,6 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     },
     [profilesApi, profiles, form, antdMessage, onReload, loadProfiles],
   );
-
-  /** 另存为方案：主进程以当前生效配置为权威快照源，同名覆盖 */
-  const handleSaveProfileAs = useCallback(async () => {
-    const name = profileNameInput.trim();
-    if (!profilesApi) return;
-    if (!name) {
-      antdMessage.warning('请输入方案名称');
-      return;
-    }
-    setProfileActionLoading(true);
-    try {
-      const result = await profilesApi.saveProfile({ name });
-      setProfiles(result?.profiles ?? []);
-      // 保存成功即置选中：主进程返回实际激活 id（首次保存已被自动激活），Select 立即显示方案名
-      setActiveProfileId(result?.activeProfileId ?? activeProfileId);
-      setProfileNameModalOpen(false);
-      setProfileNameInput('');
-      antdMessage.success(`已保存方案「${name}」`);
-    } catch (err) {
-      antdMessage.error(err instanceof Error ? err.message : '保存方案失败');
-    } finally {
-      setProfileActionLoading(false);
-    }
-  }, [profilesApi, profileNameInput, activeProfileId, antdMessage]);
 
   // 新建方案名重名实时校验：弹窗内即时提示 + 提交时 handler 内同步拦截，双保险防 profiles-save 同名覆盖
   const profileCreateNameTrimmed = profileCreateNameInput.trim();
@@ -517,6 +521,76 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     },
     [profilesApi, profiles, activeProfileId, antdModal, antdMessage, onReload, loadProfiles, form],
   );
+
+  /** 导出当前方案到文件：main 直调另存为对话框后 ModelProfile 原样落盘（密钥明文）；取消静默不反馈 */
+  const handleExportProfile = useCallback(async () => {
+    if (!profilesApi || !activeProfileId) return;
+    setProfileActionLoading(true);
+    try {
+      const result = await profilesApi.exportProfile({ profileId: activeProfileId });
+      if (result?.ok) {
+        antdMessage.success(`方案已导出到：${result.filePath}`);
+      } else if (!result?.canceled) {
+        // canceled=true 为用户取消：静默；其余为业务失败，附具体原因
+        antdMessage.error(`导出失败：${result?.error ?? ''}`);
+      }
+    } catch {
+      antdMessage.error('导出方案失败，请重试');
+    } finally {
+      setProfileActionLoading(false);
+    }
+  }, [profilesApi, activeProfileId, antdMessage]);
+
+  /**
+   * 从文件导入方案：先经现成 dialog.showOpenDialog 选文件（取消静默、不进 loading），再 invoke 导入；
+   * 成功仅刷新方案列表与激活标记（对齐既有方案操作 handler 用法），不回填表单、不调 onReload——
+   * 导入不激活，当前生效配置与表单零变化。
+   */
+  const handleImportProfile = useCallback(async () => {
+    if (!profilesApi || !dialogApi) return;
+    let picked: { canceled: boolean; filePaths: string[] };
+    try {
+      picked = await dialogApi.showOpenDialog({
+        title: '选择方案文件',
+        filters: [{ name: 'Delepi 配置方案', extensions: ['json'] }],
+        properties: ['openFile'],
+      });
+    } catch {
+      antdMessage.error('导入方案失败，请重试');
+      return;
+    }
+    if (picked.canceled || !picked.filePaths?.length) {
+      return;
+    }
+    setProfileActionLoading(true);
+    try {
+      const result = await profilesApi.importProfile({ filePath: picked.filePaths[0] });
+      if (result?.ok) {
+        setProfiles(result.profiles ?? []);
+        setActiveProfileId(result.activeProfileId ?? activeProfileId);
+        const notes: string[] = [];
+        if (result.skippedCount > 0) {
+          notes.push(`（${result.skippedCount} 个无效字段已忽略）`);
+        }
+        if (result.renamed) {
+          notes.push(`（与现有方案重名，已自动改名）`);
+        }
+        antdMessage.success(`已导入方案「${result.profile.name}」，点击下拉切换使用${notes.join('')}`);
+      } else if (result?.code === 'INVALID_JSON') {
+        antdMessage.error('所选文件不是有效的 JSON 文件');
+      } else if (result?.code === 'NOT_A_PROFILE') {
+        antdMessage.error('所选文件不是 Delepi 配置方案文件');
+      } else if (result?.code === 'READ_ERROR') {
+        antdMessage.error(`读取文件失败：${result?.error ?? ''}`);
+      } else {
+        antdMessage.error('导入方案失败，请重试');
+      }
+    } catch {
+      antdMessage.error('导入方案失败，请重试');
+    } finally {
+      setProfileActionLoading(false);
+    }
+  }, [profilesApi, dialogApi, antdMessage, activeProfileId]);
 
   // ---- 技能管理（方向2：内部自治；与聊天流零连接点，故 useChat.ts 零改动） ----
   const skillsApi = useMemo(
@@ -778,7 +852,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
               label: "模型配置",
               children: (
                 <>
-                  {/* 配置方案栏（多槽位）：下拉切换 + 另存为 + 删除 */}
+                  {/* 配置方案栏（多槽位）：下拉切换 + 导出/导入 + 删除 */}
                   <div
                     style={{
                       borderLeft: `3px solid ${token.colorInfo}`,
@@ -789,20 +863,73 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       marginBottom: 24,
                     }}
                   >
-                    <Typography.Title
-                      level={5}
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 500,
-                        color: token.colorText,
-                        marginTop: 0,
-                        marginBottom: token.paddingXS,
-                      }}
-                    >
-                      <Flex align="center" gap={token.paddingXS}>
-                        <ProfileOutlined /> 配置方案
+                    <Flex justify="space-between" align="middle">
+                      <Typography.Title
+                        level={5}
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 500,
+                          color: token.colorText,
+                          marginTop: 0,
+                          marginBottom: token.paddingXS,
+                        }}
+                      >
+                        <Flex align="center" gap={token.paddingXS}>
+                          <ProfileOutlined /> 配置方案
+                        </Flex>
+                      </Typography.Title>
+                      {/* 四操作按钮工具栏：新建｜导出｜导入｜删除（span 包裹保证禁用态 Tooltip 仍可悬停；flexShrink:0 保形不换行） */}
+                      <Flex gap={token.paddingXS} align="middle" style={{ flexShrink: 0 }}>
+                        <Tooltip title="新建方案">
+                          <span>
+                            <Button
+                              icon={<PlusOutlined />}
+                              disabled={configLoading || profileActionLoading}
+                              onClick={() => {
+                                setProfileCreateNameInput("");
+                                setProfileCreateModalOpen(true);
+                              }}
+                            />
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="导出当前方案到文件">
+                          <span>
+                            <Button
+                              icon={<DownloadOutlined />}
+                              disabled={
+                                configLoading ||
+                                profileActionLoading ||
+                                !activeProfileId
+                              }
+                              onClick={() => handleExportProfile()}
+                            />
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="从文件导入方案">
+                          <span>
+                            <Button
+                              icon={<UploadOutlined />}
+                              disabled={configLoading || profileActionLoading}
+                              onClick={() => handleImportProfile()}
+                            />
+                          </span>
+                        </Tooltip>
+                        <Tooltip title="删除方案">
+                          <span>
+                            <Button
+                              danger
+                              icon={<DeleteOutlined />}
+                              disabled={
+                                configLoading ||
+                                profileActionLoading ||
+                                !activeProfileId
+                              }
+                              onClick={() => handleDeleteProfile(activeProfileId)}
+                            />
+                          </span>
+                        </Tooltip>
                       </Flex>
-                    </Typography.Title>
+                    </Flex>
                     <Typography.Paragraph
                       type="secondary"
                       style={{ fontSize: 12, marginBottom: token.paddingMD }}
@@ -826,47 +953,6 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                           label: item.name,
                         }))}
                       />
-                      {/* 三操作按钮图标化精简：新建/另存为/删除（span 包裹保证禁用态 Tooltip 仍可悬停） */}
-                      <Flex gap={token.paddingXS} align="middle">
-                        <Tooltip title="新建方案">
-                          <span>
-                            <Button
-                              icon={<PlusOutlined />}
-                              disabled={configLoading || profileActionLoading}
-                              onClick={() => {
-                                setProfileCreateNameInput("");
-                                setProfileCreateModalOpen(true);
-                              }}
-                            />
-                          </span>
-                        </Tooltip>
-                        <Tooltip title="另存为方案">
-                          <span>
-                            <Button
-                              icon={<SaveOutlined />}
-                              disabled={configLoading || profileActionLoading}
-                              onClick={() => {
-                                setProfileNameInput("");
-                                setProfileNameModalOpen(true);
-                              }}
-                            />
-                          </span>
-                        </Tooltip>
-                        <Tooltip title="删除方案">
-                          <span>
-                            <Button
-                              danger
-                              icon={<DeleteOutlined />}
-                              disabled={
-                                configLoading ||
-                                profileActionLoading ||
-                                !activeProfileId
-                              }
-                              onClick={() => handleDeleteProfile(activeProfileId)}
-                            />
-                          </span>
-                        </Tooltip>
-                      </Flex>
                     </Flex>
                   </div>
 
@@ -1512,37 +1598,6 @@ export const ConfigDrawer = memo(function ConfigDrawer({
             },
           ]}
         />
-
-        {/* 另存为配置方案：名称输入（同名覆盖，主进程以当前生效配置为快照源） */}
-        <Modal
-          title="另存为配置方案"
-          open={profileNameModalOpen}
-          onOk={() => {
-            void handleSaveProfileAs();
-          }}
-          onCancel={() => {
-            setProfileNameModalOpen(false);
-            setProfileNameInput("");
-          }}
-          okText="保存"
-          cancelText="取消"
-          confirmLoading={profileActionLoading}
-        >
-          <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
-            将保存当前三组模型配置（主智能体 / 子智能体 /
-            视觉识别），随时可一键切回；同名方案会被覆盖。
-          </Typography.Paragraph>
-          <Input
-            placeholder="方案名称，如：DeepSeek-生产 / GLM-测试"
-            value={profileNameInput}
-            onChange={(e) => setProfileNameInput(e.target.value)}
-            onPressEnter={() => {
-              void handleSaveProfileAs();
-            }}
-            maxLength={50}
-            showCount
-          />
-        </Modal>
 
         {/* 新建配置方案：创建空白方案（重名实时拦截），创建后自动切换为当前方案 */}
         <Modal

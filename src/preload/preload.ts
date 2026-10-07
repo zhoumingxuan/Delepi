@@ -50,6 +50,10 @@ const electronAPI = {
     deleteProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_DELETE, params),
     /** 切换模型档案：主进程批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId */
     switchProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SWITCH, params),
+    /** 导出模型档案到 JSON 文件：main 直调另存为对话框后 ModelProfile 原样序列化落盘（密钥明文，不脱敏） */
+    exportProfile: (params: { profileId: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_EXPORT, params),
+    /** 从 JSON 文件导入模型档案：白名单容错提取+补位，新 uuid 追加为新档案，不自动激活 */
+    importProfile: (params: { filePath: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_IMPORT, params),
   },
   skills: {
     /** 列出内置8标签（只读）与自定义标签元数据+上限 */
