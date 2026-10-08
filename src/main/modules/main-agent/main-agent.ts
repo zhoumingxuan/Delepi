@@ -14,13 +14,17 @@
 
 import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { streamChat, type ModelConfig } from '../llm/openai-client';
 import { initAdapterWithFallback, warnCodingPlanMismatch } from '../llm/adapters/adapter-factory';
 import type { ProtocolAdapter, AdapterInitConfig } from '../llm/adapters/protocol-adapter';
 import { isModelApiAbortError } from '../llm/model-retry';
 import { configManager } from '../config/config-manager';
+import { getTaskService } from '../tasks/task-service';
+import type { TaskRunContext, TerminalTaskState } from '../tasks/types';
+import { getProtectedTaskPaths, markArtifactAttemptReview } from '../artifacts/service';
+import { cleanupTaskTemporaryPaths } from '../executor-agent/task-cleanup';
 import {
   buildMainAgentTextContent,
   buildMainAgentUserContent,
@@ -64,7 +68,6 @@ import {
 } from './running-assistant-message-map';
 import {
   beginExecutorTaskRecord,
-  clearExecutorTaskRecords,
   registerTaskStopController,
   unregisterTaskStopController,
 } from '../executor-agent/executor-task-record-store';
@@ -115,6 +118,8 @@ export function abortTitleGeneration(conversationId: string): boolean {
 // ============================================================
 
 export interface MainAgentOptions {
+  /** Trusted identity allocated at the existing chat SEND gate. */
+  taskContext?: TaskRunContext;
   /** 对话 ID */
   conversationId: string;
   /** 用户消息内容 */
@@ -389,10 +394,18 @@ function loadHistoryMessages(
 async function resetConversationTasksDir(conversationId: string): Promise<void> {
   // ★ 新版方案 §7.3-15：任务记录会话重置时机与 tasks 目录完全相同（轮末唯一调用点）；
   //   文件清理失败可吞错，内存清理必须无条件执行；终态记录保留至此刻（供完成后回看）；幂等
-  clearExecutorTaskRecords(conversationId);
   try {
     const tasksDir = path.join(resolveConversationDir(conversationId), 'tasks');
-    await rm(tasksDir, { recursive: true, force: true });
+    // Durable attempts/artifacts keep their workspaces and logs available across later runs.
+    // Any read failure postpones cleanup, preserving evidence of possible side effects.
+    const protectedPaths = getProtectedTaskPaths().map(value=>path.resolve(value));
+    for (const attempt of getTaskService().listAttemptWorkspaceReferences(conversationId))
+      protectedPaths.push(path.resolve(resolveTaskWorkspaceDir(conversationId,attempt.delegateCallId)));
+    const entries = await readdir(tasksDir,{withFileTypes:true}).catch(error=>{
+      if((error as NodeJS.ErrnoException).code==='ENOENT')return [];throw error;
+    });
+    await cleanupTaskTemporaryPaths({workspaceDir:tasksDir,
+      temporaryPaths:entries.map(entry=>path.resolve(tasksDir,entry.name)),protectedPaths});
     await mkdir(tasksDir, { recursive: true });
   } catch {
     // 清理临时任务目录失败不影响当前对话结果。
@@ -724,6 +737,7 @@ export async function runMainAgent(
   //   恒 stateful=true 起步，经首轮 store 回显验证自动判定端点是否支持 ID 续接（支持→缓存
   //   previous_response_id 续接增量；不支持→本实例自动禁用退全量重传防静默丢历史）。
   const adapterInitConfig: AdapterInitConfig = {
+    signal: options.signal,
     api: {
       baseUrl: options.modelConfig.baseUrl,
       apiKey: options.modelConfig.apiKey,
@@ -936,6 +950,11 @@ export async function runMainAgent(
       { multimodal: multimodalEnabled, signal: options.signal },
     );
 
+    // A stream may resolve partial content after cancellation; it cannot complete the run.
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new Error(ERR_ABORTED);
+    }
+
     fullContent = streamResult.content;
     fullThinking = streamResult.reasoning || '';
 
@@ -1139,7 +1158,8 @@ export async function runMainAgent(
     //   批次末 await Promise.allSettled(toolCallTasks) 聚合（见本批循环体收尾处）——同批多个
     //   delegate_executor 各自立即启动并独立记录 toolStartedAt / 发送 init 快照，
     //   后续任务不再排队等待前序任务收尾（修复前端并行任务不显示/取消后才出现/计时零秒）。
-    const toolCallTasks = streamResult.toolCalls.map((toolCall) => (async () => {
+    const toolSlotPaired = filteredToolCalls.map(() => false);
+    const toolCallTasks = filteredToolCalls.map((toolCall,slotIndex) => (async () => {
       if (!toolCall.id) return { toolCall, status: 'skipped' as const };
       const toolStartedAt = new Date().toISOString();
       const isDelegatedExecutor = toolCall.function.name === 'delegate_executor';
@@ -1168,7 +1188,12 @@ export async function runMainAgent(
         //   亦需 markTerminal('aborted') 收敛）；modelMessages 将被 runDelegatedTask 经
         //   adoptMessages 领养为 runtimeMessages（同一数组引用，真实视图与模型上下文共享）。
         //   任务名解析规则沿用下方批末 completedEntry 既有先例（taskname 字段 trim）。
+        const taskContext = options.taskContext
+          ? getTaskService().beginAttempt(options.taskContext,{taskId,delegateCallId:toolCall.id}) : undefined;
+        let durableOutcome:TerminalTaskState = 'failed';
+        try {
         const recordSession = beginExecutorTaskRecord({
+          taskContext,
           conversationId,
           delegateCallId: toolCall.id,
           taskId,
@@ -1199,6 +1224,7 @@ export async function runMainAgent(
           const failureResult = buildDelegatedTaskFailureResult(undefined, true, delegatedTaskStartedAt);
           const failureResultText = stringifyDelegatedTaskResultForMainAgent(failureResult);
           const toolFinishedAt = new Date().toISOString();
+          toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1218,6 +1244,7 @@ export async function runMainAgent(
           });
           // ★ 新版方案 §7.3-7：未启动即中止 → 记录会话终态收敛（aborted；records 仅含创建信号）
           recordSession.markTerminal('aborted');
+          durableOutcome = 'cancelled';
           batchResults.push({ callId: toolCall.id, status: 'aborted' });
           return { toolCall, status: 'aborted' as const };
         }
@@ -1232,8 +1259,16 @@ export async function runMainAgent(
         //   不影响同批其他并发任务，也不触发任何会话级事件。
         const taskStopController = new AbortController();
         registerTaskStopController(conversationId, toolCall.id, taskStopController);
-        const onSessionAbort = () =>
-          taskStopController.abort(options.signal?.reason ?? new Error(ERR_ABORTED));
+        const onSessionAbort = () => {
+          try {
+            if (taskContext) getTaskService().requestStop(taskContext);
+          } catch {
+            console.error('[Tasks] CHILD_STOP_PERSISTENCE_UNKNOWN; cancellation still requested');
+          } finally {
+            recordSession.freezeForStop();
+            taskStopController.abort(options.signal?.reason ?? new Error(ERR_ABORTED));
+          }
+        };
         options.signal?.addEventListener('abort', onSessionAbort, { once: true });
 
         try {
@@ -1245,6 +1280,7 @@ export async function runMainAgent(
           // finalOutputDir 通过 RunDelegatedTaskOptions 顶层字段传入；
           // runDir 为 run_shell / run_with_python 未传 run_dir 时的默认目录。
           const execResult = await runDelegatedTask({
+            taskContext,
             assistantConfig: options.assistantConfig,
             rawArguments: toolCall.function.arguments,
             conversationId,
@@ -1291,11 +1327,17 @@ export async function runMainAgent(
             //   直写内存快照（conversationId→toolCall.id→callId 三键精确定位）+六字段信号
             // ★ 新版方案 §7.3-11：工具开始 → 记录条目 running（argsPreview 截断构造）
             onToolCall: (toolName, args, callId) => {
+              if (taskContext && !getTaskService().recordToolStarted(taskContext,{callId,toolName}))
+                throw new Error('STALE_TASK_ATTEMPT');
               recordSession.beginToolCall({ callId, name: toolName, args });
             },
+            onToolSettled: taskContext ? (toolName, success, callId, finishedAt) => {
+              if (!getTaskService().recordToolSettled(taskContext,{callId,toolName,success},finishedAt))
+                throw new Error('STALE_TASK_ATTEMPT');
+            } : undefined,
             // ★ 新版方案 §7.3-12：工具结束 → 记录条目终态 + resultPreview（幂等守卫在 store 内部）
-            onToolResult: (toolName, success, message, callId) => {
-              recordSession.endToolCall({ callId, success, message });
+            onToolResult: (_toolName, success, message, callId, finishedAt) => {
+              recordSession.endToolCall({ callId, success, message, finishedAt });
             },
           });
 
@@ -1308,7 +1350,8 @@ export async function runMainAgent(
           const toolFinishedAt = new Date().toISOString();
           // ★ 新版方案 §7.3-13：任务终态标记（execResult.success → completed / failed；
           //   草稿强制 seal、running 工具条目收敛、records 冻结、终态信号立即冲刷）
-          recordSession.markTerminal(execResult.success ? 'completed' : 'failed');
+          durableOutcome = taskStopController.signal.aborted ? 'cancelled' : execResult.success ? 'completed' : 'failed';
+          recordSession.markTerminal(durableOutcome === 'cancelled' ? 'aborted' : durableOutcome === 'completed' ? 'completed' : 'failed');
 
           // 添加 tool 消息到对话
           turnMessages.push({
@@ -1327,6 +1370,7 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #7）：tool 消息不再即时落库，改为批次暂存（批次末 insertMessages 单事务配对落库）
+          toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1392,7 +1436,8 @@ export async function runMainAgent(
           const toolFinishedAt = new Date().toISOString();
 
           // ★ 新版方案 §7.3-14：中止 → aborted；其余失败 → failed（草稿强制 seal、running 工具条目 → failed）
-          recordSession.markTerminal(taskStopController.signal.aborted ? 'aborted' : 'failed');
+          durableOutcome = taskStopController.signal.aborted ? 'cancelled' : 'failed';
+          recordSession.markTerminal(durableOutcome === 'cancelled' ? 'aborted' : 'failed');
 
           turnMessages.push({
             role: 'tool',
@@ -1409,6 +1454,7 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #8）：失败 tool 消息批次暂存（批次末 insertMessages 配对落库）；事件移批次末 emit
+          toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1445,7 +1491,24 @@ export async function runMainAgent(
           //   移除会话级桥接 listener（{once:true} 已触发时 removeEventListener 为幂等 no-op）
           //   + 注销任务级停止注册表条目（防 Map 泄漏；注销后 stopExecutorTask 经双防线校验天然幂等）
           options.signal?.removeEventListener('abort', onSessionAbort);
-          unregisterTaskStopController(conversationId, toolCall.id);
+          unregisterTaskStopController(conversationId, toolCall.id,taskStopController);
+        }
+        } finally {
+          let settlementError:unknown;
+          try {
+            if (taskContext) getTaskService().settleAttempt(taskContext,durableOutcome,'executor-settled');
+          } catch(error) {
+            settlementError = error;
+            throw error;
+          } finally {
+            if (taskContext && (durableOutcome !== 'completed' || settlementError)) {
+              try { markArtifactAttemptReview(taskContext.attemptId); }
+              catch(error) {
+                if (!settlementError) throw error;
+                console.error('[Tasks] ARTIFACT_REVIEW_PERSISTENCE_UNKNOWN');
+              }
+            }
+          }
         }
       } else {
         // 未知工具调用 → 返回错误
@@ -1457,7 +1520,8 @@ export async function runMainAgent(
         });
         // ★ S2（文档 #9）：未知工具补配对 tool 消息（消除该分支 tool_call 无配对消息的既有悬空，
         //   对齐 ai_fr「全部 toolCall 均有配对消息」语义）
-        pendingToolMessagePayloads.push({
+        toolSlotPaired[slotIndex] = true;
+          pendingToolMessagePayloads.push({
           role: 'tool',
           payload: {
             toolCallId: toolCall.id,
@@ -1479,6 +1543,28 @@ export async function runMainAgent(
     //   下方批次收口（tool.batch.completed → 全中止判定 → insertMessages → TOOL_MESSAGE_CREATED）
     //   自此全部位于 allSettled 之后执行，批次消息时序语义与 ai_fr :968-1038 一致。
     const settled = await Promise.allSettled(toolCallTasks);
+
+    let rejectedSlot = false;
+    let rejectedReason:unknown;
+    // Every persisted assistant declaration must be paired even if admission/setup/final persistence fails.
+    // Siblings have really settled; this only records uncertainty, and never starts or replays a tool.
+    for (let index=0;index<settled.length;index++) {
+      const result=settled[index];
+      if(result.status !== 'rejected') continue;
+      if(!rejectedSlot) rejectedReason=result.reason;
+      rejectedSlot=true;
+      const toolCall=filteredToolCalls[index];
+      if(toolSlotPaired[index] || !toolCall.id) continue;
+      const finishedAt=new Date().toISOString();
+      const failure=stringifyDelegatedTaskResultForMainAgent(buildToolResult({success:false,
+        code:'DELEGATED_TASK_RUNTIME_UNCONFIRMED',
+        message:'任务运行记录未能确认，当前执行已中断。已发生的操作或文件需核实，未自动重试。',data:{}}));
+      turnMessages.push({role:'tool',tool_call_id:toolCall.id,content:failure});
+      pendingToolMessagePayloads.push({role:'tool',payload:{toolCallId:toolCall.id,name:toolCall.function.name,
+        arguments:toolCall.function.arguments,result:failure,isError:true,startedAt:toolCallTurnStartedAt,finishedAt}});
+      batchResults.push({callId:toolCall.id,status:'failed'});
+      toolSlotPaired[index]=true;
+    }
 
     // ★ 批次完成后：按 settled 结果汇总 completedTasks（对齐 ai_fr route.ts:970-987）——
     //   任务闭包不再直接 push（原串行循环内逐个 push 语义在并行下不成立）；seq 按批次末汇总序赋值。
@@ -1566,6 +1652,8 @@ export async function runMainAgent(
         },
       });
     }
+
+    if (rejectedSlot) throw rejectedReason;
 
     // ★ M17 全中止判定后移（条件与守卫原样保留）：批内全部 aborted → 批次消息已单事务落库
     //   并推送真实 tool 消息后，再中止本轮（throw 走 runMainAgent 既有 catch 的 signal.aborted

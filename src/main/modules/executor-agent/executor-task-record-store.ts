@@ -32,6 +32,9 @@ import { resolveExecutorToolProgressDisplayName } from '../../constants/agent';
 import { getDynamicExecutorToolMeta } from '../../tools/executor-registry';
 import { ERR_ABORTED } from '../../constants/errors';
 import { buildExecutorUserTaskMessage } from './executor-system-prompt';
+import { randomUUID } from 'node:crypto';
+import { getTaskService } from '../tasks/task-service';
+import type { TaskRunContext } from '../tasks/types';
 import type {
   ExecutorAssistantReplyRecord,
   ExecutorNoticeRecord,
@@ -151,6 +154,7 @@ function nowIso(): string {
  * main-agent 委派闭包（思考/工具/终态桥接）为写入方。
  */
 export interface ExecutorTaskRecordSession {
+  readonly taskContext?: TaskRunContext;
   readonly conversationId: string;
   /** 委派工具调用 id = 主智能体 delegate_executor 的 toolCall.id（前端寻址主键） */
   readonly delegateCallId: string;
@@ -180,7 +184,7 @@ export interface ExecutorTaskRecordSession {
   /** 工具条目 running（argsPreview 构造）+ 立即信号 */
   beginToolCall(info: { callId: string; name: string; args: string }): void;
   /** 工具条目终态（completed/failed，幂等守卫）+ resultPreview + 立即信号 */
-  endToolCall(info: { callId: string; success: boolean; message: string }): void;
+  endToolCall(info: { callId: string; success: boolean; message: string; finishedAt?: string }): void;
   /** onStreamRetry 复位（R-draft-6）+ 立即信号 */
   resetThinkingDraft(): void;
   /** 终态收敛（R-draft-7、running 工具条目处置）+ 冲刷节流 + 立即终态信号 + 冻结 */
@@ -193,11 +197,7 @@ export interface ExecutorTaskRecordSession {
   /** 任务级交互消息入队（sendTaskUserMessage 唯一入口；守卫内聚：terminal/stop-requested/
    *  queue-full 拒收；records 新增 state=queued 条目（净化文本）+ pendingUserMessages 入队
    *  （原文，真实视图零加工）+ emitSignal(true) 立即信号；返回受理结果） */
-  enqueueUserMessage(text: string): ExecutorTaskMessageSendResult;
-  /** ★ 阶段四（方案 §5.2）：注册适配器 insert 双写通道（模型上下文注入源；显示视图权威仍在 record 侧） */
-  registerAdapterInsertSink(
-    sink: (message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number },
-  ): void;
+  enqueueUserMessage(text: string, messageId?: string): ExecutorTaskMessageSendResult;
   /** 安全点消费（executor-agent 循环 SP1/SP2 调用）：FIFO 消费 pendingUserMessages，逐条经
    *  buildExecutorUserTaskMessage 包装后 push 进 this.modelMessages（与 runtimeMessages 同引用，
    *  push 即进入模型上下文），条目 state→delivered + mutatedSeqs 登记 + emitSignal(true)；
@@ -210,6 +210,7 @@ export interface ExecutorTaskRecordSession {
 }
 
 class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
+  readonly taskContext?: TaskRunContext;
   readonly conversationId: string;
   readonly delegateCallId: string;
   readonly taskId: string;
@@ -240,27 +241,32 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
 
   /** ★ 任务级交互消息排队队列（真实视图原文，FIFO；安全点消费入口：executor-agent 循环
    *  SP1/SP2 调用 consumePendingUserMessages） */
-  private pendingUserMessages: Array<{ seq: number; text: string }> = [];
-  /** ★ 阶段四（方案 §5.2）：适配器 insert 双写通道（runDelegatedTask 注册；模型上下文注入源） */
-  private adapterInsertSink: ((message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number }) | null = null;
+  private pendingUserMessages: Array<{ seq: number; text: string; messageId?: string }> = [];
   /** 200ms leading+trailing 节流状态 */
   private lastSignalEmitAt = 0;
   private pendingSignal: ExecutorTaskRecordSignal | null = null;
   private signalTimerId: ReturnType<typeof setTimeout> | null = null;
 
   constructor(params: {
+    taskContext?: TaskRunContext;
     conversationId: string;
     delegateCallId: string;
     taskId: string;
     messageId: string;
     taskName: string;
   }) {
+    this.taskContext = params.taskContext;
     this.conversationId = params.conversationId;
     this.delegateCallId = params.delegateCallId;
     this.taskId = params.taskId;
     this.messageId = params.messageId;
     this.taskName = params.taskName;
     this.createdAt = nowIso();
+  }
+
+  private canWrite(): boolean {
+    return !this.stopRequested && !this.terminal
+      && (!this.taskContext || getTaskService().isCurrent(this.taskContext));
   }
 
   /** 当前 running 思考草稿条目（至多一个；records 末尾优先反向查找） */
@@ -351,7 +357,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   appendThinkingDelta(delta: string): void {
-    if (this.stopRequested || this.terminal || !delta) {
+    if (!this.canWrite() || !delta) {
       return;
     }
     const draft = this.runningDraft;
@@ -375,7 +381,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   sealThinkingTurn(reasoning: string): void {
-    if (this.stopRequested || this.terminal) {
+    if (!this.canWrite()) {
       return;
     }
     const authoritative = sanitizeDisplayText(reasoning ?? '');
@@ -404,7 +410,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   beginToolCall(info: { callId: string; name: string; args: string }): void {
-    if (this.stopRequested || this.terminal || !info.callId) {
+    if (!this.canWrite() || !info.callId) {
       return;
     }
     // 同 callId 幂等：running 条目更新元数据，已终态条目不回退
@@ -434,8 +440,8 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     this.emitSignal(true);
   }
 
-  endToolCall(info: { callId: string; success: boolean; message: string }): void {
-    if (this.stopRequested || this.terminal || !info.callId) {
+  endToolCall(info: { callId: string; success: boolean; message: string; finishedAt?: string }): void {
+    if (!this.canWrite() || !info.callId) {
       return;
     }
     const target = this.records.find(
@@ -451,13 +457,13 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     }
     target.status = info.success ? 'completed' : 'failed';
     target.resultPreview = buildResultPreview(info.message);
-    target.finishedAt = nowIso();
+    target.finishedAt = info.finishedAt ?? nowIso();
     this.mutatedSeqs.add(target.seq);   // 同 seq 状态转移：登记供增量查询补发
     this.emitSignal(true);
   }
 
   resetThinkingDraft(): void {
-    if (this.stopRequested || this.terminal) {
+    if (!this.canWrite()) {
       return;
     }
     const draft = this.runningDraft;
@@ -472,6 +478,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   markTerminal(status: 'completed' | 'failed' | 'aborted'): void {
+    if (this.taskContext && !getTaskService().isCurrent(this.taskContext,{allowStopping:true})) return;
     // 豁免 stopRequested：终态收敛为停止请求冻结后唯一合法写入（R-draft-7 / mutatedSeqs / 终态信号）。
     if (this.terminal) {
       return;
@@ -506,6 +513,11 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       }
     }
     this.pendingUserMessages.length = 0;
+    if (status === 'aborted' && this.stopRequested) {
+      this.records.push({ kind:'notice', seq:this.nextSeq(), type:'stop',
+        text:`${this.taskName || '子智能体任务'} 真实已停止。`, createdAt:finishedAt });
+      this.evictOverflow();
+    }
     this.status = status;
     this.finishedAt = finishedAt;
     this.terminal = true;
@@ -524,7 +536,8 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
    * 渲染层按 kind='notice' 独立分发（头部“已停止 · HH:mm:ss”），不再冒充思考条目。
    */
   appendStopNotice(text: string): void {
-    if (this.stopRequested || this.terminal) {
+    if (this.stopRequested || this.terminal
+      || (this.taskContext && !getTaskService().isCurrent(this.taskContext,{allowStopping:true}))) {
       return;
     }
     this.records.push({
@@ -548,7 +561,19 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     this.stopRequested = true;
   }
 
-  enqueueUserMessage(text: string): ExecutorTaskMessageSendResult {
+  enqueueUserMessage(text: string, messageId:string = randomUUID()): ExecutorTaskMessageSendResult {
+    if (this.taskContext) {
+      try {
+        const result = getTaskService().acceptMessage(this.taskContext,messageId,text,EXECUTOR_TASK_MESSAGE_MAX_PENDING,
+          this.terminal ? 'terminal' : this.stopRequested ? 'stop-requested' : undefined);
+        if (!result.accepted || result.duplicate) {
+          return { accepted:result.accepted, messageId, inboxState:result.inboxState,
+            ...(result.reason ? { reason:result.reason as ExecutorTaskMessageSendResult['reason'] } : {}) };
+        }
+      } catch {
+        return { accepted:false, messageId, reason:'storage-error' };
+      }
+    }
     if (this.terminal || this.status !== 'running') {
       return { accepted: false, reason: 'terminal' };
     }
@@ -566,43 +591,41 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       state: 'queued',
       createdAt: nowIso(),
     });
-    this.pendingUserMessages.push({ seq, text });   // 真实视图：原文零加工
-    // ★ 阶段四（方案 §5.2 双写）：适配器队列同步双写（模型上下文注入源）——与显示记录
-    //   同一次同步调用栈内完成（无时序窗口）；content 为包装后形态（与原 L576 push 形态
-    //   逐字节一致：buildExecutorUserTaskMessage(item.text)，纯函数入队时求值等价）；
-    //   适配器自带同构守卫（terminal/stop-requested/queue-full/invalid），双拒收一致时行为等价
-    if (this.adapterInsertSink) {
-      this.adapterInsertSink({ role: 'user', content: buildExecutorUserTaskMessage(text) });
-    }
+    this.pendingUserMessages.push({ seq, text, messageId });   // 真实视图：原文零加工
+    // 单一队列：初始化前、模型流和工具批次期间都只受理，安全点才注入共享上下文。
     this.evictOverflow();
     this.emitSignal(true);               // 立即信号：用户即时回显优先
-    return { accepted: true };
-  }
-
-  /**
-   * ★ 阶段四（方案 §5.2）：注册适配器 insert 通道（runDelegatedTask 创建适配器实例后注册）。
-   * record 队列保留为显示视图权威；适配器队列成为模型上下文注入源（P9 包装不替换）。
-   */
-  registerAdapterInsertSink(
-    sink: (message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number },
-  ): void {
-    this.adapterInsertSink = sink;
+    return { accepted: true, ...(this.taskContext ? {messageId,inboxState:'accepted'} : {}) };
   }
 
   consumePendingUserMessages(): number {
-    if (this.stopRequested || this.terminal) {
+    if (!this.canWrite()) {
       return 0;
     }
     let consumed = 0;
+    if (this.taskContext) {
+      while (true) {
+        const delivered = getTaskService().injectNext(this.taskContext,(text) => {
+          this.modelMessages.push({ role:'user', content:buildExecutorUserTaskMessage(text) });
+        });
+        if (!delivered) break;
+        const index=this.pendingUserMessages.findIndex(item=>item.messageId===delivered.messageId);
+        if(index>=0) {
+          const [item]=this.pendingUserMessages.splice(index,1);
+          const record=this.records.find(entry=>entry.seq===item.seq);
+          if(record?.kind==='user-message' && record.state==='queued') {
+            record.state='delivered'; record.deliveredAt=delivered.injectedAt;this.mutatedSeqs.add(record.seq);
+          }
+        }
+        consumed++;
+      }
+      if(consumed) this.emitSignal(true);
+      return consumed;
+    }
     while (this.pendingUserMessages.length > 0) {
       const item = this.pendingUserMessages.shift()!;
-      // ★ 阶段四（方案 §5.2 L576 单行职责移交）：modelMessages.push 单行移交适配器——
-      //   adapter.sendMessage 在构建协议请求体之前、同步（无 await）排空适配器队列，
-      //   FIFO 追加宿主同引用数组（modelMessages，领养语义 executor-agent.ts L1322-1327 不变）
-      //   尾部。三项硬等价（§5.3）：注入时点=同一安全点紧随的 sendMessage 内部；注入序位=
-      //   同数组同尾部；无 await=排水纯同步（shift+push）。唯一差异=数组写入者从 record store
-      //   换成适配器（数组与内容不变）。
-      //   显示状态转移（queued→delivered）与 mutatedSeqs 登记保留（显示视图权威在 record 侧）。
+      // 写入与送达确认处于同一同步栈；不依赖另一个尚未ready/可能拒收的adapter队列。
+      this.modelMessages.push({ role: 'user', content: buildExecutorUserTaskMessage(item.text) });
       const record = this.records.find((entry) => entry.seq === item.seq);
       if (record && record.kind === 'user-message' && record.state === 'queued') {
         record.state = 'delivered';
@@ -611,11 +634,12 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       }
       consumed += 1;
     }
+    if (consumed > 0) this.emitSignal(true);
     return consumed;
   }
 
   sealAssistantReply(text: string): void {
-    if (this.stopRequested || this.terminal) {
+    if (!this.canWrite()) {
       return;
     }
     const body = sanitizeDisplayText(text ?? '').trim();
@@ -719,11 +743,12 @@ export function registerTaskStopController(
 }
 
 /** 注销任务级停止句柄（任务收敛公共路径调用；空二级 Map 顺带清理防泄漏） */
-export function unregisterTaskStopController(conversationId: string, delegateCallId: string): void {
+export function unregisterTaskStopController(conversationId: string, delegateCallId: string, expectedController?:AbortController): void {
   const conversationControllers = taskStopControllers.get(conversationId);
   if (!conversationControllers) {
     return;
   }
+  if (expectedController && conversationControllers.get(delegateCallId) !== expectedController) return;
   conversationControllers.delete(delegateCallId);
   if (conversationControllers.size === 0) {
     taskStopControllers.delete(conversationId);
@@ -754,9 +779,21 @@ export function stopExecutorTask(
   if (!controller || controller.signal.aborted) {
     return { stopped: false, taskName: session.taskName };
   }
-  session.appendStopNotice(`${session.taskName || '子智能体任务'} 已停止，用户手动取消。`);
-  session.freezeForStop();
-  controller.abort(new Error(ERR_ABORTED));
+  if (session.taskContext) {
+    try {
+      if (!getTaskService().requestStop(session.taskContext)) return { stopped:false, taskName:session.taskName };
+    } catch {
+      console.error('[Tasks] STOP_PERSISTENCE_UNKNOWN; cancellation still requested');
+    }
+  }
+  try {
+    session.appendStopNotice(`${session.taskName || '子智能体任务'} 停止请求中，正在等待执行收口。`);
+  } catch {
+    console.error('[Tasks] STOP_NOTICE_UNKNOWN; cancellation still requested');
+  } finally {
+    session.freezeForStop();
+    controller.abort(new Error(ERR_ABORTED));
+  }
   return { stopped: true, taskName: session.taskName };
 }
 
@@ -771,9 +808,10 @@ export function sendTaskUserMessage(
   conversationId: string,
   delegateCallId: string,
   message: string,
+  messageId?: string,
 ): ExecutorTaskMessageSendResult {
-  const text = (message ?? '').trim();
-  if (!text) {
+  const text = typeof message === 'string' ? message : '';
+  if (!text.trim()) {
     return { accepted: false, reason: 'empty' };
   }
   if (text.length > EXECUTOR_TASK_MESSAGE_MAX_LENGTH) {
@@ -783,13 +821,14 @@ export function sendTaskUserMessage(
   if (!session) {
     return { accepted: false, reason: 'not-found' };
   }
-  return session.enqueueUserMessage(text);
+  return session.enqueueUserMessage(text,messageId);
 }
 
 /**
  * 创建并登记 executor 任务记录会话（委派闭包启动时调用；发一次 running 信号（立即））
  */
 export function beginExecutorTaskRecord(params: {
+  taskContext?: TaskRunContext;
   conversationId: string;
   delegateCallId: string;
   taskId: string;

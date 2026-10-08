@@ -61,18 +61,32 @@ export const IPC_CONFIG = {
   SAVE: 'config:save',
   /** 重新加载配置 */
   RELOAD: 'config:reload',
+  SAVE_BATCH: 'config:save-batch',
   /** 列出全部模型档案与当前激活档案 id（渲染→主，invoke） */
   PROFILES_LIST: 'config:profiles-list',
   /** 另存为模型档案：主进程把当前生效配置快照为新档案，同名覆盖（渲染→主，invoke） */
   PROFILES_SAVE: 'config:profiles-save',
-  /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状（渲染→主，invoke） */
+  /** 删除模型档案；必要时与替换激活配置一起事务保存（渲染→主，invoke） */
   PROFILES_DELETE: 'config:profiles-delete',
-  /** 切换模型档案：批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId（渲染→主，invoke） */
+  /** 切换模型档案：全部模型配置和 activeProfileId 一起事务保存（渲染→主，invoke） */
   PROFILES_SWITCH: 'config:profiles-switch',
-  /** 导出模型档案到 JSON 文件（渲染→主，invoke：main 直调另存为对话框，ModelProfile 原样序列化落盘） */
+  /** 导出模型档案到原生选择的文件，默认不含密钥（渲染→主，invoke） */
   PROFILES_EXPORT: 'config:profiles-export',
-  /** 从 JSON 文件导入模型档案（渲染→主，invoke：12 配置键白名单容错提取+补位，新 uuid 追加，不自动激活） */
+  /** 旧导入通道保留拒绝处理，不接受渲染层直接文件路径。 */
   PROFILES_IMPORT: 'config:profiles-import',
+  IMPORT_PREVIEW: 'config:import-preview',
+  IMPORT_COMMIT: 'config:import-commit',
+  IMPORT_CANCEL: 'config:import-cancel',
+} as const;
+
+export const IPC_MUSE = {
+  APP_INFO: 'muse:app-info',
+  RUN_LIST: 'muse:run-list', RUN_GET: 'muse:run-get',
+  ACTIVITY_LIST: 'muse:activity-list', INBOX_LIST: 'muse:inbox-list',
+  ARTIFACT_LIST: 'muse:artifact-list', ARTIFACT_GET: 'muse:artifact-get',
+  ARTIFACT_OPEN: 'muse:artifact-open', ARTIFACT_ACCEPT: 'muse:artifact-accept',
+  ARTIFACT_INDEX: 'muse:artifact-index',
+  CHANGED: 'muse:changed', OPEN_SETTINGS: 'muse:open-settings',
 } as const;
 
 // --- 对话管理 IPC 通道 ---
@@ -238,7 +252,29 @@ export const IPC_DIALOG = {
 } as const;
 
 /** 所有 IPC 通道的联合类型 */
+export const IPC_AUTONOMY = {
+  STATUS: 'autonomy:status',
+  GOAL_LIST: 'autonomy:goal-list', GOAL_GET: 'autonomy:goal-get', DESTINATION_LIST: 'autonomy:destination-list',
+  GOAL_CREATE: 'autonomy:goal-create', GOAL_UPDATE: 'autonomy:goal-update', GOAL_STATE: 'autonomy:goal-state',
+  APPROVAL_LIST: 'autonomy:approval-list', APPROVAL_DECIDE: 'autonomy:approval-decide',
+  RULE_PREVIEW: 'autonomy:rule-preview', RULE_ISSUE: 'autonomy:rule-issue', RULE_LIST: 'autonomy:rule-list', RULE_REVOKE: 'autonomy:rule-revoke',
+  GRANT_LIST: 'autonomy:grant-list', GRANT_REVOKE: 'autonomy:grant-revoke', POLICY_GET: 'autonomy:policy-get', POLICY_UPDATE: 'autonomy:policy-update',
+  OS_STATUS: 'autonomy:os-status', OS_REQUEST: 'autonomy:os-request', OS_SETTINGS: 'autonomy:os-settings',
+  BUDGET: 'autonomy:budget', EXPLORATION_PLAN: 'autonomy:exploration-plan', EXPLORATION_START: 'autonomy:exploration-start',
+  EXPLORATION_STOP: 'autonomy:exploration-stop', EXPLORATION_LIST: 'autonomy:exploration-list', PUBLIC_APPEND: 'autonomy:public-append',
+  CHANGED: 'autonomy:changed',
+} as const;
+
+export const IPC_BACKGROUND = {
+  STATUS: 'background:status', LIST: 'background:list', CONFIGURE: 'background:configure',
+  SET_ENABLED: 'background:set-enabled', RUN_NOW: 'background:run-now',
+  SKILL_LIST: 'background:skill-list', SKILL_ROLLBACK: 'background:skill-rollback',
+} as const;
+
 export type IpcChannel =
+  | (typeof IPC_AUTONOMY)[keyof typeof IPC_AUTONOMY]
+  | (typeof IPC_BACKGROUND)[keyof typeof IPC_BACKGROUND]
+  | (typeof IPC_MUSE)[keyof typeof IPC_MUSE]
   | (typeof IPC_CHAT)[keyof typeof IPC_CHAT]
   | (typeof IPC_CONFIG)[keyof typeof IPC_CONFIG]
   | (typeof IPC_CONV)[keyof typeof IPC_CONV]
@@ -249,4 +285,3 @@ export type IpcChannel =
   | (typeof IPC_TOOLS)[keyof typeof IPC_TOOLS]
   | (typeof IPC_LOG)[keyof typeof IPC_LOG]
   | (typeof IPC_DIALOG)[keyof typeof IPC_DIALOG];
-

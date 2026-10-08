@@ -16,7 +16,7 @@
  * 输出警告日志——智谱官方声明 Coding Plan 暂只支持 CC 协议，误配将全量失败。
  */
 
-import type { ProtocolAdapter, AdapterInitConfig } from './protocol-adapter';
+import type { ProtocolAdapter, AdapterInitConfig, AdapterInitResult } from './protocol-adapter';
 import { ChatCompletionsAdapter } from './chat-completions-adapter';
 import { ResponsesAdapter } from './responses-adapter';
 import { ModelApiAbortError } from '../model-retry';
@@ -48,18 +48,29 @@ export interface AdapterProtocolSetup {
  * 探查失败的实例立即 close 释放（幂等），不残留可用假象。
  */
 export async function initAdapterWithFallback(config: AdapterInitConfig): Promise<AdapterProtocolSetup> {
+  config?.signal?.throwIfAborted();
+  const initCandidate = async (candidate: ProtocolAdapter): Promise<AdapterInitResult> => {
+    try {
+      const result = await candidate.init(config);
+      config?.signal?.throwIfAborted();
+      if (!result.success) candidate.close();
+      return result;
+    } catch (error) {
+      candidate.close();
+      throw error;
+    }
+  };
   const responsesAdapter = new ResponsesAdapter();
-  const responsesInit = await responsesAdapter.init(config);
+  const responsesInit = await initCandidate(responsesAdapter);
   if (responsesInit.success) {
     return { adapter: responsesAdapter, protocol: 'responses' };
   }
-  responsesAdapter.close();
+  config?.signal?.throwIfAborted();
   const ccAdapter = new ChatCompletionsAdapter();
-  const ccInit = await ccAdapter.init(config);
+  const ccInit = await initCandidate(ccAdapter);
   if (ccInit.success) {
     return { adapter: ccAdapter, protocol: 'cc' };
   }
-  ccAdapter.close();
   throw new ModelApiAbortError({
     cause: null,
     retryCount: 0,

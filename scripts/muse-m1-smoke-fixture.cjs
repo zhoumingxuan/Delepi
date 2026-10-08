@@ -1,0 +1,41 @@
+const fs = require('node:fs/promises');
+const path = require('node:path');
+const os = require('node:os');
+const Database = require('better-sqlite3');
+require('../tests/muse-m1-migration/loader.cjs').install();
+const {applyMuseMigrations} = require('../src/main/db/migrations/index.ts');
+const root = path.resolve(__dirname, '..');
+(async () => {
+  const dir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'delepi-m1-gui-')));
+  await fs.mkdir(path.join(dir,'data'),{recursive:true});
+  await fs.mkdir(path.join(dir,'userData'),{recursive:true});
+  const constants = await fs.readFile(path.join(root,'src/main/constants/paths.ts'),'utf8');
+  const name = constants.match(/DB_FILE_NAME\s*=\s*['"]([^'"]+)/)[1];
+  const db = new Database(path.join(dir,'data',name));
+  const adapter = await fs.readFile(path.join(root,'src/main/db/sqlite-adapter.ts'),'utf8');
+  db.exec(adapter.match(/const SCHEMA_SQL = `([\s\S]+?)`;/)[1]);
+  const at = new Date().toISOString();
+  const profile={id:'synthetic-profile',name:'合成测试方案',mainModelBaseUrl:'https://example.invalid/v1',mainModelApiKey:'synthetic-not-a-real-key',mainModelName:'synthetic-only',mainModelMultimodal:false,mainThinkingLevel:'',executorModelBaseUrl:'https://example.invalid/v1',executorModelApiKey:'synthetic-not-a-real-key',executorModelName:'synthetic-only',executorThinkingLevel:'',visionLlmBaseUrl:'',visionLlmApiKey:'',visionLlmModel:''};
+  const settings=[['useBuiltinPython',false],['customPythonPath','/usr/bin/python3'],['visionEnabled',false],['activeProfileId','synthetic-profile'],['modelProfiles',[profile]],...Object.entries(profile).filter(([key])=>key!=='id'&&key!=='name')];
+  for (const [key,value] of settings) {
+    db.prepare('INSERT INTO settings VALUES(?,?,?)').run(key,JSON.stringify(value),at);
+  }
+  db.prepare('INSERT INTO conversations VALUES(?,?,?,?,?)').run('synthetic-conversation','M1 合成验收',0,at,at);
+  db.prepare('INSERT INTO messages VALUES(?,?,?,?,?,?)').run('synthetic-message','synthetic-conversation',1,'user',JSON.stringify({content:'仅为合成界面验收，没有真实模型调用。'}),at);
+  await applyMuseMigrations(db,{backupDir:path.join(dir,'data','muse','migration-backups')});
+  db.prepare('INSERT INTO runs VALUES(?,?,?,?,?,?,?,?,?,?)').run('synthetic-run','synthetic-conversation','synthetic-attempt','synthetic-owner',1,'completed',1,at,at,at);
+  db.prepare('INSERT INTO task_attempts VALUES(?,?,?,?,?,?,?,?,?,?,?)').run('synthetic-attempt','synthetic-run','synthetic-task',null,null,'synthetic-owner',1,'completed',at,at,'synthetic');
+  db.prepare('INSERT INTO activity_events(run_id,attempt_id,conversation_id,kind,details_json,occurred_at,committed_at) VALUES(?,?,?,?,?,?,?)').run('synthetic-run','synthetic-attempt','synthetic-conversation','run.settled',JSON.stringify({state:'completed',generation:1}),at,at);
+  const file = path.join(dir,'合成成果.html');
+  const body = '<!doctype html><html lang="zh"><meta charset="UTF-8"><title>M1合成成果</title><body><h1>合成验收成果</h1><p>没有生产资料或真实模型。</p><script>document.body.dataset.scriptRan="yes"</script></body></html>';
+  await fs.writeFile(file,body);
+  const hash=require('node:crypto').createHash('sha256').update(body).digest('hex');
+  db.prepare('INSERT INTO artifacts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run('synthetic-artifact','synthetic-run','synthetic-attempt','synthetic-conversation',file,file,'合成成果.html',hash,Buffer.byteLength(body),'saved','pending','unreviewed',process.env.MUSE_SMOKE_REVIEW === '1' ? 1 : 0,1,at,at);
+  const stat=await fs.stat(file);
+  db.prepare('INSERT INTO artifact_publish_journal(id,artifact_id,source_path,target_path,staging_path,expected_hash,size_bytes,file_dev,file_ino,phase,error_code,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)').run('synthetic-publication','synthetic-artifact',file,file,'',hash,Buffer.byteLength(body),stat.dev,stat.ino,'registered',null,at,at);
+  db.close();
+  await fs.writeFile(path.join(dir,'synthetic-fixture.json'),JSON.stringify({synthetic:true,source:root,createdAt:at},null,2));
+  const appPackage=JSON.parse(await fs.readFile(path.join(root,'package.json'),'utf8'));
+  await fs.writeFile(path.join(dir,'package.json'),JSON.stringify({name:'delepi-m1-isolated-smoke',version:appPackage.version,main:path.join(root,'scripts/muse-m1-smoke-main.cjs')}));
+  console.log(dir);
+})().catch(error=>{console.error(error);process.exitCode=1;});

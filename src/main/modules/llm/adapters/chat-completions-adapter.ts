@@ -104,6 +104,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
     opts: { multimodal: boolean; signal?: AbortSignal },
   ): Promise<AdapterTurnResult> {
     this.assertUsable('sendMessage');
+    opts.signal?.throwIfAborted();
     this.terminal = false;
     this.currentSegment = null;
     this.lastSegmentType = 'content';
@@ -200,6 +201,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
         onThinking: undefined,
         onStreamRetry: () => this.hooksRef?.onStreamRetry?.(),
       });
+      opts.signal?.throwIfAborted(); // SDK可返回取消时的部分流，不能作为完成结果提交
     } catch (error) {
       // 中止路径（预中止/重试中 abort）：现状中止即异常路径——不触发 onFinished，原样上抛
       if (opts.signal?.aborted
@@ -274,5 +276,11 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
       // eslint-disable-next-line no-console
       console.error('[cc-adapter] onFinished 回调异常（已吞掉）:', err);
     }
+  }
+
+  protected releaseResources(): void {
+    this.chunkHandler = null;
+    this.toolCallHandler = null;
+    this.finishedHandler = null;
   }
 }

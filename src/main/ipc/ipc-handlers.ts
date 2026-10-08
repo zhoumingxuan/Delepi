@@ -43,6 +43,8 @@ import {
 } from '../modules/executor-agent/executor-task-record-store';
 import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../constants/events';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
+import { getTaskService } from '../modules/tasks/task-service';
+import type { TaskRunContext, TerminalTaskState } from '../modules/tasks/types';
 import { refreshMainTools } from '../modules/main-agent/prompt';
 import {
   EXECUTOR_WORKFLOW_TEMPLATES,
@@ -59,6 +61,8 @@ import {
 } from '../modules/executor-agent/executor-workflow-templates';
 import { truncateConversationTitle } from '../modules/main-agent/title-generation';
 import { configManager } from '../modules/config/config-manager';
+import { registerConfigIpc } from '../modules/config/config-ipc';
+import { assertTrustedSender } from './trusted-sender';
 import {
   loadDynamicTools,
   reloadDynamicTools,
@@ -317,8 +321,15 @@ async function persistUploadedFiles(
  * 注册所有 IPC 处理器
  */
 let eventBusCleanups: (() => void)[] = [];
+let mainWindow: BrowserWindow;
+let handlersRegistered = false;
 
-export function registerIpcHandlers(mainWindow: BrowserWindow): void {
+export function registerIpcHandlers(window: BrowserWindow): void {
+  // All handlers/listeners read the current window. Window recreation updates
+  // ownership only; it does not duplicate handlers, agents or dynamic scans.
+  mainWindow = window;
+  if (handlersRegistered) return;
+  handlersRegistered = true;
   // P1-02: 精确清理上次注册的 EventBus 监听器
   for (const cleanup of eventBusCleanups) {
     cleanup();
@@ -341,6 +352,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    * chat:send — 发送消息并启动流式对话
    */
   ipcMain.handle(IPC_CHAT.SEND, async (_event, params: ChatSendParams): Promise<ChatSendResult> => {
+    assertTrustedSender(_event,mainWindow);
     const conversationId = params.conversationId;
 
     // 并发控制（适配 E:\\ai_fr beginConversationRun）：
@@ -353,6 +365,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
 
     const messageId = uuidv4();
+    let taskContext:TaskRunContext|undefined;
+    let durableOutcome:TerminalTaskState = 'failed';
 
     // AbortController 已由 beginConversationRun 创建
 
@@ -374,6 +388,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
       // 确保对话存在
       ensureConversation(conversationId);
+      taskContext = getTaskService().beginRun(conversationId);
       const uploadedFiles = await persistUploadedFiles(conversationId, params.files);
 
       // 更新对话状态为运行中
@@ -384,6 +399,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
       // 启动主智能体
       const result = await runMainAgent({
+        taskContext,
         conversationId,
         userMessage: params.message,
         modelConfig: {
@@ -415,6 +431,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         uploadedFiles,
         signal: abortController.signal,
       });
+      durableOutcome = abortController.signal.aborted ? 'cancelled' : 'completed';
 
       return {
         messageId: result.messageId,
@@ -430,6 +447,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       //   主 catch 已不发事件，此处不再让其 message≠'ABORTED' 的错误漏到渲染层错误条）；
       //   非取消场景（signal.aborted=false）仅保留原 ERR_ABORTED 精确匹配，行为不变。
       if (errMsg === ERR_ABORTED || abortController.signal.aborted) {
+        durableOutcome = 'cancelled';
         return {
           messageId,
           conversationId,
@@ -443,11 +461,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       //   finally 才执行，此处即本 run 的真实退出点；finishConversationRun 返回
       //   false = 条目已被替换/释放（本 run 已无闸门所有权），此时不得触碰
       //   is_running 与列表态（旧 run 退出不得踩踏新 run 的控制器与状态）。
-      if (finishConversationRun(conversationId, abortController)) {
-        emitConversationUpdated(
-          mainWindow,
-          setConversationRunning(conversationId, false),
-        );
+      try {
+        // MAIN_AGENT_DONE is a reply event, not the lifecycle authority. Await/finally has now settled.
+        if (taskContext) getTaskService().settleAttempt(taskContext,durableOutcome,'main-agent-settled');
+      } finally {
+        if (finishConversationRun(conversationId, abortController)) {
+          emitConversationUpdated(mainWindow,setConversationRunning(conversationId, false));
+        }
       }
     }
   });
@@ -456,6 +476,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    * chat:abort — 中止当前对话
    */
   ipcMain.on(IPC_CHAT.ABORT, (_event, conversationId: string) => {
+    assertTrustedSender(_event,mainWindow);
     // ★ 缺陷①③根因修复说明：abortConversationRun 现仅触发控制器 abort，不再删除
     //   闸门条目（条目由 run 真实 settle 时经实例归属校验释放）——取消-settle 窗口内
     //   同会话新 chat:send 被 beginConversationRun 并发拒绝，杜绝旧 run 退出错杀
@@ -465,13 +486,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     //   语义保持不变：渲染层 showCancel 即刻解锁（发送不再退化为停止手势）与消息
     //   abort 归一化依赖该时序，不得移除（已排除路径第 1/3 项）。
     try {
-      abortConversationRun(conversationId);
+      try {
+        getTaskService().requestConversationStop(conversationId);
+      } catch {
+        console.error('[Tasks] STOP_PERSISTENCE_UNKNOWN; cancellation still requested');
+      } finally {
+        abortConversationRun(conversationId);
+      }
     }
     finally {
-      emitConversationUpdated(
-        mainWindow,
-        setConversationRunning(conversationId, false),
-      );
       eventBus.emit(MAIN_AGENT_ABORTED_EVENT, { conversationId });
     }
   });
@@ -658,383 +681,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 配置处理器
   // ================================================================
 
-  ipcMain.handle(IPC_CONFIG.GET, async (): Promise<ConfigGetResult> => {
-    const settings = { ...configManager.getSettings() };
-    return {
-      configured: configManager.isConfigured(),
-      model: settings.mainModelName,
-      baseUrl: settings.mainModelBaseUrl,
-      settings,
-    };
-  });
-
-  ipcMain.handle(IPC_CONFIG.SAVE, async (_event, params: ConfigSaveParams): Promise<void> => {
-    // 【F2·守卫前置】在本次写入（saveSetting/setSetting）之前记录该键的运行时旧值，
-    // 供链路C 做「方案现值 === 写入前运行时旧值」一致性比较；
-    // 禁止改用写入后的新值参与比较（否则守卫恒真失效）。
-    const prevRuntimeValue = (configManager.getSettings() as unknown as Record<string, unknown>)[params.key];
-    saveSetting(params.key, params.value);
-
-    // 同步到 configManager
-    const appSettings = configManager.getSettings();
-    if (params.key in appSettings) {
-      configManager.setSetting(
-        params.key as keyof AppSettings,
-        params.value as AppSettings[keyof AppSettings],
-      );
-    }
-
-    // 【链路C】当前加载了方案（activeProfileId 存在）时，模型配置修改后同步更新该方案在
-    // modelProfiles 中的对应字段；方案字段全集 = PROFILE_CONFIG_KEYS（visionEnabled 等非方案键不入档，不同步）。
-    // 注：PROFILE_CONFIG_KEYS 在本函数后续定义，handler 回调异步执行时已初始化，无 TDZ 问题。
-    if ((PROFILE_CONFIG_KEYS as readonly string[]).includes(params.key)) {
-      const s = configManager.getSettings();
-      const activeId = s.activeProfileId;
-      if (activeId) {
-        const profiles = [...s.modelProfiles];
-        const idx = profiles.findIndex((item) => item.id === activeId);
-        if (idx >= 0) {
-          // 【F2·快照一致性守卫】仅当「该键在激活方案对象中的现值」与「本次写入前的运行时旧值」
-          // 一致（即用户改动的确源于当前方案上下文）时，才把新值同步写进激活方案并落库 modelProfiles；
-          // 错位态（如删除激活方案后转移未应用新方案配置导致的「激活=满配置方案、运行时=旧值」）
-          // 下跳过方案同步，仅完成上方单键运行时保存，不报错、不阻断保存。
-          const profileValue = (profiles[idx] as unknown as Record<string, unknown>)[params.key];
-          if (profileValue === prevRuntimeValue) {
-            const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
-            next[params.key] = params.value;
-            profiles[idx] = next as ModelProfile;
-            saveSetting('modelProfiles', profiles);
-            configManager.setSetting('modelProfiles', profiles);
-          }
-        }
-      }
-    }
-  });
-
-  ipcMain.handle(IPC_CONFIG.RELOAD, async (): Promise<void> => {
-    configManager.reload();
-    // 方向2：reload 可能恢复/变更 customSkillTags，同步刷新主智能体 skills enum
-    refreshMainTools();
-  });
-
-  // ================================================================
-  // 模型档案处理器（多槽位 + 一键切换 + 兼容未来新模型：档案值始终自由文本快照）
-  // ================================================================
-
-  type ProfileListResult = { profiles: ModelProfile[]; activeProfileId: string };
-  type ProfileSaveParams = { name: string; blank?: boolean };
-  type ProfileDeleteParams = { id: string };
-  type ProfileSwitchParams = { id: string };
-  type ProfileSwitchResult = { activeProfileId: string; profileName: string };
-
-  /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + mainThinkingLevel + executorThinkingLevel；visionEnabled 总开关不入档） */
-  const PROFILE_CONFIG_KEYS = [
-    'mainModelBaseUrl',
-    'mainModelApiKey',
-    'mainModelName',
-    'mainModelMultimodal',
-    'mainThinkingLevel',
-    'executorModelBaseUrl',
-    'executorModelApiKey',
-    'executorModelName',
-    'executorThinkingLevel',
-    'visionLlmBaseUrl',
-    'visionLlmApiKey',
-    'visionLlmModel',
-  ] as const;
-
-  ipcMain.handle(IPC_CONFIG.PROFILES_LIST, async (): Promise<ProfileListResult> => {
-    const settings = configManager.getSettings();
-    return { profiles: settings.modelProfiles, activeProfileId: settings.activeProfileId };
-  });
-
-  ipcMain.handle(IPC_CONFIG.PROFILES_SAVE, async (_event, params: ProfileSaveParams): Promise<ProfileListResult> => {
-    const name = typeof params?.name === 'string' ? params.name.trim() : '';
-    if (!name) {
-      throw new Error('档案名称不能为空');
-    }
-    // 另存为：以主进程当前生效配置（九键+开关/档位）为权威快照源；同名档案覆盖并保留原 id。
-    // blank=true：新建空白方案——9 个文本键取空串，开关/档位取 DEFAULT_APP_SETTINGS 默认值
-    // （禁止存空串：config-manager reload() 过滤空串，重启后默认值回填会造成方案内容漂移）；
-    // blank 为 undefined/null 时走原复制快照逻辑（另存为语义，向后兼容）。
-    const settings = configManager.getSettings();
-    const profiles = [...settings.modelProfiles];
-    const existingIndex = profiles.findIndex((item) => item.name === name);
-    const blank = params.blank === true;
-    const profile: ModelProfile = blank
-      ? {
-          id: existingIndex >= 0 ? profiles[existingIndex].id : uuidv4(),
-          name,
-          mainModelBaseUrl: '',
-          mainModelApiKey: '',
-          mainModelName: '',
-          mainModelMultimodal: DEFAULT_APP_SETTINGS.mainModelMultimodal,
-          mainThinkingLevel: DEFAULT_APP_SETTINGS.mainThinkingLevel,
-          executorModelBaseUrl: '',
-          executorModelApiKey: '',
-          executorModelName: '',
-          executorThinkingLevel: DEFAULT_APP_SETTINGS.executorThinkingLevel,
-          visionLlmBaseUrl: '',
-          visionLlmApiKey: '',
-          visionLlmModel: '',
-        }
-      : {
-          id: existingIndex >= 0 ? profiles[existingIndex].id : uuidv4(),
-          name,
-          mainModelBaseUrl: settings.mainModelBaseUrl,
-          mainModelApiKey: settings.mainModelApiKey,
-          mainModelName: settings.mainModelName,
-          mainModelMultimodal: settings.mainModelMultimodal,
-          mainThinkingLevel: settings.mainThinkingLevel,
-          executorModelBaseUrl: settings.executorModelBaseUrl,
-          executorModelApiKey: settings.executorModelApiKey,
-          executorModelName: settings.executorModelName,
-          executorThinkingLevel: settings.executorThinkingLevel,
-          visionLlmBaseUrl: settings.visionLlmBaseUrl,
-          visionLlmApiKey: settings.visionLlmApiKey,
-          visionLlmModel: settings.visionLlmModel,
-        };
-    if (existingIndex >= 0) {
-      profiles[existingIndex] = profile;
-    } else {
-      profiles.push(profile);
-    }
-    saveSetting('modelProfiles', profiles);
-    configManager.setSetting('modelProfiles', profiles);
-    // 首次保存自动激活：仅当前无激活方案（activeProfileId===''）时补写激活键，防止同名覆盖既有
-    // 非激活方案时错切激活标记；返回实际激活 id——空时补写后即新档案 id，非空保持原值
-    let activeProfileId = settings.activeProfileId;
-    if (activeProfileId === '') {
-      activeProfileId = profile.id;
-      saveSetting('activeProfileId', activeProfileId);
-      configManager.setSetting('activeProfileId', activeProfileId);
-    }
-    return { profiles, activeProfileId };
-  });
-
-  ipcMain.handle(IPC_CONFIG.PROFILES_DELETE, async (_event, params: ProfileDeleteParams): Promise<ProfileListResult> => {
-    const settings = configManager.getSettings();
-    const profiles = settings.modelProfiles.filter((item) => item.id !== params.id);
-    let activeProfileId = settings.activeProfileId;
-    // 【模型配置方案使能】删除激活方案后的激活态转移：剩余非空时自动补选第一个为 activeProfileId，
-    // 并在写 activeProfileId 之前按新激活方案以 PROFILES_SWITCH 同语义应用其 12 键
-    //（逐键 if value===undefined continue; saveSetting; setSetting），使「激活方案」与「运行时九键」
-    // 始终一致，杜绝「激活=满配置方案、运行时=旧值」错位态经链路C 污染其他方案存储；
-    // 剩余为空（activeProfileId===''）时不应用任何键，九键保持现状且不报错；
-    // 激活 id 为空或悬空（指向已不存在的方案）时同样统一补选，禁止本分支静默失效。
-    if (!profiles.some((item) => item.id === activeProfileId)) {
-      activeProfileId = profiles.length > 0 ? profiles[0].id : '';
-      if (activeProfileId) {
-        const nextActiveProfile = profiles[0];
-        for (const key of PROFILE_CONFIG_KEYS) {
-          const value = nextActiveProfile[key];
-          if (value === undefined) continue;
-          saveSetting(key, value);
-          configManager.setSetting(key, value);
-        }
-      }
-      saveSetting('activeProfileId', activeProfileId);
-      configManager.setSetting('activeProfileId', activeProfileId);
-    }
-    saveSetting('modelProfiles', profiles);
-    configManager.setSetting('modelProfiles', profiles);
-    return { profiles, activeProfileId };
-  });
-
-  ipcMain.handle(IPC_CONFIG.PROFILES_SWITCH, async (_event, params: ProfileSwitchParams): Promise<ProfileSwitchResult> => {
-    const settings = configManager.getSettings();
-    const profile = settings.modelProfiles.find((item) => item.id === params.id);
-    if (!profile) {
-      throw new Error('档案不存在或已被删除');
-    }
-    // 切换流程：逐键「saveSetting 落库 + setSetting 即时生效」（对齐既有 config:save 模式）；
-    // 任一键失败：汇总错误返回且不回滚已写键（settings INSERT OR REPLACE 幂等，重试切换即自愈）；
-    // 全部成功后再写 activeProfileId。
-    const errors: string[] = [];
-    for (const key of PROFILE_CONFIG_KEYS) {
-      try {
-        const value = profile[key];
-        // 兜底：存量档案缺 mainThinkingLevel 时 value=undefined（stringifyJson(undefined)=undefined 经 better-sqlite3 绑定 NULL，触发 value_json NOT NULL 约束抛错）；
-        // 跳过 undefined 键，保持当前生效档位不动（对齐 visionEnabled 不入档语义）
-        if (value === undefined) continue;
-        saveSetting(key, value);
-        configManager.setSetting(key, value);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        errors.push(`${key}: ${msg}`);
-      }
-    }
-    if (errors.length > 0) {
-      throw new Error(`切换档案「${profile.name}」部分失败（${PROFILE_CONFIG_KEYS.length - errors.length}/${PROFILE_CONFIG_KEYS.length} 键已写入，未回滚；重试切换可自愈）：${errors.join('；')}`);
-    }
-    saveSetting('activeProfileId', profile.id);
-    configManager.setSetting('activeProfileId', profile.id);
-    return { activeProfileId: profile.id, profileName: profile.name };
-  });
-
-  // ---- 方案导出/导入（文件 IO）：导出=ModelProfile 原样序列化落盘（密钥明文）；导入=白名单容错提取+补位，新档案追加不激活 ----
-  type ProfileExportParams = { profileId: string };
-  type ProfileExportResult =
-    | { ok: true; filePath: string }
-    | { ok: false; canceled?: boolean; error?: string };
-  type ProfileImportParams = { filePath: string };
-  type ProfileImportResult =
-    | {
-        ok: true;
-        profile: ModelProfile;
-        profiles: ModelProfile[];
-        activeProfileId: string;
-        importedCount: number;
-        skippedCount: number;
-        renamed: boolean;
-      }
-    | { ok: false; code: 'READ_ERROR' | 'INVALID_JSON' | 'NOT_A_PROFILE'; error?: string };
-
-  ipcMain.handle(IPC_CONFIG.PROFILES_EXPORT, async (_event, params: ProfileExportParams): Promise<ProfileExportResult> => {
-    const settings = configManager.getSettings();
-    const profile = settings.modelProfiles.find((item) => item.id === params?.profileId);
-    if (!profile) {
-      return { ok: false, error: '方案不存在或已被删除' };
-    }
-    const win = BrowserWindow.getAllWindows()[0];
-    if (!win || win.isDestroyed()) {
-      return { ok: false, error: '窗口不可用，无法导出' };
-    }
-    // 默认文件名：方案名替换 Windows 非法字符 [\\/:*?"<>|] 为 '-'（空名兜底 '方案'）
-    const safeName = profile.name.replace(/[\\/:*?"<>|]/g, '-').trim() || '方案';
-    const result = await dialog.showSaveDialog(win, {
-      title: '导出配置方案',
-      defaultPath: `${safeName}.json`,
-      filters: [{ name: 'Delepi 配置方案', extensions: ['json'] }],
-    });
-    if (result.canceled || !result.filePath) {
-      return { ok: false, canceled: true };
-    }
-    try {
-      // ModelProfile 原样序列化（2 空格缩进、UTF-8 无 BOM）：三处 API Key 为明文原值，不脱敏/不截断/不掩码
-      await writeFile(result.filePath, JSON.stringify(profile, null, 2), 'utf-8');
-      return { ok: true, filePath: result.filePath };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
-
-  ipcMain.handle(IPC_CONFIG.PROFILES_IMPORT, async (_event, params: ProfileImportParams): Promise<ProfileImportResult> => {
-    let rawText = '';
-    try {
-      rawText = await readFile(params?.filePath, 'utf-8');
-    } catch (error) {
-      return { ok: false, code: 'READ_ERROR', error: error instanceof Error ? error.message : String(error) };
-    }
-    let parsed: unknown = null;
-    try {
-      // 先剥离 UTF-8 BOM（旧版记事本保存的 JSON 常带 BOM，属编码噪声而非内容错误）
-      parsed = JSON.parse(rawText.replace(/^\uFEFF/, ''));
-    } catch {
-      return { ok: false, code: 'INVALID_JSON' };
-    }
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return { ok: false, code: 'NOT_A_PROFILE' };
-    }
-    const source = parsed as Record<string, unknown>;
-    // 「有什么则导入什么」：12 配置键白名单容错提取——类型合法取文件值，缺失/非法按补位规则
-    //（9 文本键 ''、开关/档位取 DEFAULT_APP_SETTINGS 实值；档位禁存空串：'' 与缺失/非法同等对待，
-    //  防 config-manager reload() 空串过滤+默认值回填造成方案内容漂移）。文件 id 一律忽略，恒新 uuid。
-    const validThinkingLevels: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
-    const newProfile: ModelProfile = {
-      id: uuidv4(),
-      name: '',
-      mainModelBaseUrl: '',
-      mainModelApiKey: '',
-      mainModelName: '',
-      mainModelMultimodal: DEFAULT_APP_SETTINGS.mainModelMultimodal,
-      mainThinkingLevel: DEFAULT_APP_SETTINGS.mainThinkingLevel,
-      executorModelBaseUrl: '',
-      executorModelApiKey: '',
-      executorModelName: '',
-      executorThinkingLevel: DEFAULT_APP_SETTINGS.executorThinkingLevel,
-      visionLlmBaseUrl: '',
-      visionLlmApiKey: '',
-      visionLlmModel: '',
-    };
-    let importedCount = 0;
-    let skippedCount = 0;
-    const textConfigKeys = [
-      'mainModelBaseUrl',
-      'mainModelApiKey',
-      'mainModelName',
-      'executorModelBaseUrl',
-      'executorModelApiKey',
-      'executorModelName',
-      'visionLlmBaseUrl',
-      'visionLlmApiKey',
-      'visionLlmModel',
-    ] as const;
-    for (const key of textConfigKeys) {
-      const value = source[key];
-      if (typeof value === 'string') {
-        newProfile[key] = value;
-        importedCount += 1;
-      } else if (key in source) {
-        skippedCount += 1;
-      }
-    }
-    if (typeof source.mainModelMultimodal === 'boolean') {
-      newProfile.mainModelMultimodal = source.mainModelMultimodal;
-      importedCount += 1;
-    } else if ('mainModelMultimodal' in source) {
-      skippedCount += 1;
-    }
-    const readValidThinkingLevel = (value: unknown): ModelProfile['mainThinkingLevel'] | null =>
-      typeof value === 'string' && validThinkingLevels.includes(value)
-        ? (value as ModelProfile['mainThinkingLevel'])
-        : null;
-    const mainThinkingLevel = readValidThinkingLevel(source.mainThinkingLevel);
-    if (mainThinkingLevel !== null) {
-      newProfile.mainThinkingLevel = mainThinkingLevel;
-      importedCount += 1;
-    } else if ('mainThinkingLevel' in source) {
-      skippedCount += 1;
-    }
-    const executorThinkingLevel = readValidThinkingLevel(source.executorThinkingLevel);
-    if (executorThinkingLevel !== null) {
-      newProfile.executorThinkingLevel = executorThinkingLevel;
-      importedCount += 1;
-    } else if ('executorThinkingLevel' in source) {
-      skippedCount += 1;
-    }
-    // 有效性判据：12 配置键中 ≥1 个存在且类型合法才视为方案文件（拦截 {} / 误选 package.json 等）
-    if (importedCount === 0) {
-      return { ok: false, code: 'NOT_A_PROFILE' };
-    }
-    // name：文件值（trim 非空）优先，否则文件名去扩展兜底，再空则 '导入方案'
-    const fileValueName = typeof source.name === 'string' ? source.name.trim() : '';
-    let name = fileValueName || path.basename(params.filePath, '.json').trim() || '导入方案';
-    // 重名：自动追加序号（glm-5.3 → glm-5.3-2 → 再撞 -3 递增，上限 100 次防御），零覆盖既有方案
-    const settings = configManager.getSettings();
-    const profiles = [...settings.modelProfiles];
-    let renamed = false;
-    if (profiles.some((item) => item.name === name)) {
-      renamed = true;
-      let suffix = 2;
-      while (suffix <= 100 && profiles.some((item) => item.name === `${name}-${suffix}`)) {
-        suffix += 1;
-      }
-      name = `${name}-${suffix}`;
-    }
-    newProfile.name = name;
-    profiles.push(newProfile);
-    saveSetting('modelProfiles', profiles);
-    configManager.setSetting('modelProfiles', profiles);
-    // 防御性激活补位：仅 activeProfileId 为空时指向新方案（正常态由 config-manager.reload() 保证非空）
-    let activeProfileId = settings.activeProfileId;
-    if (activeProfileId === '') {
-      activeProfileId = newProfile.id;
-      saveSetting('activeProfileId', activeProfileId);
-      configManager.setSetting('activeProfileId', activeProfileId);
-    }
-    return { ok: true, profile: newProfile, profiles, activeProfileId, importedCount, skippedCount, renamed };
-  });
+  const handleTrusted: typeof ipcMain.handle = (channel, listener) => {
+    ipcMain.handle(channel, (event, ...args) => { assertTrustedSender(event, mainWindow); return listener(event, ...args); });
+  };
+  registerConfigIpc(() => mainWindow, refreshMainTools);
   // ================================================================
   // 自定义技能处理器（方向2：skills 三通道；内置8标签只读锁定，自定义标签/模板管理）
   // ================================================================
@@ -1071,7 +721,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     };
   });
 
-  ipcMain.handle(IPC_SKILLS.SAVE, async (_event, params: SkillSaveParams): Promise<SkillsMutationResult> => {
+  handleTrusted(IPC_SKILLS.SAVE, async (_event, params: SkillSaveParams): Promise<SkillsMutationResult> => {
     const originalName = typeof params?.originalName === 'string' && params.originalName.trim()
       ? params.originalName.trim()
       : '';
@@ -1112,14 +762,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const next = current
       ? existing.map((item) => (item === current ? entry : item))
       : [...existing, entry];
-    saveSetting('customSkillTags', next);
-    configManager.setSetting('customSkillTags', next);
+    configManager.commitSettings({ customSkillTags: next });
     // enum 运行时刷新（ES live binding；放行链在每次委派时从 configManager 读取，无需另行刷新）
     refreshMainTools();
     return { custom: next };
   });
 
-  ipcMain.handle(IPC_SKILLS.DELETE, async (_event, params: SkillDeleteParams): Promise<SkillsMutationResult> => {
+  handleTrusted(IPC_SKILLS.DELETE, async (_event, params: SkillDeleteParams): Promise<SkillsMutationResult> => {
     const name = typeof params?.name === 'string' ? params.name.trim() : '';
     if (TASK_TAG_SET.has(name)) {
       throw new Error('内置技能标签只读锁定，不可删除');
@@ -1131,8 +780,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
     await removeCustomSkillTemplateDir(target.slug);
     const next = existing.filter((item) => item.name !== name);
-    saveSetting('customSkillTags', next);
-    configManager.setSetting('customSkillTags', next);
+    configManager.commitSettings({ customSkillTags: next });
     refreshMainTools();
     return { custom: next };
   });
@@ -1207,7 +855,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 动态工具处理器（方向5：tools:dyn-reload / tools:dyn-list 两通道；内置3工具锁定）
   // ================================================================
 
-  ipcMain.handle(IPC_TOOLS.DYN_RELOAD, async (): Promise<DynToolsLoadResult> => {
+  handleTrusted(IPC_TOOLS.DYN_RELOAD, async (): Promise<DynToolsLoadResult> => {
     // 手动重载：先注销全部动态注册，再重扫 dyn-tools 目录（幂等；失败目录告警并进 failed 列表）
     return reloadDynamicTools();
   });
@@ -1363,8 +1011,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    */
   ipcMain.handle(
     IPC_EXECUTOR.GET_TASK_RECORD,
-    (_event, params: import('../types/ipc').ExecutorTaskRecordQueryParams) =>
-      queryExecutorTaskRecord(params),
+    (_event, params: import('../types/ipc').ExecutorTaskRecordQueryParams) => {
+      assertTrustedSender(_event,mainWindow);
+      return queryExecutorTaskRecord(params);
+    },
   );
 
   /**
@@ -1375,8 +1025,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    */
   ipcMain.handle(
     IPC_EXECUTOR.STOP_TASK,
-    (_event, params: { conversationId: string; delegateCallId: string }) =>
-      stopExecutorTask(params.conversationId, params.delegateCallId),
+    (_event, params: { conversationId: string; delegateCallId: string }) => {
+      assertTrustedSender(_event,mainWindow);
+      return stopExecutorTask(params.conversationId, params.delegateCallId);
+    },
   );
 
   /**
@@ -1387,8 +1039,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    */
   ipcMain.handle(
     IPC_EXECUTOR.SEND_TASK_MESSAGE,
-    (_event, params: { conversationId: string; delegateCallId: string; message: string }) =>
-      sendTaskUserMessage(params.conversationId, params.delegateCallId, params.message),
+    (_event, params: { conversationId: string; delegateCallId: string; message: string; messageId?:string }) => {
+      assertTrustedSender(_event,mainWindow);
+      return sendTaskUserMessage(params.conversationId, params.delegateCallId, params.message,params.messageId);
+    },
   );
 
   // ================================================================

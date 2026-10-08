@@ -11,6 +11,7 @@ export type ExecutorExecutionLogToolCall = {
   name: string;
   arguments: string;
   status: 'calling' | 'completed' | 'failed';
+  finishedAt?: string;
   result?: ToolResult;
 };
 
@@ -67,6 +68,7 @@ export function appendExecutionLogToolCall(
 export function completeExecutionLogToolCall(
   logToolCall: ExecutorExecutionLogToolCall | undefined,
   result: ToolResult,
+  finishedAt?: string,
 ): void {
   if (!logToolCall) {
     return;
@@ -74,6 +76,7 @@ export function completeExecutionLogToolCall(
 
   logToolCall.status = result.success ? 'completed' : 'failed';
   logToolCall.result = result;
+  if (finishedAt) logToolCall.finishedAt = finishedAt;
 }
 
 export function setExecutionLogStructuredOutput(

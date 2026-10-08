@@ -11,7 +11,6 @@
 
 import {
   readFile,
-  rm,
 } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -24,6 +23,7 @@ import { isModelApiAbortError } from '../llm/model-retry';
 import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
 import { buildExecutorSystemPrompt } from './executor-system-prompt';
+import { cleanupTaskTemporaryPaths } from './task-cleanup';
 import {
   SCRIPTS_TOOLS_DIR,
   type TaskTag,
@@ -41,6 +41,8 @@ import {
   EXECUTOR_WORKFLOW_TEMPLATES,
   TASK_TAG_WORKFLOW_TEMPLATE_ID,
   getCustomSkillTemplatePath,
+  getCustomSkillsDir,
+  getBuiltinOverridesDir,
   getEnabledCustomSkillTags,
   readBuiltinTemplateContent,
   readCustomSkillTemplateContent,
@@ -81,7 +83,6 @@ import {
   EXECUTOR_INVALID_TOOL_CALL_NAME,
   ERR_DELEGATED_TASK_INVALID_INPUT,
   ERR_DELEGATED_TASK_FILE_DELIVERY_FAILED,
-  ERR_ABORTED,
   type ExecutorDeliveryType
 } from '../../constants';
 import { IMAGE_URLS_FIELD_NAME } from '../llm/constants';
@@ -100,7 +101,6 @@ import {
   saveExecutionLogOnError,
   setExecutionLogStructuredOutput,
   type ExecutorExecutionLog,
-  type ExecutorExecutionLogToolCall,
 } from './executor-execution-log';
 import type { ExecutorTaskRecordSession } from './executor-task-record-store';
 /** 委派任务中携带的上传文件 */
@@ -513,21 +513,6 @@ function buildScriptToolsInventoryBlock(entries: ScriptToolScanEntry[]): string 
   `;
 }
 
-async function removeTemporaryPaths(temporaryPaths: string[]): Promise<void> {
-  await Promise.all(
-    temporaryPaths.map(async (temporaryPath) => {
-      if (!temporaryPath || !path.isAbsolute(temporaryPath)) {
-        return;
-      }
-
-      await rm(temporaryPath, {
-        recursive: true,
-        force: true,
-      }).catch(() => undefined);
-    }),
-  );
-}
-
 /**
  * R5②：收集本次交付的源文件路径（复制到 output 前 payload.result 中的原始路径）。
  */
@@ -558,42 +543,6 @@ function collectResultDeliveredFilePaths(
   }
 
   return readStringArrayResultField(resultData.result, fileFieldName);
-}
-
-/**
- * R5②：从待清理临时路径中剔除交付文件路径（兜底保护，防止 cleanable_info.json
- * 登记的临时路径被递归删除时误删本次交付文件，含源文件与 output 副本）。
- * 剔除规则：临时路径与交付路径相同，或交付文件位于临时路径目录之内。
- */
-function excludeDeliveredPathsFromTemporaryPaths(
-  temporaryPaths: string[],
-  deliveredPaths: string[],
-): string[] {
-  if (temporaryPaths.length === 0 || deliveredPaths.length === 0) {
-    return temporaryPaths;
-  }
-
-  const normalizedDeliveredPaths = deliveredPaths
-    .filter((deliveredPath) => Boolean(deliveredPath) && path.isAbsolute(deliveredPath))
-    .map((deliveredPath) => path.resolve(deliveredPath));
-
-  if (normalizedDeliveredPaths.length === 0) {
-    return temporaryPaths;
-  }
-
-  return temporaryPaths.filter((temporaryPath) => {
-    if (!temporaryPath || !path.isAbsolute(temporaryPath)) {
-      return true;
-    }
-
-    const resolvedTemporaryPath = path.resolve(temporaryPath);
-
-    return !normalizedDeliveredPaths.some((deliveredPath) => {
-      const relative = path.relative(resolvedTemporaryPath, deliveredPath);
-
-      return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
-    });
-  });
 }
 
 function getFileResultFieldName(
@@ -681,13 +630,14 @@ const EMPTY_LOCAL_FILES_WARNING = '本地文件列表为空，未生成文件链
 async function copyLocalFilesToOutputDir(
   sourceFilePaths: string[],
   outputDir: string | undefined,
+  copyOptions?: import('../../utils/storage-output').ArtifactCopyOptions,
 ): Promise<{ outputFilePaths: string[]; warnings: string[] }> {
   const outputFilePaths: string[] = [];
   const warnings: string[] = [];
 
   for (const sourcePath of sourceFilePaths) {
     try {
-      outputFilePaths.push(await copyFileToOutputDir(sourcePath, outputDir));
+      outputFilePaths.push(await copyFileToOutputDir(sourcePath, outputDir,copyOptions));
     } catch (error) {
       outputFilePaths.push(sourcePath);
       warnings.push(
@@ -704,6 +654,8 @@ async function buildExecutorResultData(options: {
   deliveryType: ExecutorDeliveryType;
   context: ExecutorRuntimeContext;
   outputDir?: string;
+  taskContext?: import('../tasks/types').TaskRunContext;
+  signal?: AbortSignal;
 }): Promise<Record<string, unknown>> {
   const fileFieldName = getFileResultFieldName(options.deliveryType);
 
@@ -745,7 +697,7 @@ async function buildExecutorResultData(options: {
     const {
       outputFilePaths,
       warnings: copyWarnings,
-    } = await copyLocalFilesToOutputDir(sourceFilePaths, options.outputDir);
+    } = await copyLocalFilesToOutputDir(sourceFilePaths, options.outputDir,{artifactOrigin:options.taskContext,signal:options.signal});
     const warnings = [...options.payload.warnings, ...copyWarnings];
 
     return {
@@ -758,7 +710,7 @@ async function buildExecutorResultData(options: {
     };
   }
 
-  const outputFilePaths = await copyFilesToOutputDir(sourceFilePaths, options.outputDir);
+  const outputFilePaths = await copyFilesToOutputDir(sourceFilePaths, options.outputDir,{artifactOrigin:options.taskContext,signal:options.signal});
   const fileUrls = buildLocalFileUrls(outputFilePaths);
   const urlFieldName = getFileResultUrlFieldName(fileFieldName);
 
@@ -1075,6 +1027,7 @@ async function completeExecutorTurn(options: {
     options.messages as unknown as Array<Record<string, unknown>>,
     { multimodal: false, signal: options.signal },
   );
+  options.signal?.throwIfAborted();
 
   // A1-2 聚合收口：把聚合后的 reasoning 以 reasoning_content 挂回 assistantMessage
   //   （nonStreamChat 的 message 由服务端原样携带 reasoning_content；此处流式聚合后补挂同名字段，
@@ -1093,6 +1046,8 @@ async function completeExecutorTurn(options: {
 // ============================================================
 
 export type RunDelegatedTaskOptions = {
+  /** Allocated by the main-process execution gate, never by model output. */
+  taskContext?: import('../tasks/types').TaskRunContext;
   /** Assistant 运行时配置 */
   assistantConfig: AssistantRuntimeConfig;
   /** 委派任务参数（来自 MainAgent 的 delegate_executor 工具调用） */
@@ -1147,8 +1102,10 @@ export type RunDelegatedTaskOptions = {
    */
   /** 工具调用回调 */
   onToolCall?: (toolName: string, args: string, callId: string) => void;
+  /** 主进程持久收口：失败会在同批工具全部退出后终止执行，不能当作界面通知吞掉。 */
+  onToolSettled?: (toolName: string, success: boolean, callId: string, finishedAt: string) => void;
   /** 工具结果回调 */
-  onToolResult?: (toolName: string, success: boolean, message: string, callId: string) => void;
+  onToolResult?: (toolName: string, success: boolean, message: string, callId: string, finishedAt?: string) => void;
 };
 
 export type RunDelegatedTaskResult = ToolResult & {
@@ -1201,6 +1158,7 @@ async function attachTaskOutputTimes(options: {
   log: ExecutorExecutionLog;
   finalOutputDir?: string;
   startAt: string;
+  signal?: AbortSignal;
 }): Promise<RunDelegatedTaskResult> {
   const finishedAt = formatCurrentDateTime();
   const durationSeconds = computeTaskDurationSeconds(options.startAt, finishedAt);
@@ -1211,11 +1169,13 @@ async function attachTaskOutputTimes(options: {
     durationSeconds,
   };
 
-  return attachExecutionLogPathToResult({
+  const loggedResult = await attachExecutionLogPathToResult({
     result: timedResult,
     log: options.log,
     finalOutputDir: options.finalOutputDir,
   });
+  options.signal?.throwIfAborted();
+  return loggedResult;
 }
 
 export async function runDelegatedTask(
@@ -1233,6 +1193,8 @@ export async function runDelegatedTask(
     taskInput: parseResult.input,
     inputIssues: parseResult.issues,
   });
+  let adapter: ProtocolAdapter | undefined;
+  let activeToolThreads: Promise<{ id: string; result: ToolResult; finishedAt: string }>[] = [];
 
   // ★ API 报错保留现场（方案⑤5.3/⑥#16）：runDelegatedTask 主体整体包裹 try/catch——
   //   任何 throw 路径（含 executor streamChat 抛出的 ModelApiAbortError）先经
@@ -1240,6 +1202,7 @@ export async function runDelegatedTask(
   //   路径挂载到 error.executionLogPath 后原样 rethrow（仅包装不吞错，既有上抛语义不变；
   //   主体语句保持原缩进不动，符合最小变更铁律）。
   try {
+  options.signal?.throwIfAborted();
   if (!parseResult.input) {
     const message = buildDelegateExecutorInputIssueMessage(parseResult.issues);
     const failedResult = buildToolResult({
@@ -1249,11 +1212,12 @@ export async function runDelegatedTask(
     });
     executionLog.errors.push(message);
 
-    return attachTaskOutputTimes({
+    return await attachTaskOutputTimes({
       result: failedResult,
       log: executionLog,
       finalOutputDir: options.finalOutputDir,
       startAt: taskStartedAt,
+      signal: options.signal,
     });
   }
 
@@ -1346,6 +1310,7 @@ export async function runDelegatedTask(
   //   恒 stateful=true 起步，经首轮 store 回显验证自动判定端点是否支持 ID 续接（支持→缓存
   //   previous_response_id 续接增量；不支持→本实例自动禁用退全量重传防静默丢历史）。
   const adapterInitConfig: AdapterInitConfig = {
+    signal: options.signal,
     api: {
       baseUrl: options.assistantConfig.executorModel.baseUrl,
       apiKey: options.assistantConfig.executorModel.apiKey,
@@ -1360,21 +1325,16 @@ export async function runDelegatedTask(
     },
   };
   const adapterSetup = await initAdapterWithFallback(adapterInitConfig);
-  const adapter = adapterSetup.adapter;
+  adapter = adapterSetup.adapter;
   warnCodingPlanMismatch(adapterSetup.protocol, options.assistantConfig.executorModel.baseUrl);
-  // ★ 阶段四（方案 §5.2）：适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；
-  //   消费侧 L576 职责已移交 adapter.sendMessage 排水——显示视图权威仍在 record 侧）
-  if (options.recordSession) {
-    options.recordSession.registerAdapterInsertSink((message) => adapter.insertMessage(message));
-  }
 
   let structuredPayload: ExecutorStructuredPayload | null = null;
-  const toolCallLogById = new Map<string, ExecutorExecutionLogToolCall>();
 
   // 工具调用循环
   while (true) {
+    options.signal?.throwIfAborted();
 
-    // ★ 任务级交互消息·安全点二（工具批次结束/循环轮起点）：到达此点必经 Promise.all 汇聚
+    // ★ 任务级交互消息·安全点二（工具批次结束/循环轮起点）：到达此点必经整批allSettled汇聚
     //   （并发批次全部结束）+ 全部 role:'tool' 已 push 同步收口，或无工具轮回填
     //   continue；批次期间到达的排队消息在此注入（序位=数组末尾），本轮请求即携带——
     //   批次收口到本轮 create 之间无 await，注入必然生效。
@@ -1410,16 +1370,20 @@ export async function runDelegatedTask(
     options.onTurnEnd?.({ reasoning: thinking, hasToolCalls: toolCalls.length > 0 });
 
     // ② content：trim 为空 = 助手未回复，不动作；非空先抓取 ```json 围栏块并按既有
-    //   parseExecutorStructuredPayload 标准判定（语义不放宽）：合格 = 该输出实际为最终输出 →
+    //   仅零工具轮调用parseExecutorStructuredPayload；有工具时正文仍是中间输出。
+    //   parser标准判定（语义不放宽）：合格 = 该输出实际为最终输出 →
     //   停止执行任务（结构化落库于此完成；markTerminal/完成事件由本函数返回值经 main-agent
     //   委派闭包既有路径触发——完结链路复用，仅触发点前移至 content 处理点）
-    if (assistantContent) {
+    if (assistantContent && toolCalls.length === 0) {
       const parseResultPayload = await parseExecutorStructuredPayload({
+        artifactOrigin: options.taskContext,
+        signal: options.signal,
         raw: assistantContent,
         deliveryType,
         finalOutputDir: options.finalOutputDir,
         outputDir: options.outputDir,
       });
+      options.signal?.throwIfAborted();
 
       if (parseResultPayload.payload) {
         structuredPayload = parseResultPayload.payload;
@@ -1436,6 +1400,9 @@ export async function runDelegatedTask(
       // 未命中最终输出判定 = 中间轮 content：以 assistantContent 原文（不剥任何标记、不做任何
       // 回复判定）直接落一条完成态（非 loading）条目写入记录存储，供前端一次性原样渲染（store
       // 内部幂等：冻结态 no-op、空正文不落条目），随后任务继续执行（不终止、不修复轮）
+      options.recordSession?.sealAssistantReply(assistantContent);
+    } else if (assistantContent) {
+      // 正文与工具可合法并存；有待处理调用时绝不执行会复制交付文件的final parser。
       options.recordSession?.sealAssistantReply(assistantContent);
     }
 
@@ -1461,15 +1428,14 @@ export async function runDelegatedTask(
       }) as RuntimeMessage,
     );
 
-    const threads: Promise<{ id: string; result: ToolResult }>[] = [];
+    const threads: Promise<{ id: string; result: ToolResult; finishedAt: string }>[] = [];
+    activeToolThreads = threads;
     const invalidToolCallResultById = new Map(
       invalidToolCallResults.map((item) => [item.id, item]),
     );
 
     for (const toolCall of toolCalls) {
-      if (options.signal?.aborted) {
-        throw options.signal.reason ?? new Error(ERR_ABORTED);
-      }
+      options.signal?.throwIfAborted();
 
       options.onThinking?.(buildExecutorToolProgressText({
         toolName: toolCall.function.name,
@@ -1483,29 +1449,66 @@ export async function runDelegatedTask(
         name: toolCall.function.name,
         arguments: toolCall.function.arguments,
       });
-      toolCallLogById.set(toolCall.id, logToolCall);
 
       const invalidToolCallResult = invalidToolCallResultById.get(toolCall.id);
-      if (invalidToolCallResult) {
-        threads.push(Promise.resolve(invalidToolCallResult));
-        continue;
-      }
+      const executionThread = invalidToolCallResult
+        ? Promise.resolve(invalidToolCallResult)
+        : executeToolCall(
+          toolCall.function.name,
+          toolCall.function.arguments,
+          toolCall.id,
+          toolContext,
+        );
 
-      const executionThread = executeToolCall(
-        toolCall.function.name,
-        toolCall.function.arguments,
-        toolCall.id,
-        toolContext,
-      );
-
-      threads.push(executionThread);
+      const notifyToolResult = (execution: ToolResult, finishedAt: string): void => {
+        // The real tool result has already been recorded in the execution log. A missing
+        // durable receipt must halt model continuation; advisory UI callbacks remain isolated.
+        options.onToolSettled?.(toolCall.function.name, execution.success, toolCall.id, finishedAt);
+        let observerFailures = 0;
+        try {
+          options.onThinking?.(buildExecutorToolProgressText({
+            toolName: toolCall.function.name,
+            status: execution.success ? 'completed' : 'failed',
+          }), { type: 'tool-progress' });
+        } catch { observerFailures++; }
+        try {
+          options.onToolResult?.(toolCall.function.name, execution.success, execution.message, toolCall.id, finishedAt);
+        } catch { observerFailures++; }
+        if (observerFailures) {
+          console.info('[executor-agent] tool result observer failures=%d', observerFailures);
+        }
+      };
+      // 真实settle时采时/发事实；模型仍等待整批且按原call顺序回填，不改批次屏障。
+      threads.push(executionThread.then((toolCallResult) => {
+        const finishedAt = new Date().toISOString();
+        const execution = toolCallResult.result;
+        completeExecutionLogToolCall(logToolCall, execution, finishedAt);
+        if (!execution.success) executionLog.errors.push(execution.message);
+        notifyToolResult(execution, finishedAt);
+        return { ...toolCallResult, finishedAt };
+      }, (error) => {
+        const finishedAt = new Date().toISOString();
+        const failure = buildToolResult({
+          success: false,
+          code: 'TOOL_EXECUTION_EXCEPTION',
+          message: ensureErrorMessage(error),
+        });
+        completeExecutionLogToolCall(logToolCall, failure, finishedAt);
+        executionLog.errors.push(failure.message);
+        notifyToolResult(failure, finishedAt);
+        throw error;
+      }));
     }
 
-    const toolCallResults = await Promise.all(threads);
-
-    if (options.signal?.aborted) {
-      throw options.signal.reason ?? new Error(ERR_ABORTED);
-    }
+    const settledResults = await Promise.allSettled(threads);
+    options.signal?.throwIfAborted();
+    const rejectedResult = settledResults.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (rejectedResult) throw rejectedResult.reason;
+    const toolCallResults = settledResults.map((result) =>
+      (result as PromiseFulfilledResult<{ id: string; result: ToolResult; finishedAt: string }>).value,
+    );
 
     for (const toolCallResult of toolCallResults) {
       const execution = toolCallResult.result;
@@ -1513,24 +1516,6 @@ export async function runDelegatedTask(
       const findToolCallEntity = toolCalls.find((x) => x.id === toolCallId);
       if (!findToolCallEntity) {
         continue;
-      }
-
-      options.onThinking?.(buildExecutorToolProgressText({
-        toolName: findToolCallEntity.function.name,
-        status: execution.success ? 'completed' : 'failed',
-      }), { type: 'tool-progress' });
-
-      options.onToolResult?.(
-        findToolCallEntity.function.name,
-        execution.success,
-        execution.message,
-        findToolCallEntity.id,
-      );
-
-      const logToolCall = toolCallLogById.get(findToolCallEntity.id);
-      completeExecutionLogToolCall(logToolCall, execution);
-      if (!execution.success) {
-        executionLog.errors.push(execution.message);
       }
 
       runtimeMessages.push({
@@ -1557,14 +1542,18 @@ export async function runDelegatedTask(
 
       try {
         resultData = await buildExecutorResultData({
+          taskContext:options.taskContext,
+          signal:options.signal,
           payload: structuredPayload,
           deliveryType,
           context: toolContext as ExecutorRuntimeContext,
           outputDir: options.outputDir,
         });
+        options.signal?.throwIfAborted();
         // R5②：再收集复制到 output 后的最终交付路径
         deliveredFilePaths.push(...collectResultDeliveredFilePaths(resultData, deliveryType));
       } catch (error) {
+        options.signal?.throwIfAborted();
         const failedResult = buildToolResult({
           success: false,
           code: ERR_DELEGATED_TASK_FILE_DELIVERY_FAILED,
@@ -1572,11 +1561,12 @@ export async function runDelegatedTask(
         });
         executionLog.errors.push(failedResult.message);
 
-        return attachTaskOutputTimes({
+        return await attachTaskOutputTimes({
           result: failedResult,
           log: executionLog,
           finalOutputDir: options.finalOutputDir,
           startAt: taskStartedAt,
+          signal: options.signal,
         });
       }
     }
@@ -1597,25 +1587,38 @@ export async function runDelegatedTask(
       data: resultData,
     });
 
-    return attachTaskOutputTimes({
+    return await attachTaskOutputTimes({
       result: finalResult,
       log: executionLog,
       finalOutputDir: options.finalOutputDir,
       startAt: taskStartedAt,
+      signal: options.signal,
     });
   } finally {
-    // ★ 阶段一接线（方案 §四.2/§六.2）：适配器实例随任务结束释放（幂等）——
-    //   insert 排队残留上报后清空、回调注册表注销；任务失败统一消息化路径（不上抛）
-    //   与 apiErrorHit 现场保留豁免均不因 close 受影响
-    adapter.close();
-    await removeTemporaryPaths(
-      excludeDeliveredPathsFromTemporaryPaths(
-        structuredPayload.temporaryPaths,
-        deliveredFilePaths,
-      ),
-    );
+    const cleanup = await cleanupTaskTemporaryPaths({
+      workspaceDir: options.finalOutputDir,
+      temporaryPaths: structuredPayload.temporaryPaths,
+      protectedPaths: [
+        ...deliveredFilePaths,
+        ...(structuredPayload.protocolFilePaths ?? []),
+        ...(options.currentUploadedFiles ?? []).map((file) => file.absolutePath),
+        SCRIPTS_TOOLS_DIR,
+        path.join(path.dirname(SCRIPTS_TOOLS_DIR), 'dyn-tools'),
+        EXECUTOR_WORKER_SKILLS_DIR,
+        getCustomSkillsDir(),
+        getBuiltinOverridesDir(),
+        ...(options.finalOutputDir ? [path.join(options.finalOutputDir, 'executor_messages.json')] : []),
+      ],
+    });
+    if (cleanup.deferredPaths.length || cleanup.failedPaths.length) {
+      console.info('[executor-agent] task cleanup deferred=%d failed=%d',
+        cleanup.deferredPaths.length, cleanup.failedPaths.length);
+    }
+    options.signal?.throwIfAborted();
   }
   } catch (error) {
+    // 取消/派发异常也等待已启动工具真实收尾，才快照错误现场并释放adapter所有权。
+    await Promise.allSettled(activeToolThreads);
     // ★ API 报错保留现场（方案⑤5.3/⑥#16）：写盘失败（saveExecutionLogOnError 返回
     //   undefined）时不挂载路径，错误原样上抛——失败结果 data 保持空对象，降级安全。
     const executionLogPathOnError = await saveExecutionLogOnError({
@@ -1623,9 +1626,18 @@ export async function runDelegatedTask(
       finalOutputDir: options.finalOutputDir,
       errorMessage: ensureErrorMessage(error),
     });
-    if (executionLogPathOnError) {
-      (error as Error & { executionLogPath?: string }).executionLogPath = executionLogPathOnError;
+    if (executionLogPathOnError && error !== null
+      && (typeof error === 'object' || typeof error === 'function')) {
+      // AbortSignal.reason允许primitive或冻结对象；附件失败不得遮蔽原取消/API原因。
+      try {
+        (error as Error & { executionLogPath?: string }).executionLogPath = executionLogPathOnError;
+      } catch {
+        // 错误现场已保存，原reason仍原样抛出。
+      }
     }
     throw error;
+  } finally {
+    await Promise.allSettled(activeToolThreads);
+    adapter?.close();
   }
 }

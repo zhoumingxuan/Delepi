@@ -96,6 +96,7 @@ export interface AppSettings {
  * 包含配置状态摘要和完整 AppSettings
  */
 export interface ConfigGetResult {
+  revision?: number;
   /** 是否已配置（至少一个模型的 apiKey 已设置） */
   configured: boolean;
   /** 当前主模型名称 */

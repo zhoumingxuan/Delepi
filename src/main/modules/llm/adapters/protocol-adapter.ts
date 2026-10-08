@@ -106,6 +106,8 @@ export interface AdapterTurnResult {
 /** init 注入配置 */
 export interface AdapterInitConfig {
   api: AdapterApiConfig;
+  /** 任务取消也覆盖初始化探查；仅运行期使用，不属于可持久化配置。 */
+  signal?: AbortSignal;
   /** 档位双形态（对齐 tools 双形态，P7 live-binding 同源纪律）：
    *  - string：静态档位（缺省兜底语义）
    *  - () => string：惰性 getter（宿主传 () => configManager.getSettings().xxxThinkingLevel，
@@ -157,13 +159,14 @@ export abstract class ProtocolAdapter {
   protected hooksRef: AdapterInitConfig['hooks'] = undefined;
   protected initialized = false;
   protected closed = false;
-  /** 终结标志（close 或任一轮 sendMessage 终结后置位；insert 拒收 terminal 判据） */
+  /** 实例终结标志；单轮模型结束后仍可在下一工具轮前追加。 */
   protected terminal = false;
   /** 停止请求标志（宿主可提前置位冻结入队；对齐 record freezeForStop L538-543 语义） */
   protected stopRequested = false;
 
   // ---------------- insert 排队基座（FIFO + 四拒收） ----------------
   protected pendingMessages: AdapterPendingMessage[] = [];
+  protected initSignal: AbortSignal | undefined;
 
   /** ① 初始化：注入大模型 API 配置 + 思考程度 + system message（参数级扩展：
    *  hooks.onStreamRetry（重试复位承载）与 tools（实例工具集））。
@@ -172,6 +175,7 @@ export abstract class ProtocolAdapter {
    *  message} 表达；基类默认实现保留参数校验与配置快照职责，不含协议探查
    *  （协议探查由子类 init 在基类成功后追加，目标二）。 */
   async init(config: AdapterInitConfig): Promise<AdapterInitResult> {
+    config?.signal?.throwIfAborted();
     if (this.initialized) {
       return { success: false, message: 'adapter already initialized（实例即配置快照，禁止二次 init）' };
     }
@@ -196,6 +200,7 @@ export abstract class ProtocolAdapter {
     this.systemMessage = config.systemMessage;
     this.toolsInput = config.tools;
     this.hooksRef = config.hooks;
+    this.initSignal = config.signal;
     this.initialized = true;
     return { success: true };
   }
@@ -217,6 +222,8 @@ export abstract class ProtocolAdapter {
     }
     this.pendingMessages.length = 0;
     this.releaseResources();
+    this.hooksRef = undefined;
+    this.initSignal = undefined;
   }
 
   /** 子类资源释放钩子（close 时调用一次；协议层幂等空操作默认） */
@@ -313,12 +320,17 @@ export abstract class ProtocolAdapter {
    *  形态，不触碰 openai-client.ts）。判定映射：HTTP 404 = 协议不存在 = 初始化失败
    *  （success:false，message 携带端点与 404 事实）；收到任何其他 HTTP 状态响应（含
    *  400/401/403/405）= 协议存在 = 探查通过；网络层失败/超时 = 探查未通过
-   *  （success:false 记录原因）。探查请求体仅携带标记键（无凭据、无对话数据）。 */
+   *  （success:false 记录原因）。请求体仅携带探查标记；认证header使用运行期凭据，不含对话数据。 */
   protected async probeProtocolEndpoint(endpointPath: string): Promise<AdapterInitResult> {
+    const signal = this.initSignal;
+    signal?.throwIfAborted();
     const baseUrl = typeof this.apiConfig?.baseUrl === 'string' ? this.apiConfig.baseUrl : '';
     const trimmedBaseUrl = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
     const probeUrl = `${trimmedBaseUrl}${endpointPath}`;
     const controller = new AbortController();
+    const onUserAbort = () => controller.abort(signal?.reason);
+    signal?.addEventListener('abort', onUserAbort, { once: true });
+    if (signal?.aborted) onUserAbort();
     const timeoutTimer = setTimeout(
       () => controller.abort(new DOMException('timeout', 'TimeoutError')),
       ADAPTER_PROTOCOL_PROBE_TIMEOUT_MS,
@@ -337,15 +349,18 @@ export abstract class ProtocolAdapter {
       if (res.body) {
         await res.body.cancel().catch(() => undefined); // 探查只看状态码，响应体即弃
       }
+      signal?.throwIfAborted();
       if (res.status === 404) {
         return { success: false, message: `协议探查失败：POST ${probeUrl} 返回 HTTP 404（端点不存在，协议不支持）` };
       }
       return { success: true };
     } catch (error) {
+      signal?.throwIfAborted(); // 用户取消不属于协议探查失败，禁止触发下一协议请求
       const reason = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
       return { success: false, message: `协议探查失败：POST ${probeUrl} 网络层失败/超时（${reason}）` };
     } finally {
       clearTimeout(timeoutTimer);
+      signal?.removeEventListener('abort', onUserAbort);
     }
   }
 }

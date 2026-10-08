@@ -4,9 +4,11 @@
  */
 
 import path from 'node:path';
-import { copyFile, mkdir, stat } from 'node:fs/promises';
-import { sanitizeFilename } from './storage-paths';
+import { lstat } from 'node:fs/promises';
 import { appendConversationOutputFileManifest } from './uploads';
+import { publishArtifactFile, registerExistingArtifact, type ArtifactCopyOptions } from '../modules/artifacts/service';
+
+export type { ArtifactCopyOptions } from '../modules/artifacts/service';
 
 /**
  * 解析唯一输出路径（避免覆盖）
@@ -24,11 +26,12 @@ export async function resolveUniqueOutputPath(
 
   while (true) {
     try {
-      await stat(candidatePath);
+      await lstat(candidatePath);
       // 文件存在，生成新名称
       candidatePath = path.join(outputDir, `${base}(${counter})${ext}`);
       counter += 1;
-    } catch {
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       // 文件不存在，可用
       return candidatePath;
     }
@@ -38,42 +41,25 @@ export async function resolveUniqueOutputPath(
 export async function copyFileToOutputDir(
   sourcePath: string,
   outputDir: string | undefined,
+  options?: ArtifactCopyOptions,
 ): Promise<string> {
-  if (!sourcePath || !outputDir) {
-    return sourcePath;
-  }
+  return publishArtifactFile(sourcePath, outputDir, options);
+}
 
-  const resolvedSource = path.resolve(sourcePath);
-  const resolvedOutputDir = path.resolve(outputDir);
-  const relativeToOutput = path.relative(resolvedOutputDir, resolvedSource);
-
-  if (relativeToOutput && !relativeToOutput.startsWith('..') && !path.isAbsolute(relativeToOutput)) {
-    return resolvedSource;
-  }
-
-  const sourceStat = await stat(resolvedSource);
-  if (!sourceStat.isFile()) {
-    return sourcePath;
-  }
-
-  await mkdir(resolvedOutputDir, { recursive: true });
-  const targetPath = await resolveUniqueOutputPath(
-    resolvedOutputDir,
-    sanitizeFilename(path.basename(resolvedSource)),
-  );
-  await copyFile(resolvedSource, targetPath);
-  return targetPath;
+/** Read-only registration keeps legacy/direct deliverables in place. */
+export async function registerExistingArtifactOutput(sourcePath: string, options?: ArtifactCopyOptions): Promise<string> {
+  return (await registerExistingArtifact(sourcePath, options)).path;
 }
 
 export async function copyFilesToOutputDir(
   sourcePaths: string[],
   outputDir: string | undefined,
-  options?: { conversationId?: string },
+  options?: ArtifactCopyOptions & { conversationId?: string },
 ): Promise<string[]> {
   const outputPaths: string[] = [];
 
   for (const sourcePath of sourcePaths) {
-    outputPaths.push(await copyFileToOutputDir(sourcePath, outputDir));
+    outputPaths.push(await copyFileToOutputDir(sourcePath, outputDir, options));
   }
 
   // P9: 追加写入 manifest.json(沿用 ai_fr appendConversationOutputFileManifest)

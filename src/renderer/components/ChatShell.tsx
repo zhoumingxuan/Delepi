@@ -21,7 +21,8 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Alert, App as AntApp, Flex, theme } from 'antd';
+import { Alert, App as AntApp, Button, Flex, Typography, theme } from 'antd';
+import { HistoryOutlined, FolderOutlined } from '@ant-design/icons';
 import { ChatArea } from './ChatArea';
 import { ChatHeader } from './ChatHeader';
 import { ConfigDrawer } from './ConfigDrawer';
@@ -41,11 +42,23 @@ import type { ConversationCleanupOptions } from '@shared/types/conversation-clea
 import { ConfigCheckModal } from './ConfigCheckModal';
 import { CleanupConversationsModal } from './CleanupConversationsModal';
 import { useConfigReadiness } from '../hooks/useConfigReadiness';
+import { MuseCenterDrawer } from './MuseCenterDrawer';
+import { AutonomyCenterDrawer } from './AutonomyCenterDrawer';
 
 export function ChatShell() {
   const screens = useMemo(() => ({ lg: true }), []); // 适配原 ai_fr Grid.useBreakpoint 简化为桌面端
   const { token } = theme.useToken();
   const { message: messageApi } = AntApp.useApp();
+  const [museOpen, setMuseOpen] = useState(false);
+  const [autonomyOpen, setAutonomyOpen] = useState(false);
+  const [museTab, setMuseTab] = useState('activity');
+  const [appVersion, setAppVersion] = useState('');
+  useEffect(() => {
+    let active = true;
+    void window.electronAPI?.muse?.appInfo().then(info => { if (active && info.ok) setAppVersion(info.result.version); });
+    const unsubscribe = window.electronAPI?.muse?.onOpenSettings(() => setSettingsOpen(true));
+    return () => { active = false; unsubscribe?.(); };
+  }, []);
 
   const {
     messages,
@@ -550,6 +563,12 @@ const { check, canCheck } = useConfigReadiness({
           onSettingsClick={handleSettingsClick}
         />
 
+        <Flex gap={8} style={{ padding: '0 24px 6px' }}>
+          <Button data-testid="muse-activity-open" size="small" icon={<HistoryOutlined />} onClick={() => { setMuseTab('activity'); setMuseOpen(true); }}>活动</Button>
+          <Button data-testid="muse-artifact-open" size="small" icon={<FolderOutlined />} onClick={() => { setMuseTab('artifacts'); setMuseOpen(true); }}>成果</Button>
+          <Button data-testid="autonomy-center-open" size="small" onClick={() => setAutonomyOpen(true)}>主题与权限</Button>
+        </Flex>
+
         {/* ★ D3 修复：error state 可见出口（当前会话错误条）
             仅当存在错误且处于具体会话（error 生命周期：仅 sendMessage catch 活跃会话写入，
             切换/新建会话时 setError(null) 清空）时显示；chat:error 事件路径经 messageApi
@@ -614,7 +633,13 @@ const { check, canCheck } = useConfigReadiness({
             onRemoveFile={removePendingFile}
           />
         </Flex>
+        <Flex justify="flex-end" style={{ padding: '4px 24px 8px', flexShrink: 0 }}>
+          <Typography.Text data-testid="muse-version" type="secondary" style={{ fontSize: 12 }} aria-label="应用版本">{appVersion ? `Delepi ${appVersion}` : ''}</Typography.Text>
+        </Flex>
       </div>
+
+      <MuseCenterDrawer open={museOpen} onClose={() => setMuseOpen(false)} conversationId={conversationId} initialTab={museTab} />
+      <AutonomyCenterDrawer open={autonomyOpen} onClose={() => setAutonomyOpen(false)} conversationId={conversationId} />
 
       <ConfigDrawer
         open={settingsOpen}

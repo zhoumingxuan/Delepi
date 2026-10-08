@@ -3,17 +3,29 @@
  * 管理三类配置：写死配置、应用可配配置（SQLite持久化）、只读配置（运行时推断）
  */
 
+import { app } from 'electron';
 import { HARDCODED_CONFIG, DEFAULT_MAX_TOKENS } from './env';
 import type { HardcodedConfig, AppSettings, ComputedConfig, AppConfig } from '../../types/config';
 import { DEFAULT_APP_SETTINGS } from '@shared/constants';
 import type { ModelProfile } from '@shared/types/config';
-import { listSettings, saveSetting } from '../../db';
+import { getDb, listSettings } from '../../db';
+import { readConfigRevision, writeSettingsTransaction } from './settings-transaction';
 import { v4 as uuidv4 } from 'uuid';
 
 export class ConfigManager {
   private hardcoded: HardcodedConfig;
   private settings: AppSettings;
   private computed: ComputedConfig;
+  private readonly modelConfigurationListeners = new Set<()=>void>();
+
+  onModelConfigurationChanged(listener:()=>void):()=>void {
+    this.modelConfigurationListeners.add(listener);return ()=>this.modelConfigurationListeners.delete(listener);
+  }
+  private notifyModelConfigurationChanged(previous:AppSettings):void {
+    const keys: Array<keyof AppSettings>=['mainModelBaseUrl','mainModelName','mainModelApiKey','executorModelBaseUrl','executorModelName','executorModelApiKey'];
+    if(!keys.some(key=>previous[key]!==this.settings[key]))return;
+    for(const listener of this.modelConfigurationListeners) {try{listener();}catch{ /* Config persisted; consumers remain fail-closed until a trusted refresh. */ }}
+  }
 
   constructor() {
     this.hardcoded = { ...HARDCODED_CONFIG };
@@ -47,12 +59,29 @@ export class ConfigManager {
 
   /** 更新应用配置（单个键） */
   setSetting<K extends keyof AppSettings>(key: K, value: AppSettings[K]): void {
+    const previous={...this.settings};
     this.settings[key] = value;
+    this.notifyModelConfigurationChanged(previous);
   }
 
   /** 批量更新应用配置 */
   patchSettings(patch: Partial<AppSettings>): void {
+    const previous={...this.settings};
     Object.assign(this.settings, patch);
+    this.notifyModelConfigurationChanged(previous);
+  }
+
+  getRevision(): number { return readConfigRevision(getDb()); }
+
+  /** Publish memory only after the whole SQLite transaction commits. */
+  commitSettings(patch: Partial<AppSettings>, expectedRevision?: number): number {
+    const copied = JSON.parse(JSON.stringify(patch)) as Partial<AppSettings>;
+    const nextSettings = { ...this.settings, ...copied };
+    const revision = writeSettingsTransaction(getDb(), copied, expectedRevision);
+    const previous=this.settings;
+    this.settings = nextSettings;
+    this.notifyModelConfigurationChanged(previous);
+    return revision;
   }
 
   /** 重新加载配置（从 SQLite settings 表读取并合并默认值） */
@@ -65,50 +94,56 @@ export class ConfigManager {
       }
     }
 
-    // P1-05: 过滤空字符串值，避免覆盖非空默认值
+    // 思考档位的空串表示服务商默认，须保留用户选择；其余空值继续过滤。
     const filtered: Partial<AppSettings> = {};
     for (const [key, value] of Object.entries(saved)) {
-      if (value !== '' && value !== null && value !== undefined) {
+      const isThinkingLevel = key === 'mainThinkingLevel' || key === 'executorThinkingLevel';
+      if ((value !== '' || isThinkingLevel) && value !== null && value !== undefined) {
         (filtered as Record<string, unknown>)[key] = value;
       }
     }
 
-    this.settings = { ...DEFAULT_APP_SETTINGS, ...filtered };
+    const nextSettings = { ...DEFAULT_APP_SETTINGS, ...filtered };
+    const repairs: Partial<AppSettings> = {};
 
     // 【模型配置方案使能】方案列表为空时创建默认方案：以当前生效配置（三组九键+多模态开关/思考档位）
     // 为快照源（对齐 profiles-save 的另存为语义，含 ModelProfile 全部 12 个配置键的合理默认值），
     // 保证首启/清空后始终存在一个可用方案，前端方案 Select 不再因空列表被禁用；创建后持久化写回 settings 表。
-    if (this.settings.modelProfiles.length === 0) {
+    if (nextSettings.modelProfiles.length === 0) {
       const defaultProfile: ModelProfile = {
         id: uuidv4(),
         name: '默认方案',
-        mainModelBaseUrl: this.settings.mainModelBaseUrl,
-        mainModelApiKey: this.settings.mainModelApiKey,
-        mainModelName: this.settings.mainModelName,
-        mainModelMultimodal: this.settings.mainModelMultimodal,
-        mainThinkingLevel: this.settings.mainThinkingLevel,
-        executorModelBaseUrl: this.settings.executorModelBaseUrl,
-        executorModelApiKey: this.settings.executorModelApiKey,
-        executorModelName: this.settings.executorModelName,
-        executorThinkingLevel: this.settings.executorThinkingLevel,
-        visionLlmBaseUrl: this.settings.visionLlmBaseUrl,
-        visionLlmApiKey: this.settings.visionLlmApiKey,
-        visionLlmModel: this.settings.visionLlmModel,
+        mainModelBaseUrl: nextSettings.mainModelBaseUrl,
+        mainModelApiKey: nextSettings.mainModelApiKey,
+        mainModelName: nextSettings.mainModelName,
+        mainModelMultimodal: nextSettings.mainModelMultimodal,
+        mainThinkingLevel: nextSettings.mainThinkingLevel,
+        executorModelBaseUrl: nextSettings.executorModelBaseUrl,
+        executorModelApiKey: nextSettings.executorModelApiKey,
+        executorModelName: nextSettings.executorModelName,
+        executorThinkingLevel: nextSettings.executorThinkingLevel,
+        visionLlmBaseUrl: nextSettings.visionLlmBaseUrl,
+        visionLlmApiKey: nextSettings.visionLlmApiKey,
+        visionLlmModel: nextSettings.visionLlmModel,
       };
-      this.settings.modelProfiles = [defaultProfile];
-      saveSetting('modelProfiles', this.settings.modelProfiles);
+      nextSettings.modelProfiles = [defaultProfile];
+      repairs.modelProfiles = nextSettings.modelProfiles;
     }
 
     // 【模型配置方案使能】activeProfileId 为空或指向不存在的方案但方案列表非空时，
     // 自动补选第一个方案并持久化写回，保证链路C（修改配置写回激活方案）不因激活键为空静默失效。
-    const activeProfileIdValid = this.settings.modelProfiles.some(
-      (item) => item.id === this.settings.activeProfileId,
+    const activeProfileIdValid = nextSettings.modelProfiles.some(
+      (item) => item.id === nextSettings.activeProfileId,
     );
-    if (this.settings.modelProfiles.length > 0 && !activeProfileIdValid) {
-      this.settings.activeProfileId = this.settings.modelProfiles[0].id;
-      saveSetting('activeProfileId', this.settings.activeProfileId);
+    if (nextSettings.modelProfiles.length > 0 && !activeProfileIdValid) {
+      nextSettings.activeProfileId = nextSettings.modelProfiles[0].id;
+      repairs.activeProfileId = nextSettings.activeProfileId;
     }
 
+    if (Object.keys(repairs).length) writeSettingsTransaction(getDb(), repairs);
+    const previous=this.settings;
+    this.settings = nextSettings;
+    this.notifyModelConfigurationChanged(previous);
     this.computed = this.buildComputedConfig();
   }
 
@@ -123,12 +158,11 @@ export class ConfigManager {
 
   /** 构建运行时推断的只读配置 */
   private buildComputedConfig(): ComputedConfig {
-    // 阶段1使用默认值，阶段2引入 electron app 对象
     return {
-      APP_VERSION: '0.1.0',
+      APP_VERSION: app.getVersion(),
       APP_NAME: 'Delepi',
-      APP_PLATFORM: 'win32',
-      APP_DATA_DIR: '',
+      APP_PLATFORM: process.platform,
+      APP_DATA_DIR: app.getPath('userData'),
     };
   }
 }

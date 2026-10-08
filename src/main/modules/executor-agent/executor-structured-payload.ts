@@ -8,7 +8,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { isRecord } from '../../utils/index';
-import { copyFileToOutputDir } from '../../utils/storage-output';
+import { copyFileToOutputDir, registerExistingArtifactOutput, type ArtifactCopyOptions } from '../../utils/storage-output';
 import {
   JSON_CODE_BLOCK_START,
   JSON_CODE_BLOCK_END,
@@ -30,6 +30,8 @@ export interface ExecutorStructuredPayload {
   warnings: string[];
   errors: string[];
   temporaryPaths: string[];
+  /** 主进程实际读取/复制的协议文件；仅供收尾保护，不是新增模型授权。 */
+  protocolFilePaths?: string[];
 }
 
 // ============================================================
@@ -245,12 +247,11 @@ async function readDeliverable(
 async function copyDeliverableToOutputDir(
   sourcePath: string,
   outputDir: string | undefined,
+  options?: ArtifactCopyOptions,
 ): Promise<string> {
-  try {
-    return await copyFileToOutputDir(sourcePath, outputDir);
-  } catch {
-    return sourcePath;
-  }
+  if (!sourcePath) return '';
+  // A failed publish is a parse/delivery failure, never a silently "saved" source fallback.
+  return copyFileToOutputDir(sourcePath, outputDir, options);
 }
 
 function getDocumentPathFieldName(deliveryType: ExecutorDeliveryType): string | null {
@@ -331,6 +332,8 @@ export async function parseExecutorStructuredPayload(options: {
   deliveryType: ExecutorDeliveryType;
   finalOutputDir?: string;
   outputDir?: string;
+  artifactOrigin?: ArtifactCopyOptions['artifactOrigin'];
+  signal?: AbortSignal;
 }): Promise<ExecutorStructuredPayloadParseResult> {
   try {
     const parsedJson = parseFinalOutputJson(options.raw);
@@ -348,9 +351,14 @@ export async function parseExecutorStructuredPayload(options: {
     const deliverableAbsolutePath = finalOutput.payload.deliverableFilename && options.finalOutputDir
       ? path.join(options.finalOutputDir, finalOutput.payload.deliverableFilename)
       : '';
+    const artifactOptions = { artifactOrigin: options.artifactOrigin, signal: options.signal };
     const deliverableOutputPath = shouldCopyDeliverableToOutput(options.deliveryType)
-      ? await copyDeliverableToOutputDir(deliverableAbsolutePath, options.outputDir)
+      ? await copyDeliverableToOutputDir(deliverableAbsolutePath, options.outputDir, artifactOptions)
       : deliverableAbsolutePath;
+
+    if (!shouldCopyDeliverableToOutput(options.deliveryType) && deliverableAbsolutePath && options.artifactOrigin) {
+      await registerExistingArtifactOutput(deliverableAbsolutePath, artifactOptions);
+    }
 
     const summary =
       await readFinalOutputFileIfPresent(
@@ -393,6 +401,14 @@ export async function parseExecutorStructuredPayload(options: {
         warnings: finalOutput.payload.warnings,
         errors: finalOutput.payload.errors,
         temporaryPaths: readStringArrayField(cleanableInfo, 'temporary_paths'),
+        protocolFilePaths: options.finalOutputDir
+          ? [
+            finalOutput.payload.summaryFilename,
+            finalOutput.payload.deliverableFilename,
+            finalOutput.payload.cleanableInfoFilename,
+          ].filter(Boolean).map((filename) => path.join(options.finalOutputDir!, filename))
+            .concat(deliverableOutputPath ? [deliverableOutputPath] : [])
+          : [],
       },
       error: null,
     };

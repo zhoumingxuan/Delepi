@@ -14,5 +14,11 @@ extraResources:
   - from: skills
     to: skills
 mac:
-  target: dmg
-  icon: resources/icon.png
+  target:
+    - target: dmg
+      arch:
+        - arm64
+  icon: resources/icon-mac.png
+  identity: "-"
+  hardenedRuntime: false
+  artifactName: Delepi-${version}-${arch}.${ext}

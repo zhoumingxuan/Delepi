@@ -206,18 +206,18 @@ async function executeScriptToolView(toolName: string | undefined): Promise<Tool
   if (validEntries.length === 0) {
     message =
       '经验库为空（空库属正常状态：经验库内容由使用期沉淀产生，无出厂预置）。' +
-      '可先以【查看协议】确认现状，再按系统提示词【经验工具库维护规范】的维护规程沉淀首批工具。';
+      '当前任务可继续正常执行；已有实际结果若显示复用价值，可在任务摘要记录观察和待验证的维护建议，不自动创建活动经验工具。';
   } else {
     message = `经验库共 ${validEntries.length} 个可用工具${
       invalidEntries.length > 0 ? `；另有 ${invalidEntries.length} 个未通过校验的目录（见 data.invalid_tools）` : ''
     }。`;
   }
 
-  // 超限兜底提示（R2：扫描期自动剔除已在协议层收口，本分支为删除未完全成功时的不可达兜底；不硬阻断，存量工具仍可调用）
+  // 清单容量的兜底提示；扫描器只限制返回清单，不删除磁盘中的旧工具。
   if (validEntries.length > MAX_SCRIPT_TOOLS) {
     data.warning =
-      `SCRIPT_TOOL_DIR_LIMIT：合法工具数 ${validEntries.length} 超过 MAX_SCRIPT_TOOLS=${MAX_SCRIPT_TOOLS}（扫描期自动剔除未完全成功，存量工具仍可调用）；` +
-      '请合并同类工具或手动清理创建时间最旧的工具目录。';
+      `SCRIPT_TOOL_DIR_LIMIT：可用清单数 ${validEntries.length} 超过 MAX_SCRIPT_TOOLS=${MAX_SCRIPT_TOOLS}；` +
+      '旧工具文件保留，不自动删除或合并。可在任务摘要记录待验证的维护建议。';
   }
 
   return buildToolResult({ success: true, message, data });
@@ -564,4 +564,3 @@ async function executeScriptToolProcess(options: {
     });
   });
 }
-

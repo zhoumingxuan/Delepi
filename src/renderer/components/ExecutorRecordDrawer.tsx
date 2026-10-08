@@ -20,7 +20,7 @@
  * - 归档空态（hasRecords=false）：居中"任务记录已随本轮结束归档"（13px secondary），
  *   标题区保留任务名+终态 Tag，关闭按钮可用。
  *
- * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均为 UI 占位轻提示，草稿按 delegateCallId 键控隔离；原"纯只读面板"声明随之废止，§1.2-A 修订）。
+ * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区，草稿按对话、委派、任务身份隔离。
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -393,8 +393,7 @@ function ToolRecordItem(options: { record: ExecutorToolRecord }): ReactElement {
 /** 停止/通知条目（内聚子组件，不外泄）：
  * - notice 为静态单时刻条目：头部不使用“思考 #seq”字样（停止语义与思考语义在数据层解耦后，
  *   渲染层按 kind 独立分发，本组件天然不出现“思考 #N”头部）——停止文案不再冒充思考；
- * - 头部行与思考/工具条目头部行同构（12px/18px colorTextTertiary），语义标识“已停止”
- *   （与文案模板“…已停止，用户手动取消。”动词一致；标题 Tag“已取消”表达任务终态，互补不冲突）；
+ * - 头部区分停止请求与真实终止，避免请求发出时提前声称任务已停。
  * - 正文为纯文本信息条（非 markdown；单条固定文案，无折叠/展开需求，量级确定），
  *   中性浅底 colorFillQuaternary + 次级文本色 colorTextSecondary —— 表达“正常手动取消”，
  *   不借 colorError/colorWarning 语义（避免与失败/中断混淆）。
@@ -402,9 +401,10 @@ function ToolRecordItem(options: { record: ExecutorToolRecord }): ReactElement {
 function NoticeRecordItem(options: { record: ExecutorNoticeRecord }): ReactElement {
   const { record } = options;
   const { token } = theme.useToken();
+  const stopLabel = /真实已停止|已停止，用户手动取消/.test(record.text) ? '真实已停止' : '停止请求';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-      {/* 头部行：已停止 · HH:mm:ss（不显示“思考 #seq”，语义解耦的可观察落点） */}
+      {/* 头部行独立呈现停止事实，不显示“思考 #seq”。 */}
       <div
         style={{
           display: 'flex',
@@ -417,7 +417,7 @@ function NoticeRecordItem(options: { record: ExecutorNoticeRecord }): ReactEleme
         }}
       >
         <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', minWidth: 0 }}>
-          已停止 · {formatEntryClock(record.createdAt)}
+          {stopLabel} · {formatEntryClock(record.createdAt)}
         </span>
       </div>
       {/* 正文信息条：文案全文（模板既有，逐字展示） */}
@@ -451,6 +451,12 @@ const SEND_FAIL_TEXT_OF = (reason?: string): string => {
       return '单条消息过长，请精简后重发';
     case 'not-found':
       return '任务不存在或已清理，消息未发送';
+    case 'message-id-conflict':
+      return '消息标识冲突，消息未发送';
+    case 'storage-error':
+      return '消息未保存，请重试';
+    case 'stale-attempt':
+      return '任务已更换运行，消息未发送';
     default:
       return '消息发送失败，请重试';
   }
@@ -467,7 +473,7 @@ function UserMessageRecordItem(options: { record: ExecutorUserMessageRecord }): 
   const { record } = options;
   const { token } = theme.useToken();
   const stateText =
-    record.state === 'queued' ? '排队中' : record.state === 'delivered' ? '已送达' : '未送达';
+    record.state === 'queued' ? '排队中' : record.state === 'delivered' ? '已进入上下文' : '未送达';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
       <div
@@ -596,27 +602,30 @@ export function ExecutorRecordDrawer(options: {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  /* ★ 任务级草稿键控隔离（模式对齐 ChatShell 主输入草稿 draftsRef 先例：Map<会话ID,草稿>）：
-     按 delegateCallId 键控，openTask 切换 taskView 时恢复目标任务草稿，并发任务互不串扰；
+  /* ★ 任务级草稿键控隔离：按对话、委派、任务完整身份恢复目标草稿，
+     同一委派 ID 的新任务不会继承旧输入；
      useLayoutEffect 在 paint 前完成恢复，避免切换瞬间闪现上一任务草稿 */
+  const taskDraftKey = JSON.stringify([taskView.conversationId, taskView.delegateCallId, taskView.taskId]);
   const [taskDraft, setTaskDraft] = useState('');
   const taskDraftsRef = useRef<Map<string, string>>(new Map());
-  const taskDraftKeyRef = useRef<string>(taskView.delegateCallId);
+  const taskDraftEditsRef = useRef<Map<string, number>>(new Map());
+  const taskDraftKeyRef = useRef<string>(taskDraftKey);
   useLayoutEffect(() => {
-    const nextKey = taskView.delegateCallId;
+    const nextKey = taskDraftKey;
     if (taskDraftKeyRef.current === nextKey) return;
     taskDraftKeyRef.current = nextKey;
     setTaskDraft(taskDraftsRef.current.get(nextKey) ?? '');
-  }, [taskView.delegateCallId]);
+  }, [taskDraftKey]);
 
   /** 任务级轻提示上下文（App.useApp() message；UI-only 占位反馈，不接任何 IPC） */
   const { message } = App.useApp();
   const taskRunning = taskView.status === 'running';
 
-  /** 草稿受控变更：即时落 Map（当前 delegateCallId 键）；恢复/清空均以 Map 为唯一权威 */
+  /** 草稿受控变更：即时落 Map 并记录编辑代次，迟到回执不能清掉新编辑。 */
   const handleTaskDraftChange = (value: string): void => {
     setTaskDraft(value);
-    taskDraftsRef.current.set(taskView.delegateCallId, value);
+    taskDraftsRef.current.set(taskDraftKey, value);
+    taskDraftEditsRef.current.set(taskDraftKey, (taskDraftEditsRef.current.get(taskDraftKey) ?? 0) + 1);
   };
 
   /** 任务级交互消息发送：仅 running 可发；受理成功清草稿（条目由 record-signal 链路出现于时间线），
@@ -624,16 +633,23 @@ export function ExecutorRecordDrawer(options: {
   const handleTaskSend = (): void => {
     const text = taskDraft.trim();
     if (!taskRunning || text.length === 0) return;
+    const submittedKey = taskDraftKey, submittedDraft = taskDraft;
+    const submittedEdit = taskDraftEditsRef.current.get(submittedKey) ?? 0;
+    const stillCurrentDraft = () => taskDraftKeyRef.current === submittedKey
+      && (taskDraftEditsRef.current.get(submittedKey) ?? 0) === submittedEdit
+      && taskDraftsRef.current.get(submittedKey) === submittedDraft;
     void Promise.resolve(onSendTaskMessage?.(taskView.delegateCallId, text))
       .then((result) => {
+        if (!stillCurrentDraft()) return;
         if (result?.accepted) {
-          taskDraftsRef.current.set(taskView.delegateCallId, '');
+          taskDraftsRef.current.set(submittedKey, '');
           setTaskDraft('');
           return;
         }
         void message.info(SEND_FAIL_TEXT_OF(result?.reason));
       })
       .catch(() => {
+        if (!stillCurrentDraft()) return;
         void message.info('消息发送失败，请重试');
       });
   };

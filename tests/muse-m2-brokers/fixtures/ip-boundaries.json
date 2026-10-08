@@ -1,0 +1,16 @@
+{
+  "deniedAddresses": [
+    "0.0.0.0", "0.1.2.3", "10.0.0.1", "100.64.0.1", "127.0.0.1", "169.254.169.254",
+    "172.16.0.1", "172.31.255.254", "192.168.1.1", "198.18.0.1", "224.0.0.1", "255.255.255.255",
+    "::", "::1", "::ffff:127.0.0.1", "::ffff:a9fe:a9fe", "fc00::1", "fd00::1", "fe80::1", "ff02::1",
+    "64:ff9b::a00:1", "2002:0a00:0001::1"
+  ],
+  "deniedUrls": [
+    "http://source.fixture.test/public", "https://user:password@source.fixture.test/public",
+    "https://localhost/public", "https://127.1/public", "https://2130706433/public",
+    "https://0x7f000001/public", "https://[::1]/public", "https://[::ffff:127.0.0.1]/public",
+    "https://source.fixture.test:22/public", "file:///etc/passwd", "data:text/plain,synthetic"
+  ],
+  "syntheticAllowedAddress": "93.184.216.34",
+  "syntheticAllowedUrls": ["https://source.fixture.test/public", "https://redirect.fixture.test/public"]
+}

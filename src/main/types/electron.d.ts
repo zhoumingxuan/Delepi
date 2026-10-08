@@ -6,6 +6,9 @@
 
 /** 通过 contextBridge 暴露给渲染进程的 API */
 export interface ElectronAPI {
+  background: import('@shared/types/background').BackgroundApi;
+  autonomy: import('@shared/types/autonomy').AutonomyApi;
+  muse: import('@shared/types/muse').MuseApi;
   chat: {
     send: (params: import('./ipc').ChatSendParams) => Promise<import('./ipc').ChatSendResult>;
     abort: (conversationId: string) => void;
@@ -27,9 +30,18 @@ export interface ElectronAPI {
     ) => Promise<import('@shared/types/conversation-cleanup').ConversationCleanupResult>;
   };
   config: {
-    get: () => Promise<import('./config').AppSettings>;
-    save: (params: import('./ipc').ConfigSaveParams) => Promise<void>;
+    get: () => Promise<import('@shared/types/config').ConfigGetResult>;
+    save: (params: import('./ipc').ConfigSaveParams & { expectedRevision?: number }) => Promise<{ revision: number }>;
+    saveBatch: (params: { patch: Partial<import('./config').AppSettings>; expectedRevision?: number }) => Promise<{ revision: number }>;
     reload: () => Promise<void>;
+    listProfiles: () => Promise<import('@shared/types/config-profile-io').ProfileListResult>;
+    saveProfile: (params: { name: string; blank?: boolean; expectedRevision?: number }) => Promise<import('@shared/types/config-profile-io').ProfileListResult>;
+    deleteProfile: (params: { id: string; expectedRevision?: number }) => Promise<import('@shared/types/config-profile-io').ProfileListResult>;
+    switchProfile: (params: { id: string; expectedRevision?: number }) => Promise<{ activeProfileId: string; profileName: string; revision: number }>;
+    exportProfile: (params: { profileId: string; includeSecrets?: boolean }) => Promise<import('@shared/types/config-profile-io').ProfileExportResult>;
+    previewImport: () => Promise<import('@shared/types/config-profile-io').ProfilePreviewResult>;
+    commitImport: (params: { token: string; expectedRevision: number; confirmed: true }) => Promise<import('@shared/types/config-profile-io').ProfileImportCommitResult>;
+    cancelImport: (params: { token: string }) => Promise<void>;
   };
   file: {
     open: (target: string) => Promise<void>;

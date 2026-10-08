@@ -12,6 +12,8 @@ export interface ToolRuntimeContext {
   runDir?: string;
   /** 中止信号；由上层通过独立 signal 链路传入 */
   signal?: AbortSignal;
+  /** Main-process mode fence; public exploration uses its dedicated brokers. */
+  executionMode?: 'trusted' | 'public';
 }
 
 export function normalizeOptionalString(value: unknown): string | undefined {

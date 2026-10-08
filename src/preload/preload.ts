@@ -6,11 +6,84 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG, IPC_MUSE, IPC_AUTONOMY, IPC_BACKGROUND } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 import type { ConversationCleanupOptions } from '@shared/types/conversation-cleanup';
+import type { MuseApi, MuseResult } from '@shared/types/muse';
+import type { AutonomyApi } from '@shared/types/autonomy';
+import type { BackgroundApi } from '@shared/types/background';
+
+const invokeMuse = <T>(channel: string, payload: object = {}, expectedRevision?: number): Promise<MuseResult<T>> =>
+  ipcRenderer.invoke(channel, { requestId: crypto.randomUUID(), payload, ...(expectedRevision !== undefined ? { expectedRevision } : {}) });
+const muse: MuseApi = {
+  appInfo: () => invokeMuse(IPC_MUSE.APP_INFO),
+  listRuns: (payload = {}) => invokeMuse(IPC_MUSE.RUN_LIST, payload),
+  getRun: (runId) => invokeMuse(IPC_MUSE.RUN_GET, { runId }),
+  listActivity: (payload = {}) => invokeMuse(IPC_MUSE.ACTIVITY_LIST, payload),
+  listInbox: (runId) => invokeMuse(IPC_MUSE.INBOX_LIST, { runId }),
+  listArtifacts: (payload = {}) => invokeMuse(IPC_MUSE.ARTIFACT_LIST, payload),
+  getArtifact: (artifactId) => invokeMuse(IPC_MUSE.ARTIFACT_GET, { artifactId }),
+  openArtifact: (artifactId) => invokeMuse(IPC_MUSE.ARTIFACT_OPEN, { artifactId }),
+  acceptArtifact: ({ artifactId, accepted, expectedRevision }) => invokeMuse(IPC_MUSE.ARTIFACT_ACCEPT, { artifactId, accepted }, expectedRevision),
+  indexLegacyArtifacts: (payload = {}) => invokeMuse(IPC_MUSE.ARTIFACT_INDEX, payload),
+  onChanged: (listener) => {
+    const handler = (_event: Electron.IpcRendererEvent, payload: { cursor: number }) => listener(payload.cursor);
+    ipcRenderer.on(IPC_MUSE.CHANGED, handler);
+    return () => ipcRenderer.removeListener(IPC_MUSE.CHANGED, handler);
+  },
+  onOpenSettings: (listener) => {
+    const handler = () => listener(); ipcRenderer.on(IPC_MUSE.OPEN_SETTINGS, handler);
+    return () => ipcRenderer.removeListener(IPC_MUSE.OPEN_SETTINGS, handler);
+  },
+};
 
 const electronAPI = {
+  background: {
+    status: () => invokeMuse(IPC_BACKGROUND.STATUS),
+    list: () => invokeMuse(IPC_BACKGROUND.LIST),
+    configure: (goalId, goalRevision, config) => invokeMuse(IPC_BACKGROUND.CONFIGURE, { goalId, config, confirmed: true }, goalRevision),
+    setEnabled: (scheduleId, expectedRevision, enabled) => invokeMuse(IPC_BACKGROUND.SET_ENABLED, { scheduleId, enabled, confirmed: true }, expectedRevision),
+    runNow: (scheduleId, expectedRevision) => invokeMuse(IPC_BACKGROUND.RUN_NOW, { scheduleId, confirmed: true }, expectedRevision),
+    listSkills: (goalId) => invokeMuse(IPC_BACKGROUND.SKILL_LIST, goalId ? { goalId } : {}),
+    rollbackSkill: (skillId, expectedRevision) => invokeMuse(IPC_BACKGROUND.SKILL_ROLLBACK, { skillId, confirmed: true }, expectedRevision),
+    onChanged: (listener) => {
+      const handler = () => listener(); ipcRenderer.on(IPC_AUTONOMY.CHANGED, handler);
+      return () => ipcRenderer.removeListener(IPC_AUTONOMY.CHANGED, handler);
+    },
+  } satisfies BackgroundApi,
+  autonomy: {
+    status: () => invokeMuse(IPC_AUTONOMY.STATUS),
+    listGoals: () => invokeMuse(IPC_AUTONOMY.GOAL_LIST),
+    getGoal: (goalId) => invokeMuse(IPC_AUTONOMY.GOAL_GET, { goalId }),
+    listDestinations: () => invokeMuse(IPC_AUTONOMY.DESTINATION_LIST),
+    createGoal: (draft) => invokeMuse(IPC_AUTONOMY.GOAL_CREATE, { draft }),
+    updateGoal: (goalId, expectedRevision, draft) => invokeMuse(IPC_AUTONOMY.GOAL_UPDATE, { goalId, draft }, expectedRevision),
+    setGoalState: (goalId, expectedRevision, state) => invokeMuse(IPC_AUTONOMY.GOAL_STATE, { goalId, state }, expectedRevision),
+    listApprovals: () => invokeMuse(IPC_AUTONOMY.APPROVAL_LIST),
+    decideApproval: (previewId, expectedRevision, choice) => invokeMuse(IPC_AUTONOMY.APPROVAL_DECIDE, { previewId, choice, confirmed: true }, expectedRevision),
+    previewRule: (draft) => invokeMuse(IPC_AUTONOMY.RULE_PREVIEW, { draft }),
+    issueRule: (previewId, expectedRevision) => invokeMuse(IPC_AUTONOMY.RULE_ISSUE, { previewId, confirmed: true }, expectedRevision),
+    listRules: (goalId) => invokeMuse(IPC_AUTONOMY.RULE_LIST, goalId ? { goalId } : {}),
+    revokeRule: (ruleId, expectedRevision) => invokeMuse(IPC_AUTONOMY.RULE_REVOKE, { ruleId }, expectedRevision),
+    listGrants: () => invokeMuse(IPC_AUTONOMY.GRANT_LIST),
+    revokeGrant: (grantId, expectedRevision) => invokeMuse(IPC_AUTONOMY.GRANT_REVOKE, { grantId }, expectedRevision),
+    getPolicy: () => invokeMuse(IPC_AUTONOMY.POLICY_GET),
+    updatePolicy: (expectedRevision, patch) => invokeMuse(IPC_AUTONOMY.POLICY_UPDATE, { patch }, expectedRevision),
+    osStatus: () => invokeMuse(IPC_AUTONOMY.OS_STATUS),
+    requestOs: (kind) => invokeMuse(IPC_AUTONOMY.OS_REQUEST, { kind, confirmed: true }),
+    openOsSettings: (kind) => invokeMuse(IPC_AUTONOMY.OS_SETTINGS, { kind }),
+    budget: (goalId, runId) => invokeMuse(IPC_AUTONOMY.BUDGET, { ...(goalId ? { goalId } : {}), ...(runId ? { runId } : {}) }),
+    planExploration: (goalId, expectedRevision, protocol) => invokeMuse(IPC_AUTONOMY.EXPLORATION_PLAN, { goalId, ...(protocol === undefined ? {} : { protocol }) }, expectedRevision),
+    startExploration: (planId, expectedRevision) => invokeMuse(IPC_AUTONOMY.EXPLORATION_START, { planId, confirmed: true }, expectedRevision),
+    stopExploration: (runId) => invokeMuse(IPC_AUTONOMY.EXPLORATION_STOP, { runId }),
+    listExplorations: (goalId) => invokeMuse(IPC_AUTONOMY.EXPLORATION_LIST, goalId ? { goalId } : {}),
+    appendPublicMessage: (runId, messageId, text, confirmedPublic) => invokeMuse(IPC_AUTONOMY.PUBLIC_APPEND, { runId, messageId, text, confirmedPublic }),
+    onChanged: (listener) => {
+      const handler = () => listener(); ipcRenderer.on(IPC_AUTONOMY.CHANGED, handler);
+      return () => ipcRenderer.removeListener(IPC_AUTONOMY.CHANGED, handler);
+    },
+  } satisfies AutonomyApi,
+  muse,
   chat: {
     send: (params: unknown) => ipcRenderer.invoke(IPC_CHAT.SEND, params),
     abort: (conversationId: string) => ipcRenderer.send(IPC_CHAT.ABORT, conversationId),
@@ -41,19 +114,22 @@ const electronAPI = {
   config: {
     get: () => ipcRenderer.invoke(IPC_CONFIG.GET),
     save: (params: unknown) => ipcRenderer.invoke(IPC_CONFIG.SAVE, params),
+    saveBatch: (params: { patch: object; expectedRevision?: number }) => ipcRenderer.invoke(IPC_CONFIG.SAVE_BATCH, params),
     reload: () => ipcRenderer.invoke(IPC_CONFIG.RELOAD),
     /** 列出全部模型档案与当前激活档案 id */
     listProfiles: () => ipcRenderer.invoke(IPC_CONFIG.PROFILES_LIST),
     /** 另存为模型档案：主进程把当前生效配置（九键+开关/档位）快照为新档案，同名覆盖；blank=true 时创建空白方案（9 文本键空串+开关/档位取默认值） */
-    saveProfile: (params: { name: string; blank?: boolean }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SAVE, params),
-    /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状 */
-    deleteProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_DELETE, params),
-    /** 切换模型档案：主进程批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId */
-    switchProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SWITCH, params),
-    /** 导出模型档案到 JSON 文件：main 直调另存为对话框后 ModelProfile 原样序列化落盘（密钥明文，不脱敏） */
-    exportProfile: (params: { profileId: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_EXPORT, params),
-    /** 从 JSON 文件导入模型档案：白名单容错提取+补位，新 uuid 追加为新档案，不自动激活 */
-    importProfile: (params: { filePath: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_IMPORT, params),
+    saveProfile: (params: { name: string; blank?: boolean; expectedRevision?: number }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SAVE, params),
+    /** 删除方案及必要的替换激活配置在同一事务中保存。 */
+    deleteProfile: (params: { id: string; expectedRevision?: number }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_DELETE, params),
+    /** 切换方案时，全部模型配置和激活 ID 在同一事务中保存。 */
+    switchProfile: (params: { id: string; expectedRevision?: number }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SWITCH, params),
+    /** 主进程选择导出位置；默认不含密钥，显式选含密钥还需原生确认。 */
+    exportProfile: (params: { profileId: string; includeSecrets?: boolean }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_EXPORT, params),
+    /** 主进程选文件并生成预览；确认后凭预览 token 与配置版本导入。 */
+    previewImport: () => ipcRenderer.invoke(IPC_CONFIG.IMPORT_PREVIEW),
+    commitImport: (params: { token: string; expectedRevision: number; confirmed: true }) => ipcRenderer.invoke(IPC_CONFIG.IMPORT_COMMIT, params),
+    cancelImport: (params: { token: string }) => ipcRenderer.invoke(IPC_CONFIG.IMPORT_CANCEL, params),
   },
   skills: {
     /** 列出内置8标签（只读）与自定义标签元数据+上限 */
@@ -158,6 +234,7 @@ const electronAPI = {
       conversationId: string;
       delegateCallId: string;
       message: string;
+      messageId?: string;
     }) => ipcRenderer.invoke(IPC_EXECUTOR.SEND_TASK_MESSAGE, params),
   },
   python: {

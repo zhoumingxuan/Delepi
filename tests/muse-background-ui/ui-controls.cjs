@@ -1,0 +1,28 @@
+'use strict';
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const esbuild = require('esbuild');
+const WORK = path.resolve(__dirname, '../..');
+const antdFixture = `import React from 'react';
+export const App={useApp:()=>window.__autonomyUiServices};
+export const theme={useToken:()=>({token:{colorBorderSecondary:'#bbb',borderRadiusLG:8,colorBgContainer:'#fff'}})};
+export const Button=({children,onClick,disabled,loading})=><button onClick={onClick} disabled={disabled||loading}>{children}</button>;
+export const Flex=({children,...props})=><div data-testid={props['data-testid']}>{children}</div>;
+export const Typography={Text:({children,strong})=><span data-strong={strong}>{children}</span>,Title:({children})=><h4>{children}</h4>,Paragraph:({children})=><p>{children}</p>};
+export const Drawer=({children,title,open,onClose})=>open?<section data-drawer={title}><h3>{title}</h3><button onClick={onClose}>{title}.close</button>{children}</section>:null;
+export const Alert=({title,description})=><aside>{title}{description}</aside>;
+export const Empty=({description})=><p>{description}</p>;export const Spin=()=>null;export const Tag=({children})=><span>{children}</span>;
+export const Checkbox=({children,checked,disabled,onChange})=><label><input type='checkbox' checked={checked} disabled={disabled} onChange={onChange}/>{children}</label>;
+Checkbox.Group=({value,options,onChange,disabled})=><div>{options.map(item=><label key={item.value}><input type='checkbox' value={item.value} checked={value.includes(item.value)} disabled={disabled} onChange={e=>onChange(e.target.checked?[...value,item.value]:value.filter(v=>v!==item.value))}/>{item.label}</label>)}</div>;
+export const Select=({value,onChange,options,mode,disabled,...props})=><select aria-label={props['aria-label']||props.placeholder} multiple={mode==='multiple'} disabled={disabled} value={value||(mode==='multiple'?[]:'')} onChange={e=>onChange(mode==='multiple'?[...e.target.selectedOptions].map(o=>o.value):(e.target.value||undefined))}>{mode!=='multiple'&&<option value=''></option>}{options.map(item=><option key={item.value} value={item.value}>{item.label}</option>)}</select>;
+export const Input=({value,onChange,...props})=><input aria-label={props['aria-label']} value={value} onChange={onChange}/>;
+Input.TextArea=({value,onChange,disabled,readOnly,...props})=><textarea aria-label={props['aria-label']} disabled={disabled} readOnly={readOnly} value={value} onChange={onChange}/>;
+export const InputNumber=({value,onChange,disabled,...props})=><input aria-label={props['aria-label']} type='number' disabled={disabled} value={value} onChange={e=>onChange(Number(e.target.value))}/>;
+export const Tabs=({items,activeKey,onChange})=><div className='test-tabs'>{items.map(item=><button key={item.key} onClick={()=>onChange(item.key)}>{item.label}</button>)}{items.find(item=>item.key===activeKey)?.children}</div>;
+export const Descriptions=({items})=><dl>{items.map(item=><div key={item.key}>{item.label}{item.children}</div>)}</dl>;
+export const Modal=({title,open,children,footer,onOk,onCancel,okText,confirmLoading})=>open?<section data-modal={title}><h3>{title}</h3>{children}{footer!==null&&<button disabled={confirmLoading} onClick={onOk}>{okText}</button>}<button onClick={onCancel}>{title}.cancel</button></section>:null;`;
+
+module.exports = { antdFixture };

@@ -8,7 +8,7 @@
  * 本文件独立实现扫描/解析/校验逻辑，不 import dyn-tool-loader 任何内容。
  */
 
-import { readdir, readFile, rm, stat } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
@@ -225,7 +225,7 @@ export type ScriptToolScanEntry =
 /**
  * R2 容量治理（唯一收口点）：合法工具数超过 MAX_SCRIPT_TOOLS 时，按创建时间最旧优先剔除。
  * 确定性：birthtimeMs 升序（不可得按 0=视作最旧优先治理），同值按目录名字典序；
- * 物理删除尽力而为（rm force 幂等，失败仅告警），逻辑排除保底——返回集合恒 ≤ 上限。
+ * 仅从本次清单逻辑排除，不删除用户的经验脚本；返回集合恒 ≤ 上限。
  */
 async function evictOldestScriptTools(
   okEntries: Array<Extract<ScriptToolScanEntry, { ok: true }>>,
@@ -246,13 +246,6 @@ async function evictOldestScriptTools(
   );
   timed.sort((a, b) => a.t - b.t || a.dirName.localeCompare(b.dirName));
   const oldest = timed.slice(0, excess);
-  for (const item of oldest) {
-    try {
-      await rm(item.toolDir, { recursive: true, force: true });
-    } catch (error) {
-      console.warn(`[script-tools] 自动剔除失败（已逻辑排除）：${item.dirName}`, error);
-    }
-  }
   return new Set(oldest.map((item) => item.dirName));
 }
 

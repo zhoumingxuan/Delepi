@@ -17,6 +17,9 @@ import {
 import {
   AutoComplete,
   Button,
+  Checkbox,
+  Descriptions,
+  Alert,
   Divider,
   Drawer,
   Flex,
@@ -49,54 +52,9 @@ import {
 import type { AppSettings, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { DEFAULT_APP_SETTINGS } from '@shared/constants';
 import { PythonEnvTab } from './PythonEnvTab';
+import type { ProfileListResult } from '@shared/types/config-profile-io';
 
-/** 配置方案列表/切换结果（主进程 config:profiles-* 通道返回） */
-interface ProfileListResult {
-  profiles: ModelProfile[];
-  activeProfileId: string;
-}
-
-/** 方案切换结果 */
-interface ProfileSwitchResult {
-  activeProfileId: string;
-  profileName: string;
-}
-
-/** 方案导出结果：成功含落盘完整路径；canceled=true 为用户取消（渲染层静默不反馈） */
-type ProfileExportResult =
-  | { ok: true; filePath: string }
-  | { ok: false; canceled?: boolean; error?: string };
-
-/** 方案导入结果：失败附 code（READ_ERROR/INVALID_JSON/NOT_A_PROFILE）供文案一一映射 */
-type ProfileImportResult =
-  | {
-      ok: true;
-      profile: ModelProfile;
-      profiles: ModelProfile[];
-      activeProfileId: string;
-      importedCount: number;
-      skippedCount: number;
-      renamed: boolean;
-    }
-  | { ok: false; code: 'READ_ERROR' | 'INVALID_JSON' | 'NOT_A_PROFILE'; error?: string };
-
-/**
- * 方案操作 API 局部类型：window.electronAPI 的全局类型声明（electron.d.ts）不在本次改动白名单内，
- * preload 已暴露下列六个方法，此处以局部类型断言安全对接（运行时经 contextBridge 正常可达）。
- */
-type ProfilesConfigApi = {
-  listProfiles: () => Promise<ProfileListResult>;
-  saveProfile: (params: { name: string; blank?: boolean }) => Promise<ProfileListResult>;
-  deleteProfile: (params: { id: string }) => Promise<ProfileListResult>;
-  switchProfile: (params: { id: string }) => Promise<ProfileSwitchResult>;
-  exportProfile: (params: { profileId: string }) => Promise<ProfileExportResult>;
-  importProfile: (params: { filePath: string }) => Promise<ProfileImportResult>;
-};
-
-/** 文件选择对话框 API 局部类型：electron.d.ts 无 dialog 声明且不在改动白名单，preload 已暴露 showOpenDialog */
-type DialogApi = {
-  showOpenDialog: (options: unknown) => Promise<{ canceled: boolean; filePaths: string[] }>;
-};
+type ProfilesConfigApi = Window['electronAPI']['config'];
 
 /** 内置技能标签只读条目（skills:list 返回；内置8项不可编辑/删除） */
 interface SkillBuiltinItem {
@@ -320,10 +278,6 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     () => window.electronAPI?.config as unknown as ProfilesConfigApi | undefined,
     [],
   );
-  const dialogApi = useMemo(
-    () => (window as unknown as { electronAPI?: { dialog?: DialogApi } }).electronAPI?.dialog,
-    [],
-  );
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState('');
   const [profileCreateModalOpen, setProfileCreateModalOpen] = useState(false);
@@ -522,75 +476,58 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     [profilesApi, profiles, activeProfileId, antdModal, antdMessage, onReload, loadProfiles, form],
   );
 
-  /** 导出当前方案到文件：main 直调另存为对话框后 ModelProfile 原样落盘（密钥明文）；取消静默不反馈 */
-  const handleExportProfile = useCallback(async () => {
+  const handleExportProfile = useCallback(() => {
     if (!profilesApi || !activeProfileId) return;
-    setProfileActionLoading(true);
-    try {
-      const result = await profilesApi.exportProfile({ profileId: activeProfileId });
-      if (result?.ok) {
-        antdMessage.success(`方案已导出到：${result.filePath}`);
-      } else if (!result?.canceled) {
-        // canceled=true 为用户取消：静默；其余为业务失败，附具体原因
-        antdMessage.error(`导出失败：${result?.error ?? ''}`);
-      }
-    } catch {
-      antdMessage.error('导出方案失败，请重试');
-    } finally {
-      setProfileActionLoading(false);
-    }
-  }, [profilesApi, activeProfileId, antdMessage]);
+    let includeSecrets = false;
+    const name = profiles.find(item => item.id === activeProfileId)?.name ?? '当前方案';
+    antdModal.confirm({
+      title: `导出「${name}」`,
+      okText: '选择保存位置', cancelText: '取消',
+      content: <Flex vertical gap={12}>
+        <Typography.Text>默认省略 API 密钥及地址中的认证信息、查询参数。无法识别的地址会留空，导入后可重新填写。</Typography.Text>
+        <Checkbox onChange={event => { includeSecrets = event.target.checked; }}>包含密钥及完整地址（明文）</Checkbox>
+      </Flex>,
+      onOk: async () => {
+        setProfileActionLoading(true);
+        try {
+          const result = await profilesApi.exportProfile({ profileId: activeProfileId, includeSecrets });
+          if (result.ok) antdMessage.success(result.containsSecrets ? '已导出配置与密钥' : '已导出配置（不含密钥）');
+          else if (!result.canceled) antdMessage.error(result.error ?? '导出失败');
+        } finally { setProfileActionLoading(false); }
+      },
+    });
+  }, [profilesApi, activeProfileId, profiles, antdModal, antdMessage]);
 
-  /**
-   * 从文件导入方案：先经现成 dialog.showOpenDialog 选文件（取消静默、不进 loading），再 invoke 导入；
-   * 成功仅刷新方案列表与激活标记（对齐既有方案操作 handler 用法），不回填表单、不调 onReload——
-   * 导入不激活，当前生效配置与表单零变化。
-   */
   const handleImportProfile = useCallback(async () => {
-    if (!profilesApi || !dialogApi) return;
-    let picked: { canceled: boolean; filePaths: string[] };
-    try {
-      picked = await dialogApi.showOpenDialog({
-        title: '选择方案文件',
-        filters: [{ name: 'Delepi 配置方案', extensions: ['json'] }],
-        properties: ['openFile'],
-      });
-    } catch {
-      antdMessage.error('导入方案失败，请重试');
-      return;
-    }
-    if (picked.canceled || !picked.filePaths?.length) {
-      return;
-    }
+    if (!profilesApi) return;
     setProfileActionLoading(true);
     try {
-      const result = await profilesApi.importProfile({ filePath: picked.filePaths[0] });
-      if (result?.ok) {
-        setProfiles(result.profiles ?? []);
-        setActiveProfileId(result.activeProfileId ?? activeProfileId);
-        const notes: string[] = [];
-        if (result.skippedCount > 0) {
-          notes.push(`（${result.skippedCount} 个无效字段已忽略）`);
-        }
-        if (result.renamed) {
-          notes.push(`（与现有方案重名，已自动改名）`);
-        }
-        antdMessage.success(`已导入方案「${result.profile.name}」，点击下拉切换使用${notes.join('')}`);
-      } else if (result?.code === 'INVALID_JSON') {
-        antdMessage.error('所选文件不是有效的 JSON 文件');
-      } else if (result?.code === 'NOT_A_PROFILE') {
-        antdMessage.error('所选文件不是 Delepi 配置方案文件');
-      } else if (result?.code === 'READ_ERROR') {
-        antdMessage.error(`读取文件失败：${result?.error ?? ''}`);
-      } else {
-        antdMessage.error('导入方案失败，请重试');
-      }
-    } catch {
-      antdMessage.error('导入方案失败，请重试');
-    } finally {
-      setProfileActionLoading(false);
-    }
-  }, [profilesApi, dialogApi, antdMessage, activeProfileId]);
+      const result = await profilesApi.previewImport();
+      if (!result.ok) { if (!result.canceled) antdMessage.error(result.error ?? '导入预览失败'); return; }
+      const preview = result.preview;
+      const labels: Record<string, string> = {
+        mainModelBaseUrl: '主模型地址', mainModelApiKey: '主模型密钥', mainModelName: '主模型', mainModelMultimodal: '主模型多模态', mainThinkingLevel: '主模型思考档位',
+        executorModelBaseUrl: '执行模型地址', executorModelApiKey: '执行模型密钥', executorModelName: '执行模型', executorThinkingLevel: '执行模型思考档位',
+        visionLlmBaseUrl: '视觉模型地址', visionLlmApiKey: '视觉模型密钥', visionLlmModel: '视觉模型',
+      };
+      antdModal.confirm({
+        title: `导入预览：${preview.name}`, width: 580, okText: '确认添加方案', cancelText: '取消',
+        content: <Flex vertical gap={12}>
+          <Typography.Text>将添加为新方案，之后可在下拉列表中切换使用。</Typography.Text>
+          <Descriptions size="small" column={1} items={preview.fields.map(field => ({ key: field.key, label: labels[field.key] ?? field.key, children: field.value }))} />
+          {preview.warnings.length > 0 && <Alert type="info" title={preview.warnings.join('；')} />}
+        </Flex>,
+        onCancel: () => { void profilesApi.cancelImport({ token: preview.token }); },
+        onOk: async () => {
+          const committed = await profilesApi.commitImport({ token: preview.token, expectedRevision: preview.revision, confirmed: true });
+          if (!committed.ok) { antdMessage.error(committed.error); throw new Error(committed.code); }
+          await loadProfiles();
+          antdMessage.success(`已添加方案「${committed.profileName}」`);
+        },
+      });
+    } catch { antdMessage.error('配置导入未完成，请重试'); }
+    finally { setProfileActionLoading(false); }
+  }, [profilesApi, antdModal, antdMessage, loadProfiles]);
 
   // ---- 技能管理（方向2：内部自治；与聊天流零连接点，故 useChat.ts 零改动） ----
   const skillsApi = useMemo(

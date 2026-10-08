@@ -9,8 +9,8 @@
  *    seq 已存在覆盖 / 不存在按 seq 插入）；
  * 4. 兜底对账：5s 心跳（仅存在 running 任务时拉取）/ 切换会话全量对账 / 窗口 focus 重对账 /
  *    打开右栏全量拉取；
- * 5. 终态双保险：chat:done 最后一次增量对账（仍 running → completed）；chat:aborted 本地
- *    running 视图收敛 aborted。
+ * 5. chat:done / chat:aborted 只触发权威拉取，不把回复结束或停止请求猜成任务终态；
+ * 6. 同一任务草稿的消息 id 在未知回执重试时保持稳定，并发点击只发出一次请求。
  *
  * 思考数据来源唯一性（§1.4）：本 hook 只消费 executor:record-signal / executor:get-task-record，
  * 不订阅 chat:thinking，不读取 message.thinking / message.segments（主智能体链路零交集）。
@@ -28,7 +28,6 @@ import type {
   ExecutorTaskMessageSendResult,
   ExecutorTaskRecordQueryResult,
   ExecutorTaskRecordSignal,
-  ExecutorTaskRecordStatus,
 } from '@shared/types/executor-record';
 
 /**
@@ -49,6 +48,12 @@ interface TaskQueryState {
   dirty: boolean;
   timer: number | null;
   inFlight: boolean;
+}
+
+interface PendingTaskMessage {
+  message: string;
+  messageId: string;
+  inFlight?: Promise<ExecutorTaskMessageSendResult>;
 }
 
 export interface UseExecutorTaskRecordsResult {
@@ -91,6 +96,9 @@ export function useExecutorTaskRecords(options: {
   conversationIdRef.current = conversationId;
   /** delegateCallId → conversationId 登记（信号到达即登记，非活跃会话任务切回时全量对账依据） */
   const taskConversationIndexRef = useRef<Map<string, string>>(new Map());
+  /** 主进程信号的任务身份；同一旧寻址键重用时不能继承前一任务草稿/游标。 */
+  const taskIdentityIndexRef = useRef<Map<string, { conversationId: string; taskId: string; updatedAt: string }>>(new Map());
+  const pendingTaskMessagesRef = useRef<Map<string, PendingTaskMessage>>(new Map());
   /** per-task 拉取状态（in-flight 去重 + dirty 补偿轮） */
   const queryStatesRef = useRef<Map<string, TaskQueryState>>(new Map());
   /** 活跃会话已知任务集合（按会话隔离，切回时全量对账） */
@@ -115,7 +123,10 @@ export function useExecutorTaskRecords(options: {
         return;
       }
       setTaskViews((prev) => {
-        const existing = prev[delegateCallId];
+        const indexedTaskId = taskIdentityIndexRef.current.get(delegateCallId)?.taskId ?? '';
+        const previous = prev[delegateCallId];
+        const existing = previous?.conversationId === conversationIdOfTask && previous.taskId === indexedTaskId
+          ? previous : undefined;
         if (!result.found) {
           if (!existing) {
             return prev; // 未知任务且已清理：不建视图
@@ -158,7 +169,7 @@ export function useExecutorTaskRecords(options: {
         const nextView: ExecutorTaskView = {
           conversationId: conversationIdOfTask,
           delegateCallId,
-          taskId: existing?.taskId ?? '',
+          taskId: indexedTaskId,
           taskName: result.taskName || existing?.taskName || '',
           status: result.status,
           latestSeq: result.latestSeq,
@@ -184,11 +195,14 @@ export function useExecutorTaskRecords(options: {
         return;
       }
       state.inFlight = true;
+      const dispatchedIdentity = taskIdentityIndexRef.current.get(delegateCallId);
       window.electronAPI.executor
         .getTaskRecord({ conversationId: targetConversationId, delegateCallId, sinceSeq })
         .catch(() => undefined)
         .then((result) => {
-          if (result) {
+          // 旧任务的迟到回执不能写入复用同一 delegateCallId 的新任务。
+          if (result && dispatchedIdentity?.conversationId === targetConversationId
+            && taskIdentityIndexRef.current.get(delegateCallId) === dispatchedIdentity) {
             applyQueryResult(delegateCallId, result);
           }
         })
@@ -196,8 +210,10 @@ export function useExecutorTaskRecords(options: {
           state.inFlight = false;
           if (state.dirty) {
             state.dirty = false;
+            const identity = taskIdentityIndexRef.current.get(delegateCallId);
             const view = taskViewsRef.current[delegateCallId];
-            runFetch(targetConversationId, delegateCallId, view?.latestSeq ?? 0);
+            runFetch(identity?.conversationId ?? targetConversationId, delegateCallId,
+              view?.taskId === identity?.taskId ? view?.latestSeq ?? 0 : 0);
           }
         });
     },
@@ -208,6 +224,29 @@ export function useExecutorTaskRecords(options: {
   const scheduleFetchBySignal = useCallback(
     (signal: ExecutorTaskRecordSignal) => {
       const { conversationId: signalConversationId, delegateCallId } = signal;
+      const previousIdentity = taskIdentityIndexRef.current.get(delegateCallId);
+      const identityChanged = !previousIdentity || previousIdentity.conversationId !== signalConversationId
+        || previousIdentity.taskId !== signal.taskId;
+      if (identityChanged) {
+        // 已有更新身份时，较早任务的迟到信号不再把寻址键切回。
+        if (previousIdentity && signal.updatedAt < previousIdentity.updatedAt) return;
+        if (previousIdentity) {
+          knownTasksByConversationRef.current.get(previousIdentity.conversationId)?.delete(delegateCallId);
+          pendingTaskMessagesRef.current.delete(JSON.stringify([previousIdentity.conversationId, delegateCallId, previousIdentity.taskId]));
+          const state = getQueryState(delegateCallId);
+          if (state.timer !== null) window.clearTimeout(state.timer);
+          state.timer = null;
+          setTaskViews((prev) => {
+            if (!prev[delegateCallId]) return prev;
+            const next = { ...prev }; delete next[delegateCallId]; return next;
+          });
+        }
+        taskIdentityIndexRef.current.set(delegateCallId,
+          { conversationId: signalConversationId, taskId: signal.taskId, updatedAt: signal.updatedAt });
+      } else if (previousIdentity && signal.updatedAt > previousIdentity.updatedAt) {
+        // 保留对象身份以免同一任务普通信号让其在途查询失效。
+        previousIdentity.updatedAt = signal.updatedAt;
+      }
       taskConversationIndexRef.current.set(delegateCallId, signalConversationId);
       let known = knownTasksByConversationRef.current.get(signalConversationId);
       if (!known) {
@@ -217,7 +256,7 @@ export function useExecutorTaskRecords(options: {
       known.add(delegateCallId);
 
       const local = taskViewsRef.current[delegateCallId];
-      if (local) {
+      if (local && !identityChanged) {
         // 乱序守卫（§3.3）：迟到信号（latestSeq 严格更小且状态无新信息）忽略，不触发拉取
         const staleSignal =
           signal.latestSeq < local.latestSeq ||
@@ -247,7 +286,9 @@ export function useExecutorTaskRecords(options: {
         if (!state.dirty) return;
         state.dirty = false;
         const view = taskViewsRef.current[delegateCallId];
-        runFetch(signalConversationId, delegateCallId, view?.latestSeq ?? 0);
+        const identity = taskIdentityIndexRef.current.get(delegateCallId);
+        runFetch(identity?.conversationId ?? signalConversationId, delegateCallId,
+          view?.taskId === identity?.taskId ? view?.latestSeq ?? 0 : 0);
       }, SIGNAL_DEBOUNCE_MS);
     },
     [getQueryState, runFetch],
@@ -269,7 +310,7 @@ export function useExecutorTaskRecords(options: {
       scheduleFetchBySignal(signal);
     });
 
-    // chat:done → 该会话全部任务最后一次增量对账（仍 running → 兜底映射见 applyQueryResult 后处理）
+    // 回复结束仅触发对账，任务终态由实际执行收口后主进程记录决定。
     const unsubDone = window.electronAPI.on('chat:done', (payload: unknown) => {
       const data = payload as { conversationId?: string };
       if (!data?.conversationId) return;
@@ -280,35 +321,14 @@ export function useExecutorTaskRecords(options: {
       }
     });
 
-    // chat:aborted → 该会话 running 视图本地收敛 aborted（终态信号丢失兜底）
+    // chat:aborted 可能只表示已请求停止；不发明 aborted/finishedAt 或助手回复终态。
     const unsubAborted = window.electronAPI.on('chat:aborted', (payload: unknown) => {
       const data = payload as { conversationId?: string };
       if (!data?.conversationId) return;
-      setTaskViews((prev) => {
-        let changed = false;
-        const next: Record<string, ExecutorTaskView> = {};
-        for (const [delegateCallId, view] of Object.entries(prev)) {
-          if (view.conversationId === data.conversationId && view.status === 'running') {
-            changed = true;
-            const abortedAt = view.finishedAt ?? new Date().toISOString();
-            next[delegateCallId] = {
-              ...view,
-              status: 'aborted' as ExecutorTaskRecordStatus,
-              finishedAt: abortedAt,
-              // ★ 本地兜底收敛：loading 态助手回复条目同步终态化（终态信号万一丢失时前端
-              //   双保险；下一次拉取对账时服务端 markTerminal 清扫结果为权威覆盖）
-              entries: view.entries.map((entry) =>
-                entry.kind === 'assistant-reply' && entry.state === 'loading'
-                  ? { ...entry, state: 'aborted' as const, finishedAt: abortedAt }
-                  : entry,
-              ),
-            };
-          } else {
-            next[delegateCallId] = view;
-          }
-        }
-        return changed ? next : prev;
-      });
+      for (const [delegateCallId, view] of Object.entries(taskViewsRef.current)) {
+        if (view.conversationId !== data.conversationId) continue;
+        runFetch(data.conversationId, delegateCallId, view.latestSeq);
+      }
     });
 
     // 5s 心跳：活跃会话存在 running 任务时逐任务增量对账（长时无信号/hung 兜底）
@@ -435,18 +455,37 @@ export function useExecutorTaskRecords(options: {
           conversationId: string;
           delegateCallId: string;
           message: string;
+          messageId: string;
         }) => Promise<ExecutorTaskMessageSendResult>;
       }>;
       if (!executorSendApi.sendTaskMessage) {
         return Promise.resolve({ accepted: false, reason: 'unavailable' });
       }
-      return Promise.resolve(
-        executorSendApi.sendTaskMessage({
+      const taskId = taskIdentityIndexRef.current.get(delegateCallId)?.taskId ?? '';
+      const identityKey = JSON.stringify([targetConversationId, delegateCallId, taskId]);
+      let pending = pendingTaskMessagesRef.current.get(identityKey);
+      if (!pending || pending.message !== message) {
+        pending = { message, messageId: crypto.randomUUID() };
+        pendingTaskMessagesRef.current.set(identityKey, pending);
+      }
+      if (pending.inFlight) return pending.inFlight;
+      const draft = pending;
+      // 未知回执保持原 id；已明确受理/拒收后，下一次用户主动发送是一次新请求。
+      draft.inFlight = Promise.resolve().then(() => executorSendApi.sendTaskMessage!({
           conversationId: targetConversationId,
           delegateCallId,
           message,
-        }),
-      ).catch(() => ({ accepted: false, reason: 'ipc-error' }));
+          messageId: draft.messageId,
+        })).then((result) => {
+          const unknownReceipt = result.reason === 'storage-error' || result.reason === 'ipc-error'
+            || result.inboxState === 'delivery_unknown';
+          if (!unknownReceipt && pendingTaskMessagesRef.current.get(identityKey) === draft) {
+            pendingTaskMessagesRef.current.delete(identityKey);
+          }
+          return result;
+        }).catch((): ExecutorTaskMessageSendResult => ({ accepted: false, messageId: draft.messageId, reason: 'ipc-error' }))
+        .finally(() => { draft.inFlight = undefined; });
+      return draft.inFlight;
     },
     [],
   );

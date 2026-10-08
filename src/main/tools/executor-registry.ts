@@ -8,6 +8,7 @@ import {
 import { ensureErrorMessage } from '../utils/index';
 import { EXECUTOR_TOOLS } from '../modules/executor-agent/prompt';
 import { configManager } from '../modules/config/config-manager';
+import { legacyToolAllowed } from '../modules/permissions/legacy-admission';
 
 type ToolSchema = Record<string, unknown>;
 
@@ -244,6 +245,9 @@ export async function executeToolCall(
   }
 
   try {
+    if (context?.signal?.aborted || !legacyToolAllowed(normalizedToolName, dynamicTools.has(normalizedToolName), context?.executionMode)) {
+      return buildSimpleToolResult({success:false,code:'TOOL_POLICY_BLOCKED',message:'当前权限或任务状态阻止此工具执行，请在权限设置核对。'},toolCallId);
+    }
     const result = await tool.execute(
       parsedArguments,
       (context ?? {}) as ToolRuntimeContext,

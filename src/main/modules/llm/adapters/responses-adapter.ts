@@ -155,6 +155,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
     opts: { multimodal: boolean; signal?: AbortSignal },
   ): Promise<AdapterTurnResult> {
     this.assertUsable('sendMessage');
+    opts.signal?.throwIfAborted();
     this.terminal = false;
 
     // 排水：构建协议请求体之前、同步（无 await）排空 insert 队列（§5.4 硬约束）
@@ -265,6 +266,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
       let outcome: ResponsesTurnOutcome;
       try {
         outcome = await this.executeStreamRequest(body, opts.signal);
+        opts.signal?.throwIfAborted();
       } catch (error) {
         if (opts.signal?.aborted
           || (error instanceof DOMException && error.name === 'AbortError')
@@ -587,6 +589,8 @@ export class ResponsesAdapter extends ProtocolAdapter {
         signal: controller.signal,
       });
     } catch (error) {
+      clearTimeout(timeoutTimer);
+      signal?.removeEventListener('abort', onUserAbort);
       // 传输层错误归一化为带 name/code 的 Error 交分类器（C-5）
       if (signal?.aborted) {
         throw signal.reason ?? new Error('ABORTED');
@@ -756,6 +760,9 @@ export class ResponsesAdapter extends ProtocolAdapter {
   protected releaseResources(): void {
     this.lastResponseId = null;
     this.lastConsumedMessageCount = 0;
+    this.chunkHandler = null;
+    this.toolCallHandler = null;
+    this.finishedHandler = null;
   }
 }
 
@@ -1351,4 +1358,3 @@ function normalizeTransportError(error: unknown): Error {
   }
   return new Error(`[responses] 传输层错误：${String(error)}`);
 }
-

@@ -140,6 +140,7 @@ export interface ExecutorTaskRecordQueryResult {
 
 /** executor:send-task-message 请求参数（渲染→主，invoke） */
 export interface ExecutorTaskMessageSendParams {
+  messageId?: string;
   conversationId: string;
   delegateCallId: string;
   message: string;
@@ -153,11 +154,16 @@ export type ExecutorTaskMessageSendFailReason =
   | 'not-found'        // 会话/任务不存在或已清理
   | 'terminal'         // 任务已终态（status !== 'running'）
   | 'stop-requested'   // 停止请求已冻结（freezeForStop 已置、终态未收敛窗口）
+  | 'message-id-conflict'
+  | 'storage-error'
+  | 'stale-attempt'
   | 'unavailable'      // 渲染层：preload 方法不存在（类型收窄命中空）
   | 'ipc-error';       // 渲染层：invoke 异常
 
 /** executor:send-task-message 返回（受理结果；受理后的视觉态由 record-signal 链路驱动） */
 export interface ExecutorTaskMessageSendResult {
   accepted: boolean;
+  messageId?: string;
+  inboxState?: string;
   reason?: ExecutorTaskMessageSendFailReason;
 }

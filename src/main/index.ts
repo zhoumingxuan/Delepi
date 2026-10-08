@@ -3,11 +3,25 @@
  * 创建 BrowserWindow，初始化数据库、注册 IPC 处理器
  */
 
-import { app, BrowserWindow, Menu } from 'electron';
+import { app, BrowserWindow, powerMonitor } from 'electron';
 import path from 'path';
 import { cp, mkdir, readdir, rm } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { getDb } from './db/sqlite-adapter';
+import { getDb, getDbPath } from './db/sqlite-adapter';
+import { applyMuseMigrations } from './db/migrations';
+import { getProtectedTaskPaths, reconcileArtifactPublications, setArtifactWakeListener } from './modules/artifacts/service';
+import { cleanupTaskTemporaryPaths } from './modules/executor-agent/task-cleanup';
+import { registerMuseIpcHandlers } from './modules/muse-ipc';
+import { createAutonomyRuntime } from './modules/autonomy-runtime';
+import { registerAutonomyIpcHandlers } from './modules/autonomy-ipc';
+import { registerBackgroundIpcHandlers } from './modules/background/background-ipc';
+import { consumeBackgroundEnablementRequest } from './modules/background/installation-bootstrap';
+import { IPC_AUTONOMY } from '../shared/ipc-channels';
+import { registerNativeMenu } from './modules/native-menu';
+import { getTaskService } from './modules/tasks/task-service';
+import { listPersistentTaskWorkspacePaths } from './modules/tasks/workspace-protection';
+import { assertTrustedSender, isTrustedPageUrl } from './ipc/trusted-sender';
+import { pathToFileURL } from 'node:url';
 import {
   resetInterruptedRuntimeState,
   listConversations,
@@ -27,6 +41,8 @@ import {
   SCRIPTS_TOOLS_DIR_NAME,
 } from './constants';
 import { ensureDir, resolveConversationsRootDir } from './utils/storage-paths';
+// 保持已签名的内置 Python 资源不产生运行时字节码文件。
+process.env.PYTHONDONTWRITEBYTECODE = '1';
 console.log('[sandbox-diag] argv =', JSON.stringify(process.argv));
 console.log('[sandbox-diag] ELECTRON_DISABLE_SANDBOX =', process.env.ELECTRON_DISABLE_SANDBOX ?? '(unset)');
 
@@ -45,6 +61,7 @@ process.on('uncaughtException', (err) => {
 });
 
 let mainWindow: BrowserWindow | null = null;
+let autonomyRuntime: ReturnType<typeof createAutonomyRuntime> | undefined;
 
 /**
  * 单窗口运行·旧实例清理（用户裁决的绝对正确逻辑）：
@@ -159,6 +176,12 @@ function createWindow(): void {
   mainWindow.on('page-title-updated', (event) => {
     event.preventDefault();
   });
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (!isTrustedPageUrl(url, { isPackaged: app.isPackaged,
+      devServerUrl: process.env.VITE_DEV_SERVER_URL,
+      packagedPageUrl: pathToFileURL(path.join(__dirname, '..', RENDERER_PATH_SEGMENT, RENDERER_INDEX_FILE)).href })) event.preventDefault();
+  });
 
   // 启动健壮性：渲染进程运行期异常/事件日志监听
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
@@ -219,12 +242,13 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
   //   execution_log_path 引用的任务现场目录（tasks/<delegateCallId>/，运行期 apiErrorHit
   //   豁免保留的磁盘现场）不参与启动清空重建——保证报错轮日志路径重启后持续有效；
   //   未被引用的残留照常清理（BUG1 修复语义保持）。
-  let preservedTaskDirKeys = new Set<string>();
+  let protectedPaths: string[];
   try {
-    preservedTaskDirKeys = collectPreservedTaskDirKeys();
+    protectedPaths = collectProtectedTaskPaths();
   } catch (err) {
-    // 引用清单构建失败（库读取异常）→ 退化为原无条件清理（不因豁免逻辑阻断既有修复）
-    writeMainLog('WARN', 'cleanupStaleTasksDirsOnStartup', 'execution_log_path 引用清单构建失败，退化为无条件清理', err);
+    // 无法证明无引用时保留现场，不用清理来猜测任务是否完成。
+    writeMainLog('WARN', 'cleanupStaleTasksDirsOnStartup', '保护引用查询失败，延后清理', err);
+    return;
   }
   const conversationsRootDir = resolveConversationsRootDir();
   const conversationEntries = await readdir(conversationsRootDir, {
@@ -244,26 +268,10 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
       if (!tasksEntry) continue;
       const tasksDir = path.join(conversationDir, tasksEntry.name);
       const tasksSubEntries = await readdir(tasksDir, { withFileTypes: true });
-      const preservedCount = tasksSubEntries.filter(
-        (entry) => entry.isDirectory()
-          && preservedTaskDirKeys.has(path.resolve(path.join(tasksDir, entry.name)).toLowerCase()),
-      ).length;
-      if (preservedCount === 0) {
-        await rm(tasksDir, { recursive: true, force: true });
-        await mkdir(tasksDir, { recursive: true });
-        continue;
-      }
-      // 存在被库内 execution_log_path 引用的任务现场：仅清空未被引用的残留条目，
-      // 被引用的现场目录原样保留（D7 拍板豁免；下次成功轮末照常统一清理）
+      const result = await cleanupTaskTemporaryPaths({ workspaceDir: tasksDir,
+        temporaryPaths: tasksSubEntries.map(entry => path.join(tasksDir, entry.name)), protectedPaths });
       writeMainLog('INFO', 'cleanupStaleTasksDirsOnStartup',
-        `会话 tasks 含 API 报错保留现场（${preservedCount} 个目录），启动清理豁免: ${tasksDir}`);
-      for (const subEntry of tasksSubEntries) {
-        if (subEntry.isDirectory()
-          && preservedTaskDirKeys.has(path.resolve(path.join(tasksDir, subEntry.name)).toLowerCase())) {
-          continue;
-        }
-        await rm(path.join(tasksDir, subEntry.name), { recursive: true, force: true });
-      }
+        `removed=${result.removedPaths.length} deferred=${result.deferredPaths.length} failed=${result.failedPaths.length}`);
     } catch (err) {
       // 单个会话 tasks 清理失败（如 Windows 文件占用）时仅记录告警，不阻断启动
       console.warn(`[StartupCleanup] 清理会话 tasks 目录失败，已跳过: ${conversationDir}`, err);
@@ -277,15 +285,16 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
  * cleanupStaleTasksDirsOnStartup 据此豁免被引用现场的清空重建，保证报错轮日志路径
  * 重启后持续有效（D7 拍板：启动清理对报错保留现场豁免）。
  */
-function collectPreservedTaskDirKeys(): Set<string> {
-  const keys = new Set<string>();
+function collectProtectedTaskPaths(): string[] {
+  const paths = new Set<string>(getProtectedTaskPaths());
   for (const logPath of listStoredExecutionLogPaths()) {
     if (typeof logPath !== 'string' || !logPath) {
       continue;
     }
-    keys.add(path.resolve(path.dirname(logPath)).toLowerCase());
+    paths.add(path.resolve(path.dirname(logPath)));
   }
-  return keys;
+  for (const workspace of listPersistentTaskWorkspacePaths(getDb(), resolveConversationsRootDir())) paths.add(workspace);
+  return [...paths];
 }
 
 /**
@@ -335,7 +344,7 @@ async function healOrphanToolCallMessages(): Promise<number> {
               {
                 current_task_execution_result: {
                   success: false,
-                  message: '客户端在任务执行期间关闭，该委派任务已取消（启动自愈补记），未产生执行结果。',
+                  message: '客户端在任务执行期间关闭，该委派任务已中断（启动补记）。未确认执行结果，已经发生的操作或文件需核实，不自动重试。',
                   data: {},
                 },
               },
@@ -408,19 +417,28 @@ async function migrateLegacyScriptToolsDirOnce(): Promise<string> {
 }
 
 app.whenReady().then(async () => {
+  if (!gotTheLock) return;
   writeMainLog('INFO', 'whenReady', '启动链开始');
+  // 一致性备份及增量迁移完成前不注册任何执行入口。
   try {
-    Menu.setApplicationMenu(null);
-    writeMainLog('INFO', 'Menu.setApplicationMenu', 'OK');
+    await applyMuseMigrations(getDb(), { backupDir: path.join(path.dirname(getDbPath()), 'muse', 'migration-backups') });
+    // Restore the user's actual model before validating persisted destinations/rules.
+    configManager.reload();
+    autonomyRuntime=createAutonomyRuntime(getDb(),getTaskService(),configManager,()=>{
+      try {
+        const window=mainWindow;if(!window||window.isDestroyed()||window.webContents.isDestroyed())return;
+        assertTrustedSender({sender:window.webContents,senderFrame:window.webContents.mainFrame} as import('electron').IpcMainInvokeEvent,window);
+        window.webContents.send(IPC_AUTONOMY.CHANGED);
+      } catch { /* Trusted UI pulls durable state again. */ }
+    },{publicRoot:path.join(app.getPath('userData'),'muse','public-snapshots'),artifactRoot:path.join(app.getPath('userData'),'muse','public-artifacts')});
+    await autonomyRuntime.reconcilePublicState();
+    setArtifactWakeListener(() => getTaskService().notifyCommittedActivity());
+    await reconcileArtifactPublications();
+    writeMainLog('INFO', 'muse.migration', '增量结构已就绪');
   } catch (err) {
-    writeMainLog('ERROR', 'Menu.setApplicationMenu', '失败', err);
-  }
-  // 初始化数据库
-  try {
-    getDb();
-    writeMainLog('INFO', 'getDb', 'OK');
-  } catch (err) {
-    writeMainLog('ERROR', 'getDb', '失败', err);
+    writeMainLog('ERROR', 'muse.migration', '迁移失败，未开放运行入口', err);
+    app.quit();
+    return;
   }
   try {
     resetInterruptedRuntimeState();
@@ -467,14 +485,6 @@ app.whenReady().then(async () => {
     writeMainLog('ERROR', 'cleanupStaleTasksDirsOnStartup', '失败', err);
   }
 
-  // 初始化配置
-  try {
-    configManager.reload();
-    writeMainLog('INFO', 'configManager.reload', 'OK');
-  } catch (err) {
-    writeMainLog('ERROR', 'configManager.reload', '失败', err);
-  }
-
   // 后台异步初始化 Python 内置环境（不阻塞窗口创建）
   let useBuiltinPython = true;
   try {
@@ -514,13 +524,36 @@ app.whenReady().then(async () => {
     if (mainWindow) {
       registerIpcHandlers(mainWindow);
     }
+    registerMuseIpcHandlers(() => mainWindow);
+    if(autonomyRuntime)registerAutonomyIpcHandlers(()=>mainWindow,autonomyRuntime);
+    registerBackgroundIpcHandlers(()=>mainWindow,()=>autonomyRuntime?.background);
+    registerNativeMenu(() => mainWindow);
     writeMainLog('INFO', 'registerIpcHandlers', 'OK');
   } catch (err) {
     writeMainLog('ERROR', 'registerIpcHandlers', '失败', err);
   }
 
+  powerMonitor.on('suspend', () => {
+    void autonomyRuntime?.scheduler.suspend().catch(error => writeMainLog('ERROR', 'background.suspend', '后台暂停失败', error));
+  });
+  powerMonitor.on('resume', () => {
+    try { autonomyRuntime?.scheduler.resume(); }
+    catch (error) { writeMainLog('ERROR', 'background.resume', '后台恢复失败', error); }
+  });
+  try {
+    if (autonomyRuntime) {
+      const enabled = await consumeBackgroundEnablementRequest(getDb(), autonomyRuntime, app.getPath('userData'));
+      if (enabled) writeMainLog('INFO', 'background.enablement', `已应用 ${enabled.preset} goal=${enabled.goalId} replayed=${enabled.replayed}`);
+    }
+  } catch (error) {
+    // Keep the configured desktop usable and retain the one-off request for a
+    // later retry; no scheduler is created from an incomplete transaction.
+    writeMainLog('ERROR', 'background.enablement', '后台主题启用未完成，请求已保留', error);
+  }
+  autonomyRuntime?.completeStartup();
+
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (!mainWindow || mainWindow.isDestroyed()) {
       createWindow();
       if (mainWindow) {
         registerIpcHandlers(mainWindow);
@@ -533,4 +566,15 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+let publicShutdownStarted=false;
+let publicShutdownCompleted=false;
+app.on('before-quit',event=>{
+  if(!autonomyRuntime||publicShutdownCompleted)return;
+  event.preventDefault();
+  if(publicShutdownStarted)return;
+  publicShutdownStarted=true;
+  // Drain only the public Run controllers; interrupted trusted tasks keep the existing recovery path.
+  void autonomyRuntime.dispose().catch(error=>writeMainLog('ERROR','muse.shutdown','公开探索收口记录未确认',error)).finally(()=>{publicShutdownCompleted=true;app.quit();});
 });

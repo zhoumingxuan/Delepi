@@ -43,3 +43,10 @@ data/
 pack_log.txt
 .deps_migrated
 deps-installed.json
+
+# Personal Muse generated packages, fixtures and local delivery evidence
+release-*/
+isolated-runs/
+开发验证*/
+*.dmg
+*.app/
