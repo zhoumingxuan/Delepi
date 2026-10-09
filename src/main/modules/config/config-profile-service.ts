@@ -5,13 +5,16 @@ import type { ProfileImportPreview, ProfileListResult } from '@shared/types/conf
 import { configManager, type ConfigManager } from './config-manager';
 
 export const PROFILE_CONFIG_KEYS = [
-  'mainModelBaseUrl', 'mainModelApiKey', 'mainModelName', 'mainModelMultimodal', 'mainThinkingLevel',
-  'executorModelBaseUrl', 'executorModelApiKey', 'executorModelName', 'executorThinkingLevel',
+  'mainModelBaseUrl', 'mainModelApiKey', 'mainModelName', 'mainModelMultimodal', 'mainThinkingLevel', 'mainModelProtocol',
+  'executorModelBaseUrl', 'executorModelApiKey', 'executorModelName', 'executorThinkingLevel', 'executorModelProtocol',
   'visionLlmBaseUrl', 'visionLlmApiKey', 'visionLlmModel',
 ] as const;
 export const PROFILE_SECRET_KEYS = ['mainModelApiKey', 'executorModelApiKey', 'visionLlmApiKey'] as const;
 const PROFILE_URL_KEYS = ['mainModelBaseUrl', 'executorModelBaseUrl', 'visionLlmBaseUrl'] as const;
 const THINKING_LEVELS = ['', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
+const MODEL_PROTOCOLS = ['cc', 'responses'];
+const isProtocolKey = (key: string): key is 'mainModelProtocol' | 'executorModelProtocol' =>
+  key === 'mainModelProtocol' || key === 'executorModelProtocol';
 const RESERVED_KEYS = new Set(['modelProfiles', 'activeProfileId', 'customSkillTags']);
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 
@@ -24,6 +27,7 @@ export function validateSettingPatch(raw: unknown): Partial<AppSettings> {
     if (typeof value !== typeof defaultValue) throw new Error('配置值类型无效');
     if (typeof value === 'string' && (value.length > 16000 || value.includes('\0'))) throw new Error('配置值长度或字符无效');
     if ((key === 'mainThinkingLevel' || key === 'executorThinkingLevel') && !THINKING_LEVELS.includes(value as string)) throw new Error('思考档位无效');
+    if (isProtocolKey(key) && !MODEL_PROTOCOLS.includes(value as string)) throw new Error('API 协议无效');
     patch[key] = value;
   }
   return patch as Partial<AppSettings>;
@@ -33,6 +37,16 @@ function blankProfile(id: string, name: string): ModelProfile {
   const profile: Record<string, unknown> = { id, name };
   for (const key of PROFILE_CONFIG_KEYS) profile[key] = DEFAULT_APP_SETTINGS[key];
   return profile as unknown as ModelProfile;
+}
+/** Legacy profiles omit protocol fields; never inherit the previously active profile's protocol. */
+function profileSettingPatch(profile: ModelProfile): Partial<AppSettings> {
+  const patch: Partial<AppSettings> = {};
+  for (const key of PROFILE_CONFIG_KEYS) {
+    const value = profile[key];
+    if (value !== undefined) (patch as Record<string, unknown>)[key] = value;
+    else if (isProtocolKey(key)) patch[key] = DEFAULT_APP_SETTINGS[key];
+  }
+  return patch;
 }
 function previewValue(key: string, value: unknown): string {
   if ((PROFILE_SECRET_KEYS as readonly string[]).includes(key)) return value ? '已提供（内容隐藏）' : '未提供';
@@ -68,7 +82,8 @@ export class ConfigProfileService {
     const active = profiles.find((p) => p.id === settings.activeProfileId);
     if (active) {
       for (const key of PROFILE_CONFIG_KEYS) {
-        if (Object.hasOwn(patch, key) && active[key] === settings[key]) {
+        if (Object.hasOwn(patch, key) && (active[key] === settings[key] ||
+          (isProtocolKey(key) && active[key] === undefined))) {
           (active as unknown as Record<string, unknown>)[key] = patch[key];
         }
       }
@@ -91,8 +106,7 @@ export class ConfigProfileService {
   switchProfile(id: string, expectedRevision?: number): { activeProfileId: string; profileName: string; revision: number } {
     const profile = this.manager.getSettings().modelProfiles.find((p) => p.id === id);
     if (!profile) throw new Error('方案不存在或已被删除');
-    const patch: Partial<AppSettings> = { activeProfileId: id };
-    for (const key of PROFILE_CONFIG_KEYS) if (profile[key] !== undefined) (patch as Record<string, unknown>)[key] = profile[key];
+    const patch: Partial<AppSettings> = { ...profileSettingPatch(profile), activeProfileId: id };
     const revision = this.manager.commitSettings(patch, expectedRevision);
     return { activeProfileId: id, profileName: profile.name, revision };
   }
@@ -102,7 +116,7 @@ export class ConfigProfileService {
     const patch: Partial<AppSettings> = { modelProfiles: profiles };
     if (!profiles.some((p) => p.id === current.activeProfileId)) {
       patch.activeProfileId = profiles[0]?.id ?? '';
-      if (profiles[0]) for (const key of PROFILE_CONFIG_KEYS) if (profiles[0][key] !== undefined) (patch as Record<string, unknown>)[key] = profiles[0][key];
+      if (profiles[0]) Object.assign(patch, profileSettingPatch(profiles[0]));
     }
     this.manager.commitSettings(patch, expectedRevision);
     return this.list();

@@ -7,7 +7,8 @@
 /**
  * 模型档案：主/子/视觉三组模型配置完整快照 + 执行子智能体思考档位。
  * visionEnabled 为视觉识别总开关，保持全局语义不入档（切换档案不改变总开关状态）。
- * 档案切换 = 把档案内全部配置键批量写回 AppSettings 当前生效九键 + 开关/档位。
+ * 档案切换 = 把档案内全部配置键批量写回 AppSettings 当前生效九键 + 开关/档位/协议。
+ * 协议两键可选：存量档案缺键时，主动切换方案按默认 CC 应用，避免继承上一方案的协议。
  */
 export interface ModelProfile {
   /** 档案唯一标识（uuid） */
@@ -20,11 +21,13 @@ export interface ModelProfile {
   mainModelName: string;
   mainModelMultimodal: boolean;
   mainThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  mainModelProtocol?: 'cc' | 'responses';
   // 执行子智能体模型
   executorModelBaseUrl: string;
   executorModelApiKey: string;
   executorModelName: string;
   executorThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  executorModelProtocol?: 'cc' | 'responses';
   // 视觉模型
   visionLlmBaseUrl: string;
   visionLlmApiKey: string;
@@ -58,6 +61,8 @@ export interface AppSettings {
   mainModelMultimodal: boolean;
   /** 主智能体思考程度/推理档位（默认 'high'；''=不设置=请求体不带 reasoning_effort，服务端走默认档位；可选 minimal/low/medium/high/xhigh/max） */
   mainThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** 新配置默认 CC；旧库未保存此键时 undefined 保留原自动探查。显式选择后失败不自动降级。 */
+  mainModelProtocol?: 'cc' | 'responses';
 
   // 执行子智能体模型
   executorModelBaseUrl: string;
@@ -65,6 +70,8 @@ export interface AppSettings {
   executorModelName: string;
   /** 执行子智能体思考程度/推理档位（默认 'max'；''=不设置=请求体不带 reasoning_effort，服务端走默认档位；可选 minimal/low/medium/high/xhigh/max） */
   executorThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** 新配置默认 CC；旧库未保存此键时 undefined 保留原自动探查。 */
+  executorModelProtocol?: 'cc' | 'responses';
 
   // 视觉模型
   visionLlmApiKey: string;

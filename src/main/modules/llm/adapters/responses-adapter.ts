@@ -234,7 +234,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
       }
       if (reasoningMustPassBackRestoreNeeded) {
         // 复位重发：剥离标志已复位（translateMessages 恢复发射 reasoning item——真实内容
-        // 优先，缺失走 buildAssistantItems 既有单空格占位兜底），按当前 stateful/
+        // 优先），按当前 stateful/
         // lastResponseId 实际状态重译构造重发体（禁用态=全量切片；有状态态=对应增量切片
         // 中恢复 reasoning item），其余请求形态（instructions/reasoning 参数/tools）不变。
         reasoningMustPassBackRestoreNeeded = false;
@@ -446,36 +446,13 @@ export class ResponsesAdapter extends ProtocolAdapter {
         continue;
       }
       if (role === 'assistant') {
-        // 兜底传参恒 true（2026-10-07 用户拍板）：服务端默认开 thinking（DeepSeek 官方与 vllm
-        // 双端点实测：不带 reasoning 参数时首个产出 item 均为 reasoning）——thinking+tools 强
-        // 校验语境下，缺思考链的 assistant 工具轮历史一律补占位（与档位空串/非空无关）。
-        const { reasoning, calls, text } = buildAssistantItems(message, true);
+        const { reasoning, calls, text } = buildAssistantItems(message);
         // reasoning item 接受性降级剥离（2026-10-07）：本实例已被端点指纹判『拒 reasoning
         // input item』后真实+占位一律不发（vllm 占位/真实同型 400 实测；DeepSeek 端不命中
         // 指纹零影响，占位机制照常）
         const reasoningItems = this.reasoningItemReturnDisabled ? [] : reasoning;
         if (calls.length === 0) {
           // 无有效 tool_calls：与原翻译路径一致（reasoning → output_text）
-          // 缺陷二补位扩展——独立正文消息分支（2026-10-07）：宿主链路 buildAssistantMessage 实证
-          // 工具轮恒 content=null、正文恒为独立 assistant 消息（无 tool_calls）；该独立正文消息紧随
-          // function_call_output 之后回传时（probe-F 实测捕获 profile=[USER,R[REAL],FC,FCO,AMSG]
-          // 正文前缺占位，与实测 400 的 K1 形态同构），DeepSeek /responses 校验要求正文 message item
-          // 前存在 reasoning item → 补最小单空格占位（空串实测被拒、单空格实测通过；每次现构新对象，
-          // 不复用真实 reasoning item）。守卫精确锚定实测 400 形态：①前置发射 item 为 fco（首轮回答、
-          // user 后直接正文等非紧随 fco 形态一律不补，未实测形态防过度执行）；②reasoningItems 为空
-          // （本消息自有真实思考链时 R 已前置于正文，三要素正文/思考/工具调用均不被忽视与吞改）；
-          // ③text 非空（无正文 item 则无补位对象）。剥离态短路优先级最高（reasoningItemReturn
-          // Disabled 下真实+占位一律不发，vllm 类端点保护零回归）。
-          const lastEmitted = inputItems.length > 0 ? inputItems[inputItems.length - 1] : null;
-          if (
-            lastEmitted !== null
-            && lastEmitted.type === 'function_call_output'
-            && reasoningItems.length === 0
-            && text.length > 0
-            && !this.reasoningItemReturnDisabled
-          ) {
-            inputItems.push({ type: 'reasoning', content: [{ type: 'reasoning_text', text: ' ' }] });
-          }
           inputItems.push(...reasoningItems, ...text);
           continue;
         }
@@ -484,16 +461,6 @@ export class ResponsesAdapter extends ProtocolAdapter {
         inputItems.push(...reasoningItems);
         for (let callIndex = 0; callIndex < calls.length; callIndex += 1) {
           const call = calls[callIndex];
-          // 缺陷一补位（2026-10-07 双 400 根因修复）：DeepSeek 官方 /responses（stateless）按 call_id
-          // 轮内序号逐 fc 定位校验『该 fc 之前必须存在 reasoning item』——同轮首个 fc 前保持发射该轮
-          // 真实 reasoning item（现状不动），第 2+ 个 fc 前无 reasoning item → HTTP 400
-          // invalid_request_error must-be-passed-back（实测场景 H 复现）。此处对第 2+ 个 fc 各补一个
-          // 最小占位 item（占位文本=单空格：空串实测被拒、单空格实测通过；每次现构新对象，不复用真实
-          // reasoning item 到多个位置）。剥离态短路（优先级最高）：reasoningItemReturnDisabled（vllm
-          // 类拒 reasoning 端点指纹置位）下真实+占位一律不发，维持既有全剥离行为。
-          if (callIndex > 0 && !this.reasoningItemReturnDisabled) {
-            inputItems.push({ type: 'reasoning', content: [{ type: 'reasoning_text', text: ' ' }] });
-          }
           inputItems.push(call.item);
           for (let j = i + 1; j < messages.length; j += 1) {
             const toolMessage = messages[j];
@@ -512,13 +479,6 @@ export class ResponsesAdapter extends ProtocolAdapter {
               break;
             }
           }
-        }
-        // 缺陷二补位（2026-10-07 双 400 根因修复）：fco 之后的 assistant 正文 message item 前同样被该校验
-        // 要求存在 reasoning item（实测场景 K1/K4：[user,r,fc,fco,正文]→400；K2 去正文尾巴→200；K3 正文
-        // 前补单空格占位→200 且流内无 response.failed）。占位同款单空格、每次现构新对象；剥离态短路同
-        // 缺陷一（reasoningItemReturnDisabled 下不发）。
-        if (text.length > 0 && !this.reasoningItemReturnDisabled) {
-          inputItems.push({ type: 'reasoning', content: [{ type: 'reasoning_text', text: ' ' }] });
         }
         inputItems.push(...text);
         continue;
@@ -1120,10 +1080,8 @@ function translateUserMessage(
 }
 
 /** assistant 消息翻译拆解（§三.3.2 表：reasoning_content→InputReasoning 文本态 + function_call 清单
- *  + output_text 回放）。仅负责项构造；fc/fco 逐调用配对相邻发射由 translateMessages 编排。
- *  thinkingEnabled：thinking 档位启用标记——启用且 assistant 轮携 tool_calls 而 reasoning_content
- *  缺失/为空时补最小占位 item（推理跳过轮兜底，见函数体内注释）。 */
-function buildAssistantItems(message: Record<string, unknown>, thinkingEnabled: boolean): {
+ *  + output_text 回放）。仅负责项构造；fc/fco 逐调用配对相邻发射由 translateMessages 编排。 */
+function buildAssistantItems(message: Record<string, unknown>): {
   reasoning: ResponsesInputItem[];
   calls: Array<{ id: string; item: ResponsesInputItem }>;
   text: ResponsesInputItem[];
@@ -1135,14 +1093,6 @@ function buildAssistantItems(message: Record<string, unknown>, thinkingEnabled: 
   if (typeof reasoningContent === 'string' && reasoningContent) {
     // InputReasoning Required 仅 type+content（无需 id/encrypted_content；本地 payload.thinking 纯文本直接承载）
     reasoning.push({ type: 'reasoning', content: [{ type: 'reasoning_text', text: reasoningContent }] });
-  } else if (thinkingEnabled && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-    // 推理跳过轮兜底（deepseek-flash thinking 模式偶发无思考链响应 → executor 空值不挂 reasoning_content）：
-    // DeepSeek 官方端点 thinking+tools 强校验要求 assistant 工具调用轮回传 reasoning_text，缺失即 400
-    // （invalid_request_error: The `reasoning_text` in the thinking mode must be passed back to the API）——
-    // 补最小占位 item（发射位置在 fc/fco 配对之前，由 translateMessages 既有编排保证；有思考链路径零变化；
-    // 非 thinking / 无 tool_calls 轮维持现状不发射）。占位文本=单空格：2026-10-07 真实端点实测
-    // 空串仍被该校验拒绝（400），单空格通过校验（HTTP 200 + 正常开流）。
-    reasoning.push({ type: 'reasoning', content: [{ type: 'reasoning_text', text: ' ' }] });
   }
   const toolCalls = message.tool_calls;
   if (Array.isArray(toolCalls)) {

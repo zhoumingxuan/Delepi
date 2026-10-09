@@ -142,6 +142,52 @@ test('normal Responses 404 falls back to usable CC and close stays idempotent', 
   await assert.rejects(setup.adapter.sendMessage([], { multimodal: false }), /closed/);
 });
 
+for (const protocol of ['cc', 'responses']) {
+  test(`explicit ${protocol} uses only the selected endpoint`, async () => {
+    const api = await exportsReady;
+    const urls = [];
+    globalThis.fetch = async (url) => { urls.push(url); return new Response('', { status: 200 }); };
+    const setup = await api.initAdapterWithFallback(config(), protocol);
+    assert.equal(setup.protocol, protocol);
+    assert.deepEqual(urls.map((url) => url.split('/').pop()), [protocol === 'cc' ? 'completions' : 'responses']);
+    setup.adapter.close();
+  });
+
+  test(`explicit ${protocol} failure closes the candidate and never falls back`, async () => {
+    const api = await exportsReady;
+    const urls = [];
+    const prototype = Object.getPrototypeOf(Object.getPrototypeOf(api.createProtocolAdapter(protocol)));
+    const realClose = prototype.close;
+    let closes = 0;
+    prototype.close = function () { closes++; return realClose.call(this); };
+    globalThis.fetch = async (url) => { urls.push(url); return new Response('', { status: 404 }); };
+    try {
+      await assert.rejects(api.initAdapterWithFallback(config(), protocol), (error) => error.name === 'ModelApiAbortError');
+      assert.equal(urls.length, 1);
+      assert.equal(closes, 1);
+    } finally { prototype.close = realClose; }
+  });
+
+  test(`explicit ${protocol} preserves cancellation and releases the candidate`, async () => {
+    const api = await exportsReady;
+    const started = deferred();
+    const controller = new AbortController();
+    const reason = new Error('synthetic explicit protocol cancellation');
+    let calls = 0;
+    globalThis.fetch = (url, options) => {
+      calls++;
+      started.resolve();
+      return new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }));
+    };
+    const pending = api.initAdapterWithFallback(config(controller.signal), protocol);
+    await started.promise;
+    controller.abort(reason);
+    await assert.rejects(pending, (error) => error === reason);
+    assert.equal(calls, 1);
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  });
+}
+
 test('both unsupported protocols keep the original API error classification', async () => {
   const api = await exportsReady;
   globalThis.fetch = async () => new Response('', { status: 404 });

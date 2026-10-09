@@ -104,10 +104,23 @@ export class ConfigManager {
     }
 
     const nextSettings = { ...DEFAULT_APP_SETTINGS, ...filtered };
+    // Existing installs previously selected a protocol by probing. Adding the new UI must not
+    // silently switch their route before the user saves a choice; fresh installs still default to CC.
+    const hasSavedSettings = Object.keys(rows).length > 0;
+    if (hasSavedSettings) {
+      if (rows.mainModelProtocol === undefined) nextSettings.mainModelProtocol = undefined;
+      if (rows.executorModelProtocol === undefined) nextSettings.executorModelProtocol = undefined;
+    }
     const repairs: Partial<AppSettings> = {};
+    // Persist the fresh-install defaults with the initial profile, so its next reload is not
+    // mistaken for a legacy database. Existing settings receive no protocol migration writes.
+    if (!hasSavedSettings) {
+      repairs.mainModelProtocol = nextSettings.mainModelProtocol;
+      repairs.executorModelProtocol = nextSettings.executorModelProtocol;
+    }
 
     // 【模型配置方案使能】方案列表为空时创建默认方案：以当前生效配置（三组九键+多模态开关/思考档位）
-    // 为快照源（对齐 profiles-save 的另存为语义，含 ModelProfile 全部 12 个配置键的合理默认值），
+    // 为快照源（对齐 profiles-save 的另存为语义，含 ModelProfile 全部 14 个配置键的合理默认值），
     // 保证首启/清空后始终存在一个可用方案，前端方案 Select 不再因空列表被禁用；创建后持久化写回 settings 表。
     if (nextSettings.modelProfiles.length === 0) {
       const defaultProfile: ModelProfile = {
@@ -118,10 +131,12 @@ export class ConfigManager {
         mainModelName: nextSettings.mainModelName,
         mainModelMultimodal: nextSettings.mainModelMultimodal,
         mainThinkingLevel: nextSettings.mainThinkingLevel,
+        mainModelProtocol: nextSettings.mainModelProtocol,
         executorModelBaseUrl: nextSettings.executorModelBaseUrl,
         executorModelApiKey: nextSettings.executorModelApiKey,
         executorModelName: nextSettings.executorModelName,
         executorThinkingLevel: nextSettings.executorThinkingLevel,
+        executorModelProtocol: nextSettings.executorModelProtocol,
         visionLlmBaseUrl: nextSettings.visionLlmBaseUrl,
         visionLlmApiKey: nextSettings.visionLlmApiKey,
         visionLlmModel: nextSettings.visionLlmModel,

@@ -154,6 +154,22 @@ const REASONING_EFFORT_OPTIONS: Array<{ value: string; label: string | ReactElem
   { value: 'max', label: 'max' },
 ];
 
+/** API 协议选项（主/子智能体各自独立选择；'cc'=Chat Completion（默认，兼容大多数服务商），'responses'=OpenAI Responses 端点） */
+const MODEL_PROTOCOL_OPTIONS: Array<{ value: string; label: string | ReactElement }> = [
+  {
+    value: 'cc',
+    label: (
+      <span>
+        Chat Completion{' '}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          默认
+        </Typography.Text>
+      </span>
+    ),
+  },
+  { value: 'responses', label: 'Response API' },
+];
+
 /**
  * API 密钥密码框包装组件：受控可见性切换 + 焦点接管。
  * antd Input.Password 眼睛控件的 mousedown/up 均 preventDefault（防焦点丢失/光标移动），
@@ -373,10 +389,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
 
   /**
    * 新建方案（禁止重名）：经 profilesApi.saveProfile({ name, blank: true }) 创建空白方案
-   * （主进程 blank 分支：9 个文本键取空串、开关/档位取 DEFAULT_APP_SETTINGS 默认值；前端
+   * （主进程 blank 分支：9 个文本键取空串、开关/档位/协议取 DEFAULT_APP_SETTINGS 默认值；前端
    * 不自行拼装方案对象写库）；随后取新方案 id（saveProfile 返回按唯一名匹配，缺失时回退
    * listProfiles 匹配），经等价 switchProfile 链路自动激活切换（与 handleSwitchProfile 同语义：
-   * 写 12 键 + activeProfileId、回填表单为空白值、onReload 刷新全局 config），最后 loadProfiles
+   * 写 14 键 + activeProfileId、回填表单为空白值、onReload 刷新全局 config），最后 loadProfiles
    * 刷新方案列表。全程不写旧方案任何内容，此后字段修改经链路C 写入新方案。
    * 注：不直接复用 handleSwitchProfile，因其闭包内的 profiles 为创建前快照、找不到新方案，
    * 表单回填分支会被跳过；此处在拿到新方案对象后执行等价链路，行为与其完全一致。
@@ -506,8 +522,8 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       if (!result.ok) { if (!result.canceled) antdMessage.error(result.error ?? '导入预览失败'); return; }
       const preview = result.preview;
       const labels: Record<string, string> = {
-        mainModelBaseUrl: '主模型地址', mainModelApiKey: '主模型密钥', mainModelName: '主模型', mainModelMultimodal: '主模型多模态', mainThinkingLevel: '主模型思考档位',
-        executorModelBaseUrl: '执行模型地址', executorModelApiKey: '执行模型密钥', executorModelName: '执行模型', executorThinkingLevel: '执行模型思考档位',
+        mainModelBaseUrl: '主模型地址', mainModelApiKey: '主模型密钥', mainModelName: '主模型', mainModelMultimodal: '主模型多模态', mainThinkingLevel: '主模型思考档位', mainModelProtocol: '主模型 API 协议',
+        executorModelBaseUrl: '执行模型地址', executorModelApiKey: '执行模型密钥', executorModelName: '执行模型', executorThinkingLevel: '执行模型思考档位', executorModelProtocol: '执行模型 API 协议',
         visionLlmBaseUrl: '视觉模型地址', visionLlmApiKey: '视觉模型密钥', visionLlmModel: '视觉模型',
       };
       antdModal.confirm({
@@ -1043,6 +1059,31 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                           style={{ maxWidth: 220 }}
                         />
                       </Form.Item>
+
+                      <Form.Item
+                        label={
+                          <span
+                            style={{
+                              color: token.colorTextSecondary,
+                              fontSize: 13,
+                            }}
+                          >
+                            API 协议
+                          </span>
+                        }
+                        name="mainModelProtocol"
+                      >
+                        <Select
+                          options={MODEL_PROTOCOL_OPTIONS}
+                          placeholder="旧配置：自动探查（可手动选择）"
+                          onChange={(value) => {
+                            // 【F4】同值跳过：值未变化不发起 config:save
+                            if (value === config.mainModelProtocol) return;
+                            onSave("mainModelProtocol", value);
+                          }}
+                          style={{ maxWidth: 220 }}
+                        />
+                      </Form.Item>
                     </div>
 
                     {/* 子智能体配置 */}
@@ -1156,6 +1197,31 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                             // 【F4】同值跳过：值未变化不发起 config:save
                             if (value === config.executorThinkingLevel) return;
                             onSave("executorThinkingLevel", value);
+                          }}
+                          style={{ maxWidth: 220 }}
+                        />
+                      </Form.Item>
+
+                      <Form.Item
+                        label={
+                          <span
+                            style={{
+                              color: token.colorTextSecondary,
+                              fontSize: 13,
+                            }}
+                          >
+                            API 协议
+                          </span>
+                        }
+                        name="executorModelProtocol"
+                      >
+                        <Select
+                          options={MODEL_PROTOCOL_OPTIONS}
+                          placeholder="旧配置：自动探查（可手动选择）"
+                          onChange={(value) => {
+                            // 【F4】同值跳过：值未变化不发起 config:save
+                            if (value === config.executorModelProtocol) return;
+                            onSave("executorModelProtocol", value);
                           }}
                           style={{ maxWidth: 220 }}
                         />
