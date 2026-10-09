@@ -335,7 +335,7 @@ async function healOrphanToolCallMessages(): Promise<number> {
               {
                 current_task_execution_result: {
                   success: false,
-                  message: '客户端在任务执行期间关闭，该委派任务已取消（启动自愈补记），未产生执行结果。',
+                  message: '客户端在任务执行期间关闭，该委派任务已中断（启动补记）。未确认执行结果，已经发生的操作或文件需核实，不自动重试。',
                   data: {},
                 },
               },

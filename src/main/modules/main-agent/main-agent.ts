@@ -940,6 +940,11 @@ export async function runMainAgent(
       { multimodal: multimodalEnabled, signal: options.signal },
     );
 
+    // A stream may resolve partial content after cancellation; it cannot complete the run.
+    if (options.signal?.aborted) {
+      throw options.signal.reason ?? new Error(ERR_ABORTED);
+    }
+
     fullContent = streamResult.content;
     fullThinking = streamResult.reasoning || '';
 
@@ -1143,7 +1148,8 @@ export async function runMainAgent(
     //   批次末 await Promise.allSettled(toolCallTasks) 聚合（见本批循环体收尾处）——同批多个
     //   delegate_executor 各自立即启动并独立记录 toolStartedAt / 发送 init 快照，
     //   后续任务不再排队等待前序任务收尾（修复前端并行任务不显示/取消后才出现/计时零秒）。
-    const toolCallTasks = streamResult.toolCalls.map((toolCall) => (async () => {
+    const toolSlotPaired = filteredToolCalls.map(() => false);
+    const toolCallTasks = filteredToolCalls.map((toolCall,slotIndex) => (async () => {
       if (!toolCall.id) return { toolCall, status: 'skipped' as const };
       const toolStartedAt = new Date().toISOString();
       const isDelegatedExecutor = toolCall.function.name === 'delegate_executor';
@@ -1203,6 +1209,7 @@ export async function runMainAgent(
           const failureResult = buildDelegatedTaskFailureResult(undefined, true, delegatedTaskStartedAt);
           const failureResultText = stringifyDelegatedTaskResultForMainAgent(failureResult);
           const toolFinishedAt = new Date().toISOString();
+          toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1331,6 +1338,7 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #7）：tool 消息不再即时落库，改为批次暂存（批次末 insertMessages 单事务配对落库）
+          toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1413,6 +1421,7 @@ export async function runMainAgent(
           });
 
           // ★ S2（文档 #8）：失败 tool 消息批次暂存（批次末 insertMessages 配对落库）；事件移批次末 emit
+          toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
             payload: {
@@ -1461,7 +1470,8 @@ export async function runMainAgent(
         });
         // ★ S2（文档 #9）：未知工具补配对 tool 消息（消除该分支 tool_call 无配对消息的既有悬空，
         //   对齐 ai_fr「全部 toolCall 均有配对消息」语义）
-        pendingToolMessagePayloads.push({
+        toolSlotPaired[slotIndex] = true;
+          pendingToolMessagePayloads.push({
           role: 'tool',
           payload: {
             toolCallId: toolCall.id,
@@ -1483,6 +1493,28 @@ export async function runMainAgent(
     //   下方批次收口（tool.batch.completed → 全中止判定 → insertMessages → TOOL_MESSAGE_CREATED）
     //   自此全部位于 allSettled 之后执行，批次消息时序语义与 ai_fr :968-1038 一致。
     const settled = await Promise.allSettled(toolCallTasks);
+
+    let rejectedSlot = false;
+    let rejectedReason:unknown;
+    // Every persisted assistant declaration must be paired even if admission/setup/final persistence fails.
+    // Siblings have really settled; this only records uncertainty, and never starts or replays a tool.
+    for (let index=0;index<settled.length;index++) {
+      const result=settled[index];
+      if(result.status !== 'rejected') continue;
+      if(!rejectedSlot) rejectedReason=result.reason;
+      rejectedSlot=true;
+      const toolCall=filteredToolCalls[index];
+      if(toolSlotPaired[index] || !toolCall.id) continue;
+      const finishedAt=new Date().toISOString();
+      const failure=stringifyDelegatedTaskResultForMainAgent(buildToolResult({success:false,
+        code:'DELEGATED_TASK_RUNTIME_UNCONFIRMED',
+        message:'任务运行记录未能确认，当前执行已中断。已发生的操作或文件需核实，未自动重试。',data:{}}));
+      turnMessages.push({role:'tool',tool_call_id:toolCall.id,content:failure});
+      pendingToolMessagePayloads.push({role:'tool',payload:{toolCallId:toolCall.id,name:toolCall.function.name,
+        arguments:toolCall.function.arguments,result:failure,isError:true,startedAt:toolCallTurnStartedAt,finishedAt}});
+      batchResults.push({callId:toolCall.id,status:'failed'});
+      toolSlotPaired[index]=true;
+    }
 
     // ★ 批次完成后：按 settled 结果汇总 completedTasks（对齐 ai_fr route.ts:970-987）——
     //   任务闭包不再直接 push（原串行循环内逐个 push 语义在并行下不成立）；seq 按批次末汇总序赋值。
@@ -1570,6 +1602,8 @@ export async function runMainAgent(
         },
       });
     }
+
+    if (rejectedSlot) throw rejectedReason;
 
     // ★ M17 全中止判定后移（条件与守卫原样保留）：批内全部 aborted → 批次消息已单事务落库
     //   并推送真实 tool 消息后，再中止本轮（throw 走 runMainAgent 既有 catch 的 signal.aborted
