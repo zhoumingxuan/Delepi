@@ -1330,15 +1330,18 @@ export async function runDelegatedTask(
     : initialMessages;
 
   // ============================================================
-  // ★ 多协议适配器（协议探查降级链，目标三）：每任务一实例（P3 非常驻）——
+  // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每任务一实例（P3 非常驻）——
   //   tools 传 delegatedExecutorTools 静态数组（L1285-1287 每任务局部构建，天然最新）；
   //   档位传 getter（每次 sendMessage 组装思考参数时实时重读 executorThinkingLevel，
   //   禁止清单⑨——init 注入值仅缺省兜底，与现状 L1069 每轮读取语义一致）；
   //   M14 复位链经 init.hooks.onStreamRetry 承载（重试边界时序不变）；
-  //   协议选择不再读取 AppSettings.modelProtocol：先 Responses（探 {baseUrl}/responses）
-  //   后 CC（探 {baseUrl}/chat/completions）两级 await init，任一成功即采用；两级均
-  //   失败 = 请求大模型 API 完全失败——initAdapterWithFallback 抛 ModelApiAbortError
-  //   （携带两次探查失败原因）→ 本函数既有 catch saveExecutionLogOnError 后 rethrow →
+  //   协议选择（2026-10-08 用户拍板）：子智能体协议经 AppSettings.executorModelProtocol
+  //   实时注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定协议
+  //   时仅构造并 init 对应适配器，init 失败即抛 ModelApiAbortError（禁止自动降级，用
+  //   不了就换一个协议由用户自己换）；未指定时走原探查降级链：先 Responses（探
+  //   {baseUrl}/responses）后 CC（探 {baseUrl}/chat/completions）两级 await init，任一
+  //   成功即采用；两级均失败 = 请求大模型 API 完全失败——initAdapterWithFallback 抛
+  //   ModelApiAbortError（携带两次探查失败原因）→ 本函数既有 catch saveExecutionLogOnError 后 rethrow →
   //   主链路委派失败消息化；warnCodingPlanMismatch 基于实际生效协议告警；
   //   实例边界 = runDelegatedTask 一次调用，finally 内 close 释放（§六.1）。
   // ============================================================
@@ -1359,7 +1362,7 @@ export async function runDelegatedTask(
       onStreamRetry: () => options.onStreamRetry?.(),
     },
   };
-  const adapterSetup = await initAdapterWithFallback(adapterInitConfig);
+  const adapterSetup = await initAdapterWithFallback(adapterInitConfig, configManager.getSettings().executorModelProtocol);
   const adapter = adapterSetup.adapter;
   warnCodingPlanMismatch(adapterSetup.protocol, options.assistantConfig.executorModel.baseUrl);
   // ★ 阶段四（方案 §5.2）：适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；

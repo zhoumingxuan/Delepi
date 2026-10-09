@@ -588,12 +588,14 @@ export async function runMainAgent(
   let completedTasks: CompletedTask[] = [];
 
   // ============================================================
-  // ★ 多协议适配器（协议探查降级链，目标三）：每轮对话新起实例（P3 非常驻）——
+  // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每轮对话新起实例（P3 非常驻）——
   //   CC = 现状 streamChat 零变化包装（openai-client.ts 一行不改）；
-  //   Responses = 智谱 /api/v1/responses 翻译层。协议选择不再读取
-  //   AppSettings.modelProtocol：先 Responses 后 CC 两级 await init（init 内 POST 探
-  //   端点，404=协议不支持），任一成功即采用；两级均失败 = 请求大模型 API 完全失败
-  //   （降级链置于本轮 try 内，抛 ModelApiAbortError 携带两次探查原因接入既有错误面）；
+  //   Responses = 智谱 /api/v1/responses 翻译层。协议选择（2026-10-08 用户拍板）经
+  //   AppSettings.mainModelProtocol 实时注入：'cc'/'responses' 指定时仅构造并 init 对
+  //   应适配器，init 失败即抛 ModelApiAbortError（禁止自动降级，用不了由用户自己换协
+  //   议）；未指定时先 Responses 后 CC 两级 await init（init 内 POST 探端点，404=协议
+  //   不支持），任一成功即采用；两级均失败 = 请求大模型 API 完全失败（降级链置于本
+  //   轮 try 内，抛 ModelApiAbortError 携带两次探查原因接入既有错误面）；
   //   warnCodingPlanMismatch 基于实际生效协议告警；实例边界 = runMainAgent 一次调用，
   //   finally 内 close 释放（两级均失败时 adapter 尚为 null，?. 安全跳过），
   //   配置切换随下一轮 init 自然生效（§六.4）。
@@ -877,12 +879,14 @@ export async function runMainAgent(
   let delegateArgsRetryCount = 0;
 
   try {
-    // ★ 协议探查降级链（目标三）：两级 init 探查置于本轮 try 内——先 Responses
-    //   （探 {baseUrl}/responses）后 CC（探 {baseUrl}/chat/completions），两级均失败 =
-    //   请求大模型 API 完全失败，initAdapterWithFallback 抛 ModelApiAbortError（携带
-    //   两次探查失败原因）走下方既有 catch（MAIN_AGENT_ERROR_EVENT / MODEL_API_ERROR）
-    //   与 finally 收口；协议选择不再读取 AppSettings.modelProtocol。
-    const adapterSetup = await initAdapterWithFallback(adapterInitConfig);
+    // ★ 协议选择（2026-10-08 用户拍板）：主智能体协议经 AppSettings.mainModelProtocol
+    //   实时注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定
+    //   协议时仅构造并 init 对应适配器，init 失败即抛 ModelApiAbortError（禁止自动
+    //   降级，用不了就换一个协议由用户自己换）；未指定时走原协议探查降级链（先
+    //   Responses 探 {baseUrl}/responses 后 CC 探 {baseUrl}/chat/completions），两级均
+    //   失败 = 请求大模型 API 完全失败，走下方既有 catch（MAIN_AGENT_ERROR_EVENT /
+    //   MODEL_API_ERROR）与 finally 收口。
+    const adapterSetup = await initAdapterWithFallback(adapterInitConfig, configManager.getSettings().mainModelProtocol);
     adapter = adapterSetup.adapter;
     warnCodingPlanMismatch(adapterSetup.protocol, options.modelConfig.baseUrl);
     // 三回调注册（onChunk 单通道拆分映射见循环内接线；onToolCall=通知模式默认；

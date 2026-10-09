@@ -15,12 +15,14 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   mainModelName: '',
   mainModelMultimodal: true,
   mainThinkingLevel: 'high',
+  mainModelProtocol: 'cc',
 
   executorModelBaseUrl: '',
   executorModelApiKey: '',
   executorModelName: '',
   // 子智能体推理档位默认 max（主智能体默认 high；默认值仅作缺省读取合并——不写库不迁移，存量非空档位不受影响）
   executorThinkingLevel: 'max',
+  executorModelProtocol: 'cc',
 
   // 视觉模型
   visionLlmApiKey: '',
