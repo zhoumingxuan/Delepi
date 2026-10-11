@@ -64,7 +64,7 @@ export function getLatestCompletedContextCompression(
  *
  * 触发条件：
  *   1. 图片模式强制压缩：multimodalEnabled && currentInputHasImage
- *   2. 字符阈值触发：消息字符数 > CONTEXT_COMPRESSION_THRESHOLD_CHARS
+ *   2. 字符阈值触发：排除头两条消息（system_message+首个 user_message）后的消息字符数 > CONTEXT_COMPRESSION_THRESHOLD_CHARS
  * 持久化：写入 context_compressions 表
  * 重试：失败时最多重试 3 次，间隔 10 秒
  *
@@ -84,7 +84,10 @@ export async function runContextCompressionIfNeeded(
   // 图片模式强制压缩：多模态启用且当前输入包含图片 → 无条件触发
   const forceByImage = options.multimodalEnabled && options.currentInputHasImage;
 
-  if (!forceByImage && countStringChars(options.messages) <= CONTEXT_COMPRESSION_THRESHOLD_CHARS) {
+  // 字符阈值触发计数口径（对齐 executor-context-compression 的 slice(2) 口径）：排除头两条消息
+  // （index 0=system_message、index 1=首个 user_message），仅统计其余消息的字符总数；
+  // slice(2) 只取计数快照，绝不改动 messages 数组本身（长度/顺序/元素内容与引用均不变）
+  if (!forceByImage && countStringChars(options.messages.slice(2)) <= CONTEXT_COMPRESSION_THRESHOLD_CHARS) {
     return;
   }
 
