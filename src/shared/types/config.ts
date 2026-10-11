@@ -27,6 +27,8 @@ export interface ModelProfile {
   executorModelApiKey: string;
   executorModelName: string;
   executorThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** 执行子智能体触发上下文压缩阈值（字符数，默认 ''=不设置；可选 64K/128K/256K 档位；必需键：所有档案构造点显式携带，切换逐键写回） */
+  executorContextCompressionThreshold: '' | '64K' | '128K' | '256K';
   executorModelProtocol?: 'cc' | 'responses';
   // 视觉模型
   visionLlmBaseUrl: string;
@@ -70,6 +72,8 @@ export interface AppSettings {
   executorModelName: string;
   /** 执行子智能体思考程度/推理档位（默认 'max'；''=不设置=请求体不带 reasoning_effort，服务端走默认档位；可选 minimal/low/medium/high/xhigh/max） */
   executorThinkingLevel: '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
+  /** 执行子智能体触发上下文压缩阈值（字符数，默认 ''=不设置；可选 64K/128K/256K 档位） */
+  executorContextCompressionThreshold: '' | '64K' | '128K' | '256K';
   /** 执行子智能体 API 协议（默认 'cc'=Chat Completion；'responses'=OpenAI Response API 端点） */
   executorModelProtocol: 'cc' | 'responses';
 

@@ -76,7 +76,7 @@ export class ConfigManager {
     this.settings = { ...DEFAULT_APP_SETTINGS, ...filtered };
 
     // 【模型配置方案使能】方案列表为空时创建默认方案：以当前生效配置（三组九键+多模态开关/思考档位）
-    // 为快照源（对齐 profiles-save 的另存为语义，含 ModelProfile 全部 12 个配置键的合理默认值），
+    // 为快照源（对齐 profiles-save 的另存为语义，含 ModelProfile 全部 15 个配置键的合理默认值），
     // 保证首启/清空后始终存在一个可用方案，前端方案 Select 不再因空列表被禁用；创建后持久化写回 settings 表。
     if (this.settings.modelProfiles.length === 0) {
       const defaultProfile: ModelProfile = {
@@ -92,6 +92,7 @@ export class ConfigManager {
         executorModelApiKey: this.settings.executorModelApiKey,
         executorModelName: this.settings.executorModelName,
         executorThinkingLevel: this.settings.executorThinkingLevel,
+        executorContextCompressionThreshold: this.settings.executorContextCompressionThreshold,
         executorModelProtocol: this.settings.executorModelProtocol,
         visionLlmBaseUrl: this.settings.visionLlmBaseUrl,
         visionLlmApiKey: this.settings.visionLlmApiKey,

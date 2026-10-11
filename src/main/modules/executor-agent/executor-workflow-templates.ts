@@ -14,6 +14,7 @@ import {
 import type { TaskTag } from '../../constants';
 
 export type ExecutorWorkflowTemplateId =
+  | 'doc-writing'
   | 'research_analysis'
   | 'issue_location'
   | 'solution_design'
@@ -37,6 +38,13 @@ export const EXECUTOR_WORKFLOW_TEMPLATES: Record<
   ExecutorWorkflowTemplateId,
   ExecutorWorkflowTemplate
 > = {
+  'doc-writing': {
+    id: 'doc-writing',
+    kind: 'specific',
+    title: '文书编写',
+    description: '用于编写各类文书、文档、文稿和制作标准文书等需要按文档性质采用标准格式与惯例措辞的任务。',
+    fileName: 'doc-writing/doc-writing.md',
+  },
   research_analysis: {
     id: 'research_analysis',
     kind: 'specific',
@@ -107,6 +115,7 @@ export const TASK_TAG_WORKFLOW_TEMPLATE_ID: Record<
   执行变更: 'change_execution',
   调查研究: 'research_analysis',
   视觉设计: 'visual_design',
+  文书编写: 'doc-writing',
 };
 
 // ============================================================

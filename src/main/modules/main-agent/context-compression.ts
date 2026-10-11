@@ -101,3 +101,35 @@ export function countStringChars(value: unknown): number {
 
   return 0;
 }
+
+/**
+ * 独立提示词变体：压缩指令由调用方注入（子智能体任务执行中途压缩等场景）。
+ * 既有 compressMessagesToContext（主智能体对话总结口径）及其调用链保持零改动。
+ */
+export async function compressMessagesToContextWithInstruction(
+  messages: readonly OpenAI.Chat.ChatCompletionMessageParam[],
+  modelConfig: ModelConfig,
+  multimodalEnabled: boolean,
+  instruction: string,
+): Promise<string> {
+  const requestMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
+    ...messages.filter((m) => m.role !== 'system'),
+    {
+      role: 'user',
+      content: buildMainAgentTextContent(
+        instruction,
+        { multimodalEnabled },
+      ),
+    },
+  ];
+  // glm 判定不区分大小写（机制基准 ai_fr）；条件式归调用点侧，封装层不感知模型名
+  const isGlmModel = modelConfig.model.toLowerCase().startsWith('glm');
+  const result = await nonStreamChat({
+    modelConfig,
+    messages: requestMessages,
+    thinking: isGlmModel
+      ? { enableThinking: true, reasoningEffort: 'low' }
+      : { enableThinking: false }
+  });
+  return extractText(result.content);
+}

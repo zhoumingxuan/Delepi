@@ -161,6 +161,7 @@ export const BUILTIN_TASK_TAGS = [
   '执行变更',
   '调查研究',
   '视觉设计',
+  '文书编写',
 ] as const;
 export type TaskTag = (typeof BUILTIN_TASK_TAGS)[number];
 

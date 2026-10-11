@@ -33,6 +33,15 @@ import type {
 } from '@shared/types/conversation-cleanup';
 
 // ============================================================
+// 模块级常量
+// ============================================================
+
+/** A 通道错误事件与 B 通道调用拒绝的配对去重窗口（同一失败两通道间隔为毫秒~秒级） */
+const CHAT_ERROR_DEDUP_WINDOW_MS = 10_000;
+/** 去重记录环形容量（多会话并发场景保留最近 N 条，按会话过滤） */
+const CHAT_ERROR_DEDUP_MAX_ENTRIES = 8;
+
+// ============================================================
 // 类型定义
 // ============================================================
 
@@ -472,6 +481,12 @@ export function useChat(options?: UseChatOptions) {
   const messageApiRef = useRef<UseChatMessageApi | undefined>(options?.messageApi);
   // 同步最新 messageApi 到 ref（允许外部动态更新）
   messageApiRef.current = options?.messageApi;
+
+  /**
+   * ★ 设计四：最近 chat:error 事件记录（去重：B 通道判定“已由 A 呈现”的依据；
+   *   按会话+时间窗+文案匹配）
+   */
+  const lastChatErrorEventsRef = useRef<Array<{ conversationId: string; message: string; at: number }>>([]);
 
   // ============================================================
   // Phase 3 P1-C2 silentConversationReload + 200ms 节流 ref
@@ -1345,7 +1360,19 @@ const scheduleProjection = useCallback(() => {
         //   2) loading 消息/工具快照归一化经 applyConversationEvent 写入目标会话 entry
         //      （目标会话为活跃会话时由路由器镜像投影），禁止无 convId 直改当前投影
         //      （避免串会话误归一化）。
-        if (convId && convId === conversationIdRef.current) {
+        // ★ 设计四：B 通道调用拒绝与 A 通道 chat:error 事件的重复提示去重——
+        //   同会话 + 时间窗 + 文案匹配（A 侧文案干净，B 侧可能带 Electron invoke
+        //   拒绝前缀包装，故单向包含 errMsg.includes(item.message) 辅以全等兜底，
+        //   长度阈值≥8 防短串误配）；命中（已由 A 通道 toast 呈现）则跳过 setError，
+        //   避免 toast+横幅双弹；未命中（B-only 场景如 CONVERSATION_RUNNING /
+        //   主模型 Key 未配置）照常 setError 保留横幅。
+        const duplicateOfChatErrorEvent = Boolean(convId) && lastChatErrorEventsRef.current.some((item) =>
+          item.conversationId === convId
+          && Date.now() - item.at <= CHAT_ERROR_DEDUP_WINDOW_MS
+          && item.message.length >= 8
+          && (errMsg.includes(item.message) || friendlyErrMsg === item.message),
+        );
+        if (convId && convId === conversationIdRef.current && !duplicateOfChatErrorEvent) {
           setError(friendlyErrMsg);
         }
         if (convId) {
@@ -1735,6 +1762,12 @@ const scheduleProjection = useCallback(() => {
       const errMsg = data.error || '对话出错';
       if (messageApiRef.current) {
         messageApiRef.current.error(errMsg);
+      }
+      // ★ 设计四：记录最近 chat:error 事件（B 通道去重判定依据；无论 toast 分支
+      //   或退化 setError 分支都在此统一记录，容量上限 CHAT_ERROR_DEDUP_MAX_ENTRIES）
+      lastChatErrorEventsRef.current.unshift({ conversationId: data.conversationId, message: errMsg, at: Date.now() });
+      if (lastChatErrorEventsRef.current.length > CHAT_ERROR_DEDUP_MAX_ENTRIES) {
+        lastChatErrorEventsRef.current.length = CHAT_ERROR_DEDUP_MAX_ENTRIES;
       }
       // ★ M07：终态时机 opportunistic 驱逐
       sweepRuntimeStore();

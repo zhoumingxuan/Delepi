@@ -24,6 +24,7 @@ import { isModelApiAbortError } from '../llm/model-retry';
 import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
 import { buildExecutorSystemPrompt } from './executor-system-prompt';
+import { createExecutorContextCompressionRunner } from './executor-context-compression';
 import {
   SCRIPTS_TOOLS_DIR,
   type TaskTag,
@@ -1329,6 +1330,13 @@ export async function runDelegatedTask(
     ? options.recordSession.adoptMessages(initialMessages)
     : initialMessages;
 
+  // ★ 压缩基准冻结（上下文压缩重建基准）：重建恒以任务最初形态为基准（system 原对象+user 原文）；
+  //   二次压缩不依赖反解重建消息（bg(n-1) 已在压缩入参 slice(2) 范围内被总结覆盖）。
+  const executorCompressionBase = {
+    originalSystemMessage: initialMessages[0],
+    originalUserContent: String(initialMessages[1]?.content ?? ''),
+  };
+
   // ============================================================
   // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每任务一实例（P3 非常驻）——
   //   tools 传 delegatedExecutorTools 静态数组（L1285-1287 每任务局部构建，天然最新）；
@@ -1371,11 +1379,29 @@ export async function runDelegatedTask(
     options.recordSession.registerAdapterInsertSink((message) => adapter.insertMessage(message));
   }
 
+  // ★ 上下文压缩 runner（executorContextCompressionThreshold 运行时消费）：
+  //   门禁(''/中止/服务端驻留/未超限)→slice(2)统计→同步压缩→原位重建→notice 全内聚于模块内；
+  //   阈值 getter 每轮现读（对齐上方 adapterInitConfig.thinkingLevel 实时读取范式）；
+  //   压缩模型=executorModel 三键（任务内冻结）；无 recordSession 时 notice 跳过、重建照常。
+  const executorCompressionStep = createExecutorContextCompressionRunner({
+    messages: runtimeMessages,
+    adapter,
+    signal: options.signal,
+    readThreshold: () => configManager.getSettings().executorContextCompressionThreshold,
+    modelConfig: options.assistantConfig.executorModel,
+    originalSystemMessage: executorCompressionBase.originalSystemMessage,
+    originalUserContent: executorCompressionBase.originalUserContent,
+    onNotice: (payload) => { options.recordSession?.appendContextCompressionNotice(payload); },
+  }).step;
+
   let structuredPayload: ExecutorStructuredPayload | null = null;
   const toolCallLogById = new Map<string, ExecutorExecutionLogToolCall>();
 
   // 工具调用循环
   while (true) {
+
+    // ★ 上下文压缩检查点（每轮唯一插队点：门禁→统计→同步压缩→原位重建→notice；'' 时仅一次阈值纯读即返回）
+    await executorCompressionStep();
 
     // ★ 任务级交互消息·安全点二（工具批次结束/循环轮起点）：到达此点必经 Promise.all 汇聚
     //   （并发批次全部结束）+ 全部 role:'tool' 已 push 同步收口，或无工具轮回填

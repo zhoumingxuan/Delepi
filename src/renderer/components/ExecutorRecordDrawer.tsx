@@ -37,7 +37,9 @@ import {
 } from '@ant-design/icons';
 import type {
   ExecutorAssistantReplyRecord,
+  ExecutorContextCompressionNoticeRecord,
   ExecutorNoticeRecord,
+  ExecutorNoticeLikeRecord,
   ExecutorRecordEntry,
   ExecutorTaskMessageSendResult,
   ExecutorTaskRecordStatus,
@@ -391,20 +393,28 @@ function ToolRecordItem(options: { record: ExecutorToolRecord }): ReactElement {
 }
 
 /** 停止/通知条目（内聚子组件，不外泄）：
- * - notice 为静态单时刻条目：头部不使用“思考 #seq”字样（停止语义与思考语义在数据层解耦后，
+ * - notice 条目：停止类为静态单时刻条目；上下文压缩类为单条目状态机（in-progress 创建 →
+ *   completed/failed 同 seq 原位更新；正文后端预构建全文，渲染层零拼接逻辑保持不变）；
+ * - 头部不使用“思考 #seq”字样（停止语义与思考语义在数据层解耦后，
  *   渲染层按 kind 独立分发，本组件天然不出现“思考 #N”头部）——停止文案不再冒充思考；
  * - 头部行与思考/工具条目头部行同构（12px/18px colorTextTertiary），语义标识“已停止”
  *   （与文案模板“…已停止，用户手动取消。”动词一致；标题 Tag“已取消”表达任务终态，互补不冲突）；
+ * - 压缩进行中态：头部前置 LoadingOutlined（colorPrimary，对齐工具条目“执行中”徽标先例）+
+ *   标题“上下文压缩（压缩中） · HH:mm:ss”，正文=后端“上下文正在压缩中…”全文（信息条观感不变）；
  * - 正文为纯文本信息条（非 markdown；单条固定文案，无折叠/展开需求，量级确定），
  *   中性浅底 colorFillQuaternary + 次级文本色 colorTextSecondary —— 表达“正常手动取消”，
  *   不借 colorError/colorWarning 语义（避免与失败/中断混淆）。
  */
-function NoticeRecordItem(options: { record: ExecutorNoticeRecord }): ReactElement {
+function NoticeRecordItem(options: { record: ExecutorNoticeLikeRecord }): ReactElement {
   const { record } = options;
   const { token } = theme.useToken();
+  // 上下文压缩进行中态（单条目状态机三态渲染入口）：in-progress 前置 LoadingOutlined + 标题“（压缩中）”
+  const compressionRunning =
+    record.type === 'context-compression' && record.status === 'in-progress';
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
-      {/* 头部行：已停止 · HH:mm:ss（不显示“思考 #seq”，语义解耦的可观察落点） */}
+      {/* 头部行：按 record.type 分支——stop → “已停止 · HH:mm:ss”（不显示“思考 #seq”，语义解耦的可观察落点）；
+          context-compression → “上下文压缩（压缩中/失败可选）· HH:mm:ss”（进行中态前置 LoadingOutlined） */}
       <div
         style={{
           display: 'flex',
@@ -416,8 +426,13 @@ function NoticeRecordItem(options: { record: ExecutorNoticeRecord }): ReactEleme
           color: token.colorTextTertiary,
         }}
       >
+        {compressionRunning ? (
+          <LoadingOutlined style={{ fontSize: 12, color: token.colorPrimary, flexShrink: 0 }} />
+        ) : null}
         <span style={{ overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis', minWidth: 0 }}>
-          已停止 · {formatEntryClock(record.createdAt)}
+          {record.type === 'context-compression'
+            ? `上下文压缩${compressionRunning ? '（压缩中）' : record.status === 'failed' ? '（失败）' : ''} · ${formatEntryClock(record.createdAt)}`
+            : `已停止 · ${formatEntryClock(record.createdAt)}`}
         </span>
       </div>
       {/* 正文信息条：文案全文（模板既有，逐字展示） */}
@@ -837,6 +852,10 @@ export function ExecutorRecordDrawer(options: {
                               : entry.state === 'completed'
                                 ? token.colorSuccess
                                 : token.colorWarning
+                          : entry.kind === 'notice'
+                              ? entry.type === 'context-compression' && entry.status === 'in-progress'
+                                ? token.colorPrimary
+                                : token.colorTextQuaternary
                             : token.colorTextQuaternary;
                   return (
                     <div

@@ -212,6 +212,14 @@ const MODEL_PROTOCOL_OPTIONS: Array<{ value: string; label: string | ReactElemen
   { value: 'responses', label: 'Response API' },
 ];
 
+/** 执行子智能体触发上下文压缩阈值（字符数）档位选项（子智能体专用；''=不设置=默认；64K/128K/256K=对应字符数阈值档位） */
+const EXECUTOR_CONTEXT_COMPRESSION_THRESHOLD_OPTIONS: Array<{ value: string; label: string | ReactElement }> = [
+  { value: '', label: '不设置（默认）' },
+  { value: '64K', label: '64K' },
+  { value: '128K', label: '128K' },
+  { value: '256K', label: '256K' },
+];
+
 /**
  * API 密钥密码框包装组件：受控可见性切换 + 焦点接管。
  * antd Input.Password 眼睛控件的 mousedown/up 均 preventDefault（防焦点丢失/光标移动），
@@ -1259,6 +1267,30 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                             // 【F4】同值跳过：值未变化不发起 config:save
                             if (value === config.executorThinkingLevel) return;
                             onSave("executorThinkingLevel", value);
+                          }}
+                          style={{ maxWidth: 220 }}
+                        />
+                      </Form.Item>
+
+                      <Form.Item
+                        label={
+                          <span
+                            style={{
+                              color: token.colorTextSecondary,
+                              fontSize: 13,
+                            }}
+                          >
+                            触发上下文压缩阈值（字符数）
+                          </span>
+                        }
+                        name="executorContextCompressionThreshold"
+                      >
+                        <Select
+                          options={EXECUTOR_CONTEXT_COMPRESSION_THRESHOLD_OPTIONS}
+                          onChange={(value) => {
+                            // 【F4】同值跳过：值未变化不发起 config:save
+                            if (value === config.executorContextCompressionThreshold) return;
+                            onSave("executorContextCompressionThreshold", value);
                           }}
                           style={{ maxWidth: 220 }}
                         />

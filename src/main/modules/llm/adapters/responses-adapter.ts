@@ -102,6 +102,16 @@ export class ResponsesAdapter extends ProtocolAdapter {
    *  形成置位→剥离→复位→再发震荡）。 */
   private reasoningMustPassBackResetDone = false;
 
+  /** 只读暴露：历史驻留模式（'server'=stateful 服务端续接 / 'client'=stateless 全量重传）。
+   *  仅供宿主侧只读判定（子智能体上下文压缩：仅 'client' 驻留可压缩）。
+   *  只读不改写：不构成 2026-10-07 stateful 内聚整改所禁止的"宿主侧 stateful 接线"（写/配置通道——
+   *  init 不接收 stateful 扩展键的既定边界不变，见上方 init 注释）；getter 不参与任何请求体构造。
+   *  本类私有扩展成员，不进入基类七成员契约（protocol-adapter.ts 七成员：init/close/sendMessage/
+   *  insertMessage/onChunk/onToolCall/onFinished）。未来实现服务端驻留的新适配器应实现同名 getter。 */
+  public get historyResidency(): 'client' | 'server' {
+    return this.stateful ? 'server' : 'client';
+  }
+
   constructor() {
     super();
   }

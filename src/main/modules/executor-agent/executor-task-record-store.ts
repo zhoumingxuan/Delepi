@@ -32,9 +32,12 @@ import { resolveExecutorToolProgressDisplayName } from '../../constants/agent';
 import { getDynamicExecutorToolMeta } from '../../tools/executor-registry';
 import { ERR_ABORTED } from '../../constants/errors';
 import { buildExecutorUserTaskMessage } from './executor-system-prompt';
+import type { ExecutorCompressionNoticePayload } from './executor-context-compression';
 import type {
   ExecutorAssistantReplyRecord,
+  ExecutorContextCompressionNoticeRecord,
   ExecutorNoticeRecord,
+  ExecutorNoticeLikeRecord,
   ExecutorRecordEntry,
   ExecutorTaskMessageSendResult,
   ExecutorTaskRecordQueryResult,
@@ -203,6 +206,11 @@ export interface ExecutorTaskRecordSession {
    *  push 即进入模型上下文），条目 state→delivered + mutatedSeqs 登记 + emitSignal(true)；
    *  守卫：stopRequested/terminal 时 no-op 返回 0（冻结后永不消费，终态清扫兜底） */
   consumePendingUserMessages(): number;
+
+  /** 上下文压缩通知条目（kind='notice'/type='context-compression'，单条目状态机——in-progress 创建后
+   *  completed/failed 终态一律同 seq 原位更新（mutatedSeqs 原位补发），本压缩事件绝不二次追加条目；
+   *  markTerminal 终态清扫消除悬挂进行中条目（appendStopNotice 同族的冻结/终态守卫不变） */
+  appendContextCompressionNotice(payload: ExecutorCompressionNoticePayload): void;
   /** ★ 助手回复·完成态条目写入（executor-agent 主轮 content 未命中最终输出判定时以原文调用）：
    *  调用即同步插入 state='completed' 条目（text 净化 + createdAt/finishedAt）+ 立即信号——无
    *  loading 中间态，前端一次性原样渲染；守卫：冻结态 no-op、空正文不落条目（幂等安全） */
@@ -496,6 +504,18 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
         this.mutatedSeqs.add(record.seq);   // 同 seq 状态转移：登记供增量查询补发
       }
     }
+    // ★ 上下文压缩进行中条目终态清扫（单条目状态机兜底）：终态时仍处 in-progress 的压缩条目 → failed
+    //   收敛（aborted=用户取消；completed/failed=任务结束未完成）——统一覆盖 T7 中止丢弃、D8 抑制轮
+    //   悬挂、freezeForStop 冻结窗口残余（冻结后写 API no-op，markTerminal 为唯一合法收敛口），杜绝永久悬挂。
+    for (const record of this.records) {
+      if (record.kind === 'notice' && record.type === 'context-compression' && record.status === 'in-progress') {
+        record.status = 'failed';
+        record.text = status === 'aborted'
+          ? '上下文压缩已取消（任务中止，压缩未完成）'
+          : '上下文压缩未完成（任务已结束）';
+        this.mutatedSeqs.add(record.seq);
+      }
+    }
     // ★ 任务级交互消息终态清扫：终态时仍在排队的消息收敛为未送达——终态后 modelMessages
     //   不再被任何 create 消费，语义与 UI 对齐
     for (const item of this.pendingUserMessages) {
@@ -534,6 +554,56 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       text,
       createdAt: nowIso(),
     });
+    this.evictOverflow();
+    this.emitSignal(true);
+  }
+
+  /** 当前悬挂的上下文压缩进行中条目（至多一条；records 末尾优先反向查找——同 runningDraft 检索范式） */
+  private findHangingContextCompression(): ExecutorContextCompressionNoticeRecord | undefined {
+    for (let i = this.records.length - 1; i >= 0; i -= 1) {
+      const record = this.records[i];
+      if (record.kind === 'notice' && record.type === 'context-compression') {
+        return record.status === 'in-progress' ? record : undefined;
+      }
+    }
+    return undefined;
+  }
+
+  appendContextCompressionNotice(payload: ExecutorCompressionNoticePayload): void {
+    if (this.stopRequested || this.terminal) {
+      return; // 与 appendStopNotice 同构冻结守卫（stopExecutorTask 时序下天然防迟到写入）
+    }
+    // 单条目状态机（2026-10-11“先过程后结果”）：最新压缩条目仍处 in-progress（悬挂——本次压缩
+    //   正在进行，或上一轮失败被 D8 抑制未收敛、等待下一轮重试复用）→ 任意载荷一律同 seq 原位
+    //   更新（mutatedSeqs 登记，前端按 seq 覆盖合并），本压缩事件绝不二次 append；无悬挂 →
+    //   按既有行为新增条目（进行中开槽 / 直发终态的兼容路径，行为与改造前一致）。
+    const target = this.findHangingContextCompression();
+    if (target) {
+      target.status = payload.status;
+      target.text = payload.text;
+      target.beforeMessageCount = payload.beforeMessageCount;
+      target.afterMessageCount = payload.afterMessageCount;
+      target.beforeChars = payload.beforeChars;
+      target.summaryChars = payload.summaryChars;
+      target.thresholdLabel = payload.thresholdLabel;
+      target.durationMs = payload.durationMs;
+      this.mutatedSeqs.add(target.seq);   // 同 seq 状态转移：登记供增量查询补发
+    } else {
+      this.records.push({
+        kind: 'notice',
+        seq: this.nextSeq(),
+        type: 'context-compression',
+        status: payload.status,
+        text: payload.text,
+        createdAt: nowIso(),
+        beforeMessageCount: payload.beforeMessageCount,
+        afterMessageCount: payload.afterMessageCount,
+        beforeChars: payload.beforeChars,
+        summaryChars: payload.summaryChars,
+        thresholdLabel: payload.thresholdLabel,
+        durationMs: payload.durationMs,
+      });
+    }
     this.evictOverflow();
     this.emitSignal(true);
   }
@@ -672,7 +742,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
           } satisfies ExecutorToolRecord;
         }
         if (record.kind === 'notice') {
-          return { ...record } satisfies ExecutorNoticeRecord;
+          return { ...record } satisfies ExecutorNoticeLikeRecord;
         }
         if (record.kind === 'user-message') {
           return { ...record } satisfies ExecutorUserMessageRecord;

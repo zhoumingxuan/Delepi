@@ -60,6 +60,36 @@ export interface ExecutorNoticeRecord {
   createdAt: string;
 }
 
+/** 显示视图条目：上下文压缩通知（单条目状态机：in-progress 创建 → completed/failed 同 seq 原位更新，
+ *  状态转移经 mutatedSeqs 原位补发，本压缩事件始终只有一条条目；
+ *  type 联合扩展点=本文件上方 ExecutorNoticeRecord 注释"未来同类静态通知在此扩联合"既定通道） */
+export interface ExecutorContextCompressionNoticeRecord {
+  kind: 'notice';
+  seq: number;
+  type: 'context-compression';
+  /** in-progress=压缩调用进行中（T5 门禁通过后创建；终态同 seq 原位收敛）；completed=压缩成功且消息已原位重建；
+   *  failed=压缩调用失败（任务继续，未重建）或终态清扫收敛（中止/抑制轮悬挂消除） */
+  status: 'in-progress' | 'completed' | 'failed';
+  /** 展示文本（后端预构建全文；渲染层零拼接逻辑——稳定优先） */
+  text: string;
+  createdAt: string;
+  /** 压缩前消息总数 */
+  beforeMessageCount: number;
+  /** 压缩后消息数（completed 恒 2；failed=beforeMessageCount；in-progress=0 未定） */
+  afterMessageCount: number;
+  /** 压缩前可计字符数（slice(2) 口径） */
+  beforeChars: number;
+  /** 背景信息块字符数（in-progress/failed=0） */
+  summaryChars: number;
+  /** 阈值档位标签（'64K'|'128K'|'256K'） */
+  thresholdLabel: string;
+  /** 压缩调用耗时（毫秒；in-progress=0） */
+  durationMs: number;
+}
+
+/** notice 族联合（store 增量视图 SU4 与 Drawer 渲染分支 DU2 共用） */
+export type ExecutorNoticeLikeRecord = ExecutorNoticeRecord | ExecutorContextCompressionNoticeRecord;
+
 /** 显示视图条目：任务级交互消息（用户运行中消息；有状态机——queued→delivered/undelivered，
  *  状态转移经 mutatedSeqs 原位补发，与 notice 的静态单时刻语义不同，故独立第四 kind） */
 export interface ExecutorUserMessageRecord {
@@ -100,6 +130,7 @@ export type ExecutorRecordEntry =
   | ExecutorThinkingRecord
   | ExecutorToolRecord
   | ExecutorNoticeRecord
+  | ExecutorContextCompressionNoticeRecord
   | ExecutorUserMessageRecord
   | ExecutorAssistantReplyRecord;
 

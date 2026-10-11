@@ -699,14 +699,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           // 错位态（如删除激活方案后转移未应用新方案配置导致的「激活=满配置方案、运行时=旧值」）
           // 下跳过方案同步，仅完成上方单键运行时保存，不报错、不阻断保存。
           const profileValue = (profiles[idx] as unknown as Record<string, unknown>)[params.key];
-          // 【协议缺键补录·白名单】仅 mainModelProtocol/executorModelProtocol 两键：激活档案缺该键时放行守卫，
+          // 【缺键补录·白名单】仅 mainModelProtocol/executorModelProtocol/executorContextCompressionThreshold 三键：激活档案缺该键时放行守卫，
           // 把本次保存写入全局的运行时值（params.value）补键写入档案 JSON 并落库，复用下方既有入档机制；
-          // 缺键判定=profileValue===undefined（JSON 无 undefined 值，缺键即 undefined）；其余 12 键及协议键
+          // 缺键判定=profileValue===undefined（JSON 无 undefined 值，缺键即 undefined）；其余 12 键及白名单键
           // 已有键时仍仅按原守卫「现值 === 写入前运行时旧值」判定，行为零变化。
           if (
             profileValue === prevRuntimeValue ||
             (profileValue === undefined &&
-              (params.key === 'mainModelProtocol' || params.key === 'executorModelProtocol'))
+              (params.key === 'mainModelProtocol' || params.key === 'executorModelProtocol' || params.key === 'executorContextCompressionThreshold'))
           ) {
             const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
             next[params.key] = params.value;
@@ -735,7 +735,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   type ProfileSwitchParams = { id: string };
   type ProfileSwitchResult = { activeProfileId: string; profileName: string };
 
-  /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + mainThinkingLevel + mainModelProtocol + executorThinkingLevel + executorModelProtocol；visionEnabled 总开关不入档） */
+  /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + mainThinkingLevel + mainModelProtocol + executorThinkingLevel + executorModelProtocol + executorContextCompressionThreshold；visionEnabled 总开关不入档） */
   const PROFILE_CONFIG_KEYS = [
     'mainModelBaseUrl',
     'mainModelApiKey',
@@ -747,6 +747,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     'executorModelApiKey',
     'executorModelName',
     'executorThinkingLevel',
+    'executorContextCompressionThreshold',
     'executorModelProtocol',
     'visionLlmBaseUrl',
     'visionLlmApiKey',
@@ -785,6 +786,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           executorModelApiKey: '',
           executorModelName: '',
           executorThinkingLevel: DEFAULT_APP_SETTINGS.executorThinkingLevel,
+          executorContextCompressionThreshold: DEFAULT_APP_SETTINGS.executorContextCompressionThreshold,
           executorModelProtocol: DEFAULT_APP_SETTINGS.executorModelProtocol,
           visionLlmBaseUrl: '',
           visionLlmApiKey: '',
@@ -803,6 +805,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
           executorModelApiKey: settings.executorModelApiKey,
           executorModelName: settings.executorModelName,
           executorThinkingLevel: settings.executorThinkingLevel,
+          executorContextCompressionThreshold: settings.executorContextCompressionThreshold,
           executorModelProtocol: settings.executorModelProtocol,
           visionLlmBaseUrl: settings.visionLlmBaseUrl,
           visionLlmApiKey: settings.visionLlmApiKey,
@@ -842,10 +845,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         const nextActiveProfile = profiles[0];
         for (const key of PROFILE_CONFIG_KEYS) {
           const value = nextActiveProfile[key];
-          // 协议键缺键回填：转移到的档案无协议键时以默认协议 'cc' 落库并即时生效，杜绝残留已删档案协议
+          // 协议键/压缩阈值键缺键回填：转移到的档案缺该键时以 DEFAULT_APP_SETTINGS 默认值落库并即时生效，杜绝残留已删档案旧值
           if (
             value === undefined &&
-            (key === 'mainModelProtocol' || key === 'executorModelProtocol')
+            (key === 'mainModelProtocol' || key === 'executorModelProtocol' || key === 'executorContextCompressionThreshold')
           ) {
             const fallbackValue = DEFAULT_APP_SETTINGS[key];
             saveSetting(key, fallbackValue);
@@ -880,10 +883,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         const value = profile[key];
         // 兜底：存量档案缺 mainThinkingLevel 时 value=undefined（stringifyJson(undefined)=undefined 经 better-sqlite3 绑定 NULL，触发 value_json NOT NULL 约束抛错）；
         // 跳过 undefined 键，保持当前生效档位不动（对齐 visionEnabled 不入档语义）
-        // 协议键缺键回填：存量档案无协议键时以默认协议 'cc' 落库并即时生效，杜绝切换后残留上一档案协议
+        // 协议键/压缩阈值键缺键回填：存量档案缺该键时以 DEFAULT_APP_SETTINGS 默认值落库并即时生效，杜绝切换后残留上一档案值
         if (
           value === undefined &&
-          (key === 'mainModelProtocol' || key === 'executorModelProtocol')
+          (key === 'mainModelProtocol' || key === 'executorModelProtocol' || key === 'executorContextCompressionThreshold')
         ) {
           const fallbackValue = DEFAULT_APP_SETTINGS[key];
           saveSetting(key, fallbackValue);
@@ -971,11 +974,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       return { ok: false, code: 'NOT_A_PROFILE' };
     }
     const source = parsed as Record<string, unknown>;
-    // 「有什么则导入什么」：14 配置键白名单容错提取——类型合法取文件值，缺失/非法按补位规则
-    //（9 文本键 ''、开关/档位/协议取 DEFAULT_APP_SETTINGS 实值；档位禁存空串：'' 与缺失/非法同等对待，
-    //  防 config-manager reload() 空串过滤+默认值回填造成方案内容漂移）。文件 id 一律忽略，恒新 uuid。
+    // 「有什么则导入什么」：15 配置键白名单容错提取——类型合法取文件值，缺失/非法按补位规则
+    //（9 文本键 ''、开关/档位/协议/压缩阈值取 DEFAULT_APP_SETTINGS 实值；档位禁存空串：'' 与缺失/非法同等对待，
+    //  防 config-manager reload() 空串过滤+默认值回填造成方案内容漂移；压缩阈值 '' 为不设置默认值、与空串过滤
+    //  相容无漂移，属合法取值）。文件 id 一律忽略，恒新 uuid。
     const validThinkingLevels: readonly string[] = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
     const validModelProtocols: readonly string[] = ['cc', 'responses'];
+    // 压缩阈值档位：'' 为不设置默认值（与 reload 空串过滤相容、无漂移），与 64K/128K/256K 同为合法取值
+    const validCompressionThresholds: readonly string[] = ['', '64K', '128K', '256K'];
     const newProfile: ModelProfile = {
       id: uuidv4(),
       name: '',
@@ -989,6 +995,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       executorModelApiKey: '',
       executorModelName: '',
       executorThinkingLevel: DEFAULT_APP_SETTINGS.executorThinkingLevel,
+      executorContextCompressionThreshold: DEFAULT_APP_SETTINGS.executorContextCompressionThreshold,
       executorModelProtocol: DEFAULT_APP_SETTINGS.executorModelProtocol,
       visionLlmBaseUrl: '',
       visionLlmApiKey: '',
@@ -1030,6 +1037,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       typeof value === 'string' && validModelProtocols.includes(value)
         ? (value as ModelProfile['mainModelProtocol'])
         : null;
+    const readValidCompressionThreshold = (value: unknown): ModelProfile['executorContextCompressionThreshold'] | null =>
+      typeof value === 'string' && validCompressionThresholds.includes(value)
+        ? (value as ModelProfile['executorContextCompressionThreshold'])
+        : null;
     const mainThinkingLevel = readValidThinkingLevel(source.mainThinkingLevel);
     if (mainThinkingLevel !== null) {
       newProfile.mainThinkingLevel = mainThinkingLevel;
@@ -1042,6 +1053,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       newProfile.executorThinkingLevel = executorThinkingLevel;
       importedCount += 1;
     } else if ('executorThinkingLevel' in source) {
+      skippedCount += 1;
+    }
+    const executorContextCompressionThreshold = readValidCompressionThreshold(source.executorContextCompressionThreshold);
+    if (executorContextCompressionThreshold !== null) {
+      newProfile.executorContextCompressionThreshold = executorContextCompressionThreshold;
+      importedCount += 1;
+    } else if ('executorContextCompressionThreshold' in source) {
       skippedCount += 1;
     }
     const mainModelProtocol = readValidModelProtocol(source.mainModelProtocol);
@@ -1058,7 +1076,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     } else if ('executorModelProtocol' in source) {
       skippedCount += 1;
     }
-    // 有效性判据：14 配置键中 ≥1 个存在且类型合法才视为方案文件（拦截 {} / 误选 package.json 等）
+    // 有效性判据：15 配置键中 ≥1 个存在且类型合法才视为方案文件（拦截 {} / 误选 package.json 等）
     if (importedCount === 0) {
       return { ok: false, code: 'NOT_A_PROFILE' };
     }

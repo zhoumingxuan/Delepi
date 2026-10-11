@@ -22,6 +22,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   executorModelName: '',
   // 子智能体推理档位默认 max（主智能体默认 high；默认值仅作缺省读取合并——不写库不迁移，存量非空档位不受影响）
   executorThinkingLevel: 'max',
+  // 子智能体触发上下文压缩阈值（字符数）默认 ''=不设置；可选 64K/128K/256K（默认值仅作缺省读取合并——不写库不迁移）
+  executorContextCompressionThreshold: '',
   executorModelProtocol: 'cc',
 
   // 视觉模型
