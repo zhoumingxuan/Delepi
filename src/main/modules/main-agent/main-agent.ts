@@ -33,7 +33,8 @@ import { SYSTEM_PROMPT, MAIN_TOOLS } from './prompt';
 import { getLatestCompletedContextCompression, runContextCompressionIfNeeded } from './context-compression-task';
 import { generateConversationTitle, truncateConversationTitle } from './title-generation';
 import { runDelegatedTask, computeTaskDurationSeconds } from '../executor-agent/executor-agent';
-import { buildToolResult, type ToolResult } from '../../tools/result';
+import { buildToolResult, stringifyToolResult, type ToolResult } from '../../tools/result';
+import { executeToolCall } from '../../tools/executor-registry';
 import { ensureErrorMessage } from '../../utils';
 import type { AssistantRuntimeConfig } from '../executor-agent/assistant-config';
 import { eventBus, type ExecutorAgentEvents } from '../event-bus/event-bus';
@@ -1460,6 +1461,73 @@ export async function runMainAgent(
           options.signal?.removeEventListener('abort', onSessionAbort);
           unregisterTaskStopController(conversationId, toolCall.id);
         }
+      } else if (
+        toolCall.function.name === 'read_file' ||
+        toolCall.function.name === 'fs_search'
+      ) {
+        // ★ 主智能体直接工具执行（轻量文本文件阅读 / 文件系统搜索，不委派执行者）。
+        //   执行入口复用执行者注册表统一入口 executor-registry.executeToolCall——
+        //   参数解析、错误归一（TOOL_ARGUMENTS_INVALID / TOOL_EXECUTION_EXCEPTION /
+        //   ABORTED 等）、结果结构（ToolResult → stringifyToolResult）与执行者侧完全同源；
+        //   read_file 与 fs_search 均为纯 Node fs 只读实现，支持 context.signal 取消。
+        //   工具上下文形状对齐执行者侧既有约定（conversationId/runDir/signal）：
+        //   运行层形状见 executor-agent.ts L1265-1269；会话委派 toolContext 先例见本文件 L1272-1275。
+        const execution = await executeToolCall(
+          toolCall.function.name,
+          toolCall.function.arguments,
+          toolCall.id,
+          {
+            conversationId,
+            runDir: resolveConversationDir(conversationId),
+            signal: options.signal,
+          },
+        );
+        const directToolResultText = stringifyToolResult(execution.result);
+        const toolFinishedAt = new Date().toISOString();
+
+        // 添加 tool 消息到对话（与委派分支同构：供下一轮模型上下文）
+        turnMessages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: directToolResultText,
+        });
+
+        // 发送 tool-result 事件（复用既有事件；isDelegatedExecutor 恒为 false，
+        //   前端通用分支渲染，不进入委派任务卡链路）
+        eventBus.emit(MAIN_AGENT_TOOL_RESULT_EVENT, {
+          conversationId,
+          callId: toolCall.id,
+          name: toolCall.function.name,
+          result: directToolResultText,
+          success: execution.result.success,
+        });
+
+        // ★ 配对与批次暂存（批次末 insertMessages 单事务落库；先例：委派成功分支
+        //   L1341-1357、未知工具分支 L1473-1486）——必须补配对，保证会话恢复与前端渲染
+        //   依赖的「全部 toolCall 均有配对消息」契约。
+        toolSlotPaired[slotIndex] = true;
+        pendingToolMessagePayloads.push({
+          role: 'tool',
+          payload: {
+            toolCallId: toolCall.id,
+            name: toolCall.function.name,
+            arguments: toolCall.function.arguments,
+            result: directToolResultText,
+            isError: !execution.result.success,
+            startedAt: toolStartedAt,
+            finishedAt: toolFinishedAt,
+          },
+        });
+        batchResults.push({
+          callId: toolCall.id,
+          status: execution.result.success ? 'success' : 'failed',
+        });
+        // 注意：本分支不发 MAIN_AGENT_ERROR_EVENT（工具失败＝普通工具结果，
+        //   与执行者侧工具失败语义一致；UI 由 tool 消息 error 状态表达，不叠加 toast）。
+        return {
+          toolCall,
+          status: execution.result.success ? ('success' as const) : ('failed' as const),
+        };
       } else {
         // 未知工具调用 → 返回错误
         const errorMsg = `未知工具调用：${toolCall.function.name}`;

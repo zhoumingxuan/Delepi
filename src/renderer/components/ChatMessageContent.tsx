@@ -277,13 +277,26 @@ function resolveTaskDisplayTitle(options: {
   return taskTitle || toolDisplayName;
 }
 
+/**
+ * ★ 主智能体直接工具内置中文显示名兜底映射（read_file / fs_search 为主智能体直接调用；
+ *   当前渲染端无 toolSummaries 数据源——全树仅消费侧引用、无提供方，ChatShell 未向
+ *   ChatArea 传参——无匹配摘要时经本映射兜底显示中文名）。
+ *   文案与主进程 src/main/constants/agent.ts 的 EXECUTOR_TOOL_PROGRESS_NAMES
+ *   （read_file='文件读取' L46、fs_search='文件系统搜索' L48）保持同源一致。
+ *   delegate_executor 不纳入本映射——委派链路显示行为保持零回归。
+ */
+const BUILTIN_TOOL_DISPLAY_NAMES: Record<string, string> = {
+  read_file: '文件读取',
+  fs_search: '文件系统搜索',
+};
+
 function resolveToolDisplayName(
   toolName: string,
   toolSummaries?: ToolSummary[],
 ): string {
   const matchedTool = toolSummaries?.find((tool) => tool.name === toolName);
   const displayName = matchedTool?.displayName?.trim();
-  return displayName || toolName;
+  return displayName || BUILTIN_TOOL_DISPLAY_NAMES[toolName] || toolName;
 }
 
 function isDelegatedExecutorToolCall(toolCall: ToolCallInfo): boolean {

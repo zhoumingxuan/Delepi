@@ -148,6 +148,117 @@ function buildDelegateExecutorDescription(): string {
 `;
 }
 
+// ============================================================
+// ★ 主智能体直接工具声明（read_file / fs_search）——用户既定要求：声明可直接照抄【执行者】实现。
+//   来源：src/main/modules/executor-agent/prompt.ts 的 buildReadFileDescription（L47-59）、
+//   buildFsSearchDescription（L61-72）、EXECUTOR_TOOLS.fs_search（L137-166）、
+//   EXECUTOR_TOOLS.read_file（L167-206）。
+//   下方两个描述函数为【逐字复制区】（含外壳缩进保持与源一致，可直接 diff 校验）；
+//   两个 parameters schema 为非空白字符逐字复制（仅整体缩进适配本文件层级）。
+//   维护注记：执行者侧描述/参数更新时，需人工同步本复制区（保持逐字一致）。
+// ============================================================
+
+function buildReadFileDescription(): string {
+    return `
+    - 读取【非结构化的文本文件】的工具，按行读取文件，会返回每一行行号，行号从 1 开始；同时支持分段读取和全部读取。
+    - **此工具仅限于搜索本地文件读取，不适配远程文件读取**
+    - **代码文件,MarkDown文件不算结构化文件，仅算有一定格式的文件**。
+    - 结构化的文本文件（例如:json文件，jsonl文件等），优先通过run_with_python 读取。
+    - 分段读取end_line必填；全部读取则不需要填end_line。
+    - 每次读取都会返回起始行号和实际读取行数。
+    - 读取行数不限制，但读取的总体内容超过16384个字符会触发截断。
+    - 超过【32KB文件大小】的【非结构化的文本文件】禁全量读取，因为必然超过16384个字符。
+    `;
+}
+
+function buildFsSearchDescription(): string {
+    return `
+    - 文件系统搜索工具，仅适配【文件名和目录名】以及【目录扫描】功能。
+    - **此工具仅限于搜索本地文件系统，不适配远程文件系统**
+    - 不填keyword则视作按depth扫描【目标目录】。
+    - 返回内容超过16384个字符会触发截断。
+    - 返回匹配的文件数和目录数，列表中每项标记是文件还是目录。
+    **必须注意**
+    - a.为节省输出字符，搜索结果返回的实际上是相对于【目标目录】(source_dir)的相对路径，但是在其他工具用**务必使用绝对路径**。
+    `;
+}
+
+/** 主智能体工具声明：read_file（非空白字符与执行者 EXECUTOR_TOOLS.read_file 逐字一致） */
+function buildMainReadFileTool() {
+  return {
+    type: 'function' as const,
+    function: {
+      name: 'read_file',
+      description: buildReadFileDescription(),
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description:
+              '必填。要读取的本地【非结构化的文本文件】路径，必须使用绝对路径。',
+          },
+          start_line: {
+            type: 'integer',
+            description: '必填。起始行号，从 1 开始计数的正整数。',
+            minimum: 1,
+          },
+          end_line: {
+            type: 'integer',
+            description:
+              '可选。结束行号（含该行），不得小于 start_line；不传则读取到文件末尾',
+            minimum: 1,
+          },
+          encoding: {
+            type: 'string',
+            description: '可选。文件编码，默认 utf-8',
+          },
+          include_total_lines: {
+            type: 'boolean',
+            description: '可选。是否返回文件总行数，默认 false。',
+            default: false,
+          },
+        },
+        required: ['path', 'start_line'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+/** 主智能体工具声明：fs_search（非空白字符与执行者 EXECUTOR_TOOLS.fs_search 逐字一致） */
+function buildMainFsSearchTool() {
+  return {
+    type: 'function' as const,
+    function: {
+      name: 'fs_search',
+      description: buildFsSearchDescription(),
+      parameters: {
+        type: 'object',
+        properties: {
+          directory: {
+            type: 'string',
+            description: '必填。要搜索的【目标目录】绝对路径。',
+          },
+          keyword: {
+            type: 'string',
+            description: '可选。搜索关键字，按名称包含匹配；* 表示全部，默认 *。',
+          },
+          depth: {
+            type: 'integer',
+            description: '可选。目录递归深度，默认 0，不递归，最大 3。',
+            default: 0,
+            minimum: 0,
+            maximum: 3,
+          },
+        },
+        required: ['directory'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
 /** 主智能体工具声明构建函数（每次构建均从合并层取 skills enum，保证运行时含启用自定义标签） */
 export function buildMainTools() {
   return [
@@ -159,6 +270,8 @@ export function buildMainTools() {
         parameters: buildDelegateToolParameters(),
       },
     },
+    buildMainReadFileTool(),
+    buildMainFsSearchTool(),
   ];
 }
 
