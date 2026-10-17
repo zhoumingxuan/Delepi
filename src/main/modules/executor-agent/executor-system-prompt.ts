@@ -22,6 +22,8 @@ function buildDeliverableFieldDescription(deliveryType: ExecutorDeliveryType): s
       return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，固定为 `clues.json`;文件内容必须是 JSON 对象，且只包含 `clues` 字段；`clues` 必须为非空 string[]，每项必须是有事实依据的【线索集合】且禁止出现任何指代性表述。写入后必须用 Python 核验 JSON 可解析且顶层字段只有 `clues`。';
     case '权威结论':
       return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，固定为 `conclusions.json`;文件内容必须是 JSON 对象，且只包含 `conclusions` 字段；`conclusions` 必须为非空 string[]，每项必须是依据事实产生的可被完整证明的【权威结论】且禁止出现任何指代性表述。写入后必须用 Python 核验 JSON 可解析且顶层字段只有 `conclusions`。';
+    case '研究报告':
+      return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，依据【当前任务】实际落地【研究报告】填写文件名（文件名格式:***.***）;文件格式依据实际任务情况。';
     case '方案':
       return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，依据【当前任务】实际落地【方案】填写文件名（文件名格式:***.***）;文件内容必须是 Markdown。';
     case '详细规划':

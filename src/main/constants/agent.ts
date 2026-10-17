@@ -116,6 +116,9 @@ export const DELIVERY_TYPE_PLAN = '方案';
 /** 详细规划交付类型 */
 export const DELIVERY_TYPE_PLAN_BOOK = '详细规划';
 
+/** 研究报告交付类型 */
+export const DELIVERY_TYPE_RESEARCH_REPORT = '研究报告';
+
 /** 测试用例交付类型 */
 export const DELIVERY_TYPE_TEST_CASE = '测试用例';
 
@@ -174,6 +177,7 @@ export const TASK_TAGS = BUILTIN_TASK_TAGS;
 /** 执行子智能体交付类型 */
 export const EXECUTOR_DELIVERY_TYPES = [
   '线索集合',
+  '研究报告',
   '权威结论',
   '方案',
   '详细规划',
