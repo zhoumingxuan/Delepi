@@ -13,16 +13,19 @@ import { Actions, Bubble, Welcome } from '@ant-design/x';
 import type { BubbleItemType } from '@ant-design/x';
 import { Button, Flex, Spin, theme } from 'antd';
 import {
+  BranchesOutlined,
+  BulbOutlined,
   DownOutlined,
   FolderOpenOutlined,
   PaperClipOutlined,
-  RobotOutlined,
   ToolOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { ChatMessageContent } from './ChatMessageContent';
+import { ChatMessageContent, isDelegatedExecutorToolCall } from './ChatMessageContent';
 import type { ToolSummary } from './ChatMessageContent';
+import { ToolCallGroupCard, resolveToolGroupStatus } from './ToolCallGroupCard';
 import type { ChatMessage } from '../hooks/useChat';
+import type { ExecutorTaskChatMessage } from '../lib/executor-record-messages';
 
 // ============================================================
 // ★ 新版方案 §7.7：executor 任务记录虚拟消息时间线合并（数据源切换为 useExecutorTaskRecords）
@@ -109,6 +112,73 @@ export function mergeVirtualMessagesIntoTimeline(
   return [...timeline, ...sortedSnapshots.slice(snapshotIndex)];
 }
 
+// ============================================================
+// ★ 视觉方案 §2/§4.1：小工具调用折叠聚合（渲染层单元化，零数据层改动）
+//   - 任意数量（含单个）的连续【小工具】调用（tool 消息、无 executorTask 徽标、非委派工具调用）
+//     均折叠为单一分组容器（阈值 1，单个工具同样折叠为组头）；
+//   - 委派任务卡（运行/完成两态）不参与聚合，并作为分组边界（中断连续 run）；
+//   - TOOL_CALL_GROUP_ENABLED=false 时单元化退化为全部单条（单点回滚开关）。
+// ============================================================
+
+/** ★ 小工具折叠聚合单点回滚开关：置 false 时退化为全部单条、观感回到改动前 */
+export const TOOL_CALL_GROUP_ENABLED = true;
+
+/** 折叠阈值：连续 run 长度 ≥1 即折叠为分组容器（单个工具调用同样折叠为组头） */
+export const TOOL_CALL_GROUP_MIN_COUNT = 1;
+
+type ToolCallRenderUnit =
+  | { kind: 'single'; key: string; message: ChatMessage }
+  | { kind: 'tool-group'; key: string; messages: ChatMessage[] };
+
+/**
+ * 小工具消息判定（分组入组条件，全部满足才可入组）：
+ * 1. role==='tool'；
+ * 2. 不带 executorTask 徽标（排除运行中/存续的委派任务虚拟消息）；
+ * 3. 存在 toolCall；
+ * 4. 非委派工具调用（排除 isDelegatedExecutor===true / name==='delegate_executor'）。
+ */
+function isSmallToolMessage(message: ChatMessage): boolean {
+  if (message.role !== 'tool') return false;
+  if ((message as ExecutorTaskChatMessage).executorTask) return false; // 运行中/存续委派任务卡
+  if (!message.toolCall) return false;
+  if (isDelegatedExecutorToolCall(message.toolCall)) return false;     // 委派任务（两态）
+  return true;
+}
+
+/* 委派消息判定（仅用于渲染层头像角色分流；不改变消息数据） */
+function isDelegatedToolMessage(message: ChatMessage): boolean {
+  if (message.role !== 'tool') return false;
+  if ((message as ExecutorTaskChatMessage).executorTask) return true; // 运行期/存续任务卡虚拟消息
+  return message.toolCall ? isDelegatedExecutorToolCall(message.toolCall) : false; // 完成态真实消息
+}
+
+/**
+ * 渲染单元化（单遍扫描）：连续小工具消息累积为 run；run 长度 ≥ 阈值（当前 1）→ 单个
+ * 'tool-group' 单元；否则逐条 'single' 单元；其余消息 flush 后作为 'single' 单元
+ * 并中断 run（分组边界：user / assistant 思考行 / 委派任务卡 / 结构异常消息）。
+ * 开关关闭时退化为全部单条（观感回到改动前）。
+ */
+export function buildToolCallRenderUnits(messages: ChatMessage[]): ToolCallRenderUnit[] {
+  const units: ToolCallRenderUnit[] = [];
+  let run: ChatMessage[] = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    if (run.length >= TOOL_CALL_GROUP_MIN_COUNT) {
+      units.push({ kind: 'tool-group', key: `tool-group:${run[0].id}`, messages: run });
+    } else {
+      for (const message of run) units.push({ kind: 'single', key: message.id, message });
+    }
+    run = [];
+  };
+  for (const message of messages) {
+    if (TOOL_CALL_GROUP_ENABLED && isSmallToolMessage(message)) { run.push(message); continue; }
+    flush();
+    units.push({ kind: 'single', key: message.id, message });
+  }
+  flush();
+  return units;
+}
+
 interface ChatAreaProps {
   messages: ChatMessage[];
   /**
@@ -179,7 +249,7 @@ export const ChatArea = memo(function ChatArea({
   const internalStickRef = useRef(true);
   const scrollRef = messageListRef ?? internalScrollRef;
   const stickRef = stickToBottomRef ?? internalStickRef;
-  /** ★ P0-B item 引用缓存：msg 引用未变 ⇒ item 全部派生字段未变 ⇒ 复用整 item（extraInfo 随之稳定） */
+  /** ★ P0-B item 引用缓存（单元粒度）：单元内消息引用未变 ⇒ item 全部派生字段未变 ⇒ 复用整 item（extraInfo 随之稳定） */
   const bubbleItemCacheRef = useRef(new Map<string, BubbleItemType>());
   /**
    * ★ 滚动收敛事务（scroll settle）状态与策略：
@@ -476,14 +546,14 @@ export const ChatArea = memo(function ChatArea({
               width: 32,
               height: 32,
               borderRadius: '50%',
-              background: '#2563eb',
+              background: 'var(--dpl-color-assistant)',
               color: '#fff',
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
             }}
           >
-            <RobotOutlined />
+            <BulbOutlined />
           </div>
         ),
         variant: 'borderless' as const,
@@ -545,7 +615,7 @@ export const ChatArea = memo(function ChatArea({
               width: 32,
               height: 32,
               borderRadius: '50%',
-              background: '#7c3aed',
+              background: 'var(--dpl-color-tool)',
               color: '#fff',
               display: 'flex',
               alignItems: 'center',
@@ -568,6 +638,64 @@ export const ChatArea = memo(function ChatArea({
           />
         ),
       },
+      'tool-group': {
+        placement: 'start' as const,
+        avatar: (
+          <div
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: '50%',
+              background: 'var(--dpl-color-tool)',
+              color: '#fff',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <ToolOutlined />
+          </div>
+        ),
+        variant: 'borderless' as const,
+        contentRender: (
+          _content: unknown,
+          info: { extraInfo?: { toolGroupMessages?: ChatMessage[] } },
+        ) => (
+          <ToolCallGroupCard
+            messages={info.extraInfo?.toolGroupMessages ?? []}
+            toolSummaries={toolSummaries}
+            conversationId={conversationId ?? null}
+            executorPanel={executorPanel}
+          />
+        ),
+      },
+      /* delegate 角色段（头像 var(--dpl-color-delegate) + BranchesOutlined） */
+      delegate: {
+        placement: 'start' as const,
+        avatar: (
+          <div
+            style={{
+              width: 32, height: 32, borderRadius: '50%',
+              background: 'var(--dpl-color-delegate)', /* 委派识别色：品红 293°，白图标 4.71:1 */
+              color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            }}
+          >
+            <BranchesOutlined />
+          </div>
+        ),
+        variant: 'borderless' as const,
+        contentRender: (
+          _content: unknown,
+          info: { extraInfo?: { message?: ChatMessage } },
+        ) => (
+          <ChatMessageContent
+            message={info.extraInfo?.message as ChatMessage}
+            toolSummaries={toolSummaries}
+            conversationId={conversationId ?? null}
+            executorPanel={executorPanel}
+          />
+        ),
+      },
     }),
     // ★ P03 roleConfig 依赖收敛：useMemo 体内仅引用 toolSummaries/conversationId/renderUserMessageFooter/executorPanel；
     //   虚拟消息仍经 props 参与 mergedMessages（投影链零改动），仅不再无谓重建 roleConfig
@@ -575,33 +703,60 @@ export const ChatArea = memo(function ChatArea({
   );
 
   // ★ 对齐参考项目 E:\ai_fr\components\chat-shell.tsx L2684-2738
-  // bubbleItem.content 设为空字符串占位（contentRender 接管渲染），
-  // 通过 extraInfo.message 把 message 传给 contentRender。
+  // bubbleItem.content 设为空字符串占位（contentRender 接管渲染）：
+  // - 单条消息：通过 extraInfo.message 把 message 传给 contentRender；
+  // - 小工具分组单元（连续 ≥2 个小工具调用）：通过 extraInfo.toolGroupMessages 传给 ToolCallGroupCard（视觉方案 §4.1.3）。
   const bubbleItems: BubbleItemType[] = useMemo(() => {
     const cache = bubbleItemCacheRef.current;
     const seen = new Set<string>();
-    const items = mergedMessages.map((msg) => {
-      seen.add(msg.id);
-      const cached = cache.get(msg.id);
-      if (cached && (cached.extraInfo as { message?: ChatMessage } | undefined)?.message === msg) {
-        return cached;   // 消息对象引用未变 → 整 item 复用（key/role/content/extraInfo/status/streaming 全部未变）
+    const items = buildToolCallRenderUnits(mergedMessages).map((unit) => {
+      seen.add(unit.key);
+      if (unit.kind === 'tool-group') {
+        const run = unit.messages;
+        const cached = cache.get(unit.key);
+        const cachedRun = (cached?.extraInfo as { toolGroupMessages?: ChatMessage[] } | undefined)
+          ?.toolGroupMessages;
+        if (
+          cached &&
+          cachedRun &&
+          cachedRun.length === run.length &&
+          cachedRun.every((message, index) => message === run[index])
+        ) {
+          return cached;   // 组内消息引用逐项未变 → 整 item 复用（key/role/content/extraInfo/status/streaming 全部未变）
+        }
+        const item: BubbleItemType = {
+          key: unit.key,
+          role: 'tool-group' as BubbleItemType['role'],
+          content: ' ',
+          extraInfo: { toolGroupMessages: run },
+          status: resolveToolGroupStatus(run),
+          streaming: false,
+        };
+        cache.set(unit.key, item);
+        return item;
+      } else {
+        const msg = unit.message;
+        const cached = cache.get(unit.key);
+        if (cached && (cached.extraInfo as { message?: ChatMessage } | undefined)?.message === msg) {
+          return cached;   // 消息对象引用未变 → 整 item 复用（key/role/content/extraInfo/status/streaming 全部未变）
+        }
+        const item: BubbleItemType = {
+          key: msg.id,
+          role: (msg.role === 'assistant'
+            ? 'ai'
+            : isDelegatedToolMessage(msg) ? 'delegate' : msg.role) as BubbleItemType['role'],
+          content: msg.role === 'user' ? msg.content : msg.content || ' ',
+          extraInfo: { message: msg },
+          status: msg.status,
+          streaming: msg.role === 'assistant' && msg.status === 'loading',
+        };
+        cache.set(unit.key, item);
+        return item;
       }
-      const item: BubbleItemType = {
-        key: msg.id,
-        role: (msg.role === 'assistant'
-          ? 'ai'
-          : msg.role) as BubbleItemType['role'],
-        content: msg.role === 'user' ? msg.content : msg.content || ' ',
-        extraInfo: { message: msg },
-        status: msg.status,
-        streaming: msg.role === 'assistant' && msg.status === 'loading',
-      };
-      cache.set(msg.id, item);
-      return item;
     });
-    // 防泄漏：清除已不存在的消息缓存（会话切换/消息删除后旧 id 全清，上界=当前会话消息数）
-    for (const id of Array.from(cache.keys())) {
-      if (!seen.has(id)) cache.delete(id);
+    // 防泄漏：清除已不存在的单元缓存（会话切换/消息删除后旧单元 key 全清，上界=当前会话单元数）
+    for (const key of Array.from(cache.keys())) {
+      if (!seen.has(key)) cache.delete(key);
     }
     return items;
   }, [mergedMessages]);

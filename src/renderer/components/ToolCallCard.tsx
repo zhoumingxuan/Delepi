@@ -97,6 +97,7 @@ export const ToolCallCard = memo(function ToolCallCard({
 }) {
   const { name, status, result, startedAt, finishedAt, createdAt, isError } = toolCall;
   const loading = status === 'loading';
+  const delegated = toolCall.isDelegatedExecutor === true || toolCall.name === 'delegate_executor';
 
   const shouldShowElapsed = loading || Boolean(startedAt);
   const titleContent = shouldShowElapsed ? (
@@ -108,6 +109,10 @@ export const ToolCallCard = memo(function ToolCallCard({
         finishedAt={loading ? undefined : finishedAt}
       />
     </Flex>
+  ) : delegated ? (
+    <Flex align="center" gap={8}>
+      <span>{name}</span>
+    </Flex>
   ) : (
     <span>{name}</span>
   );
@@ -115,7 +120,7 @@ export const ToolCallCard = memo(function ToolCallCard({
   if (loading && result) {
     // 加载中显示思考过程（双 Think 分离）
     return (
-      <div style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
+      <div className={delegated ? 'chat-delegate-card' : 'chat-tool-plain'} style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
         <ThoughtChain
           className="chat-tool-result-chain"
           items={[
@@ -134,7 +139,7 @@ export const ToolCallCard = memo(function ToolCallCard({
   const displayContent = result ? renderResultContent(result) : '';
 
   return (
-    <div style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
+    <div className={delegated ? 'chat-delegate-card' : 'chat-tool-plain'} style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
       <ThoughtChain
         className="chat-tool-result-chain"
         styles={{

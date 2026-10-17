@@ -22,6 +22,14 @@ textarea {
   font: inherit;
 }
 
+/* 设计 token */
+:root {
+  --dpl-color-tool: #0d9488;        /* 工具调用身份色（青绿 174°，白图标 3.74:1） */
+  --dpl-color-tool-text: #0f766e;   /* 工具调用文字色（teal-700，白底 5.47:1 AA） */
+  --dpl-color-assistant: #2563eb;   /* 助手身份色（蓝 221°，白图标 5.17:1） */
+  --dpl-color-delegate: #7c3aed;    /* 委派任务身份色（品红 293°，白图标 4.71:1） */
+}
+
 /* --- Rich Markdown scrollbar styles --- */
 .chat-rich-markdown .chat-code-highlighter pre::-webkit-scrollbar {
   height: 10px;
@@ -80,6 +88,41 @@ textarea {
 .chat-tool-result-chain .ant-thought-chain-node-content {
   min-width: 0;
   max-width: 100%;
+}
+
+/* ─── 小工具调用分组容器（多小工具折叠聚合） ─── */
+.chat-tool-group { width: 100%; min-width: 0; }
+.chat-tool-group-header {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  border-radius: 6px; cursor: pointer; user-select: none;
+  transition: background-color 0.16s ease;
+}
+.chat-tool-group-header:hover { background: rgba(0, 0, 0, 0.04); }
+.chat-tool-group-header:focus-visible { outline: 2px solid rgba(37, 99, 235, 0.35); outline-offset: 2px; }
+.chat-tool-group-status { display: inline-flex; align-items: center; font-size: 15px; line-height: 1; }
+.chat-tool-group-status-success { color: #16a34a; }
+.chat-tool-group-status-loading { color: var(--dpl-color-tool); }
+.chat-tool-group-status-error { color: #ff4d4f; }
+.chat-tool-group-status-abort { color: rgba(0, 0, 0, 0.45); }
+.chat-tool-group-title { font-size: 15px; font-weight: 500; line-height: 22px; color: var(--dpl-color-tool-text); flex-shrink: 0; }
+.chat-tool-group-stats { font-size: 12px; line-height: 22px; color: #6b7280; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.chat-tool-group-chevron {
+  display: inline-flex; align-items: center; margin-inline-start: auto; margin-inline-end: 4px;
+  font-size: 12px; color: rgba(0, 0, 0, 0.45);
+  transition: transform 0.2s ease-in-out;
+}
+.chat-tool-group-chevron-expanded { transform: rotate(90deg); }
+.chat-tool-group-body { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; min-width: 0; }
+
+/* 非委派工具卡作用域——运行中状态图标统一工具身份色（--dpl-color-tool）。
+   同元素双类写法 `.ant-thought-chain-status.ant-thought-chain-status-loading`，
+   特异度 (0,4,0)，稳压组件库默认级联（≤(0,3,0)），不受 cssinjs 运行时注入顺序影响；
+   委派卡不在本作用域内（.chat-tool-plain 仅出现在非委派分支）。 */
+.chat-tool-plain .ant-thought-chain-node .ant-thought-chain-status.ant-thought-chain-status-loading { color: var(--dpl-color-tool); }
+
+/* ─── 委派任务卡片（与小工具卡视觉区分） ─── */
+.chat-delegate-card {
+  box-sizing: border-box; width: 100%; max-width: 100%; min-width: 0;
 }
 
 /* --- User bubble copy action --- */

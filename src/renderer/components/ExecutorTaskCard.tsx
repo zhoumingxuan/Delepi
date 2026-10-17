@@ -127,7 +127,7 @@ export function ExecutorTaskCard(options: {
   );
 
   return (
-    <div style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
+    <div className="chat-delegate-card" style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
       <ThoughtChain
         className="chat-tool-result-chain"
         styles={{

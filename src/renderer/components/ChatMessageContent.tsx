@@ -290,7 +290,7 @@ const BUILTIN_TOOL_DISPLAY_NAMES: Record<string, string> = {
   fs_search: '文件系统搜索',
 };
 
-function resolveToolDisplayName(
+export function resolveToolDisplayName(
   toolName: string,
   toolSummaries?: ToolSummary[],
 ): string {
@@ -299,7 +299,7 @@ function resolveToolDisplayName(
   return displayName || BUILTIN_TOOL_DISPLAY_NAMES[toolName] || toolName;
 }
 
-function isDelegatedExecutorToolCall(toolCall: ToolCallInfo): boolean {
+export function isDelegatedExecutorToolCall(toolCall: ToolCallInfo): boolean {
   return toolCall.isDelegatedExecutor === true || toolCall.name === 'delegate_executor';
 }
 
@@ -366,6 +366,7 @@ function renderToolResultSegment(
     toolSummaries,
   });
   const shouldShowElapsed = loading || Boolean(toolCall.startedAt);
+  const delegated = isDelegatedExecutorToolCall(toolCall);
   const titleContent = shouldShowElapsed ? (
     <Flex align="center" gap={8}>
       <span>{title}</span>
@@ -374,6 +375,10 @@ function renderToolResultSegment(
         startedAt={toolCall.startedAt ?? createdAt}
         finishedAt={loading ? undefined : toolCall.finishedAt ?? createdAt}
       />
+    </Flex>
+  ) : delegated ? (
+    <Flex align="center" gap={8}>
+      <span>{title}</span>
     </Flex>
   ) : (
     title
@@ -403,7 +408,7 @@ function renderToolResultSegment(
   );
 
   return (
-    <div style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
+    <div className={delegated ? 'chat-delegate-card' : 'chat-tool-plain'} style={{ width: '100%', maxWidth: '100%', minWidth: 0 }}>
       <ThoughtChain
         className="chat-tool-result-chain"
         styles={{
@@ -881,7 +886,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
         const isLoading = index === segments.length - 1;
 
         return (
-          <div key={segment.id}>
+          <div key={segment.id} className="chat-tool-plain">
             {renderToolCallSegment(toolCall, isLoading, toolSummaries)}
           </div>
         );
