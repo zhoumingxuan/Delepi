@@ -246,15 +246,30 @@ async function readDeliverable(
   ) {
     const normalized = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
     const lineList = normalized.split(/\r\n|\r|\n/);
-    const values: string[] = [];
+    const values: unknown[] = [];
 
     for (const lineText of lineList) {
       if (!lineText.trim()) continue;
 
       const item = parseJsonText(lineText);
 
-      if (typeof item === 'string') {
-        values.push(item);
+      if (item === null) continue;
+
+      if (Array.isArray(item)) {
+        values.push(...item);
+        continue;
+      }
+
+      values.push(item);
+    }
+
+    if (values.length === 0) {
+      const fallbackItem = parseJsonText(normalized);
+
+      if (Array.isArray(fallbackItem)) {
+        values.push(...fallbackItem);
+      } else if (fallbackItem !== null) {
+        values.push(fallbackItem);
       }
     }
 
