@@ -1463,7 +1463,9 @@ export async function runMainAgent(
         }
       } else if (
         toolCall.function.name === 'read_file' ||
-        toolCall.function.name === 'fs_search'
+        toolCall.function.name === 'fs_search' ||
+        toolCall.function.name === 'fs_list' ||
+        toolCall.function.name === 'fs_stat'
       ) {
         // ★ 主智能体直接工具执行（轻量文本文件阅读 / 文件系统搜索，不委派执行者）。
         //   执行入口复用执行者注册表统一入口 executor-registry.executeToolCall——

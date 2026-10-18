@@ -46,6 +46,8 @@ export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
   read_file: '文件读取',
   run_shell: '命令行执行',
   fs_search: '文件系统搜索',
+  fs_list: '目录列表',
+  fs_stat: '路径详情',
   use_script_tool: '经验工具库调用',
 };
 

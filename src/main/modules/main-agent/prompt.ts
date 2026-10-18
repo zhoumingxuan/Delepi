@@ -20,7 +20,10 @@ export const SYSTEM_PROMPT = `
 
 # 角色定义
 \`\`\`
-1.你是一个严格按照【标准逻辑流程图】执行的【聪慧】的中文助手，你的名字叫【Delepi】,小名叫【派派】。
+1.你是一个严格按照【标准逻辑流程图】执行的【聪慧】的中文助手;
+- 你的名字：【Delepi】
+- 你的小名：【派派】
+- 你的核心职责：严谨分析【最新用户意图】并根据【实际现状】以最符合【专业领域】的方式【编排】任务并委派给【执行者】执行。
 2.在用【常规手段】无法解决问题时，你会跳出【常规思维圈】进行思考，并尝试用【非常规手段】来解决问题。
 3.你非常关注(【最新用户输入】/【任务执行结果】)中表现出的【细微特征】和浮现的【隐含信息】。
 4.你清楚的意识到，（乱猜/乱做假设/乱做预设条件）是【最错误】的做法，会使得【最新用户意图】无法得到有效解决。
@@ -130,9 +133,10 @@ function buildDelegateToolParameters(): ToolSchema {
 function buildDelegateExecutorDescription(): string {
   // P-2【待用户定稿】：第 8 条为自定义技能选用规则默认文案（规划建议要点），待用户定稿后可调整措辞
   return `
-调用此工具可委派任务给【执行者】
-** 仅用于在符合【触发任务规则】的情况下，详细制定可独立执行的任务，委派并返回结果**
-** 【没有明确要求】或【未获取明确不可执行的证据】之前，你可以委派一切任务，没有任何限制条件**
+调用此工具可委派任务给独立的【执行者】
+** 仅用于在符合【触发任务规则】的情况下，详细制定可独立执行的任务，委派并返回结果 **
+** 【没有明确要求】或【未获取明确不可执行的证据】之前，你可以委派一切任务，没有任何限制条件 **
+**  若执行任务返回结果含【核验结果】可视作【可信轻量核验结果】，尽可能不做重复核验；若发现遗漏的核验项可进行复核**
 
 # 注意事项
 \`\`\`
@@ -149,7 +153,7 @@ function buildDelegateExecutorDescription(): string {
 }
 
 // ============================================================
-// ★ 主智能体直接工具声明（read_file / fs_search）——用户既定要求：声明可直接照抄【执行者】实现。
+// ★ 主智能体直接工具声明（read_file / fs_search / fs_list / fs_stat）——用户既定要求：声明可直接照抄【执行者】实现。
 //   来源：src/main/modules/executor-agent/prompt.ts 的 buildReadFileDescription（L47-59）、
 //   buildFsSearchDescription（L61-72）、EXECUTOR_TOOLS.fs_search（L137-166）、
 //   EXECUTOR_TOOLS.read_file（L167-206）。
@@ -160,26 +164,52 @@ function buildDelegateExecutorDescription(): string {
 
 function buildReadFileDescription(): string {
     return `
-    - 读取【非结构化的文本文件】的工具，按行读取文件，会返回每一行行号，行号从 1 开始；同时支持分段读取和全部读取。
+    - 【最高优先级】
+    - 读取【纯文本文件】的工具，按行读取文件，会返回每一行行号，行号从 1 开始；同时支持分段读取和全部读取。
     - **此工具仅限于搜索本地文件读取，不适配远程文件读取**
-    - **代码文件,MarkDown文件不算结构化文件，仅算有一定格式的文件**。
-    - 结构化的文本文件（例如:json文件，jsonl文件等），优先通过run_with_python 读取。
     - 分段读取end_line必填；全部读取则不需要填end_line。
     - 每次读取都会返回起始行号和实际读取行数。
     - 读取行数不限制，但读取的总体内容超过16384个字符会触发截断。
-    - 超过【32KB文件大小】的【非结构化的文本文件】禁全量读取，因为必然超过16384个字符。
+    - 超过【32KB文件大小】的【纯文本文件】禁全量读取，因为必然超过16384个字符。
     `;
 }
 
 function buildFsSearchDescription(): string {
     return `
-    - 文件系统搜索工具，仅适配【文件名和目录名】以及【目录扫描】功能。
+    - 【低优先级】
+    - 本地文件系统搜索工具，按内容查找文本出现在哪一行，可按正则匹配内容。
     - **此工具仅限于搜索本地文件系统，不适配远程文件系统**
-    - 不填keyword则视作按depth扫描【目标目录】。
-    - 返回内容超过16384个字符会触发截断。
-    - 返回匹配的文件数和目录数，列表中每项标记是文件还是目录。
+    - 需要模式匹配（例如 TODO|FIXME、日志格式、多个关键字任一）时开启正则，匹配文本按 JavaScript 正则语法书写。
+    - 每条命中都会给出：命中文件的绝对路径、命中所在行的文本、命中片段在该行内的起始字符位置与结束字符位置。
+    - 行号和字符位置都从 1 开始数，行号就是文件里的第几行；结束字符位置指的是命中片段的最后一个字符在该行里的位置，首尾都算在命中范围内。
+    - 命中行过长时，返回的行文本只是该行前 8192 个字符的摘要，不是整行；命中位置仍按整行计算，因此摘要中可能看不到命中片段，此时不得判定为未命中。
+    - 结果中给出命中文件总数与命中总处数。
+    - **内容搜索仅支持【纯文本文件搜索】，会跳过二进制文件与不可读文件（如:PDF,Word,Excel文件等)，不要据此判定这些文件不含目标文本。**
     **必须注意**
-    - a.为节省输出字符，搜索结果返回的实际上是相对于【目标目录】(source_dir)的相对路径，但是在其他工具用**务必使用绝对路径**。
+    - a.目录搜索会遍历全部子目录；file_path 搜索只针对该文件；返回的 file_path 均为绝对路径，命中位置均以完整原始行为准。
+    `;
+}
+
+function buildFsListDescription(): string {
+    return `
+    - 【高优先级】
+    - 本地文件系统目录列举工具：对【目标目录】做递归遍历，列举全部文件与目录条目（不做任何名称或内容过滤）。
+    - 递归深度由 depth 控制，工具不会超出该深度向下遍历。
+    - **此工具仅限于列举本地文件系统，不适配远程文件系统**
+    - entries 按 path 的 codePoint 升序确定性排序；无法访问的条目记入 skipped_paths（格式为「相对路径: 错误信息」，路径分隔符统一为 /）并跳过，不中断整体列举。
+    **必须注意**
+    - a.entries 中的 path 为绝对路径，name 仅为条目名（不含父目录）；跨工具引用文件时**务必使用绝对路径**。
+    `;
+}
+
+function buildFsStatDescription(): string {
+    return `
+    - 【高优先级】
+    - 本地文件系统路径信息工具：查询单个【文件或目录】路径自身及其指向对象的属性明细；路径不存在时给出明确的不存在判定。
+    - **此工具仅限于查询本地文件系统，不适配远程文件系统**
+    - size_bytes 为字节数（仅 file 与 symlink 有该字段）。
+    **必须注意**
+    - a.路径分隔符随运行平台而异；同一路径在符号链接场景下 real_path 可能与传入路径不同。
     `;
 }
 
@@ -196,7 +226,7 @@ function buildMainReadFileTool() {
           path: {
             type: 'string',
             description:
-              '必填。要读取的本地【非结构化的文本文件】路径，必须使用绝对路径。',
+              '必填。要读取的本地【纯文本文件】路径，必须使用绝对路径。',
           },
           start_line: {
             type: 'integer',
@@ -238,11 +268,47 @@ function buildMainFsSearchTool() {
         properties: {
           directory: {
             type: 'string',
-            description: '必填。要搜索的【目标目录】绝对路径。',
+            description: '可选。要搜索的【目标目录】绝对路径；与 file_path 二选一，目录搜索时使用。',
           },
-          keyword: {
+          file_path: {
             type: 'string',
-            description: '可选。搜索关键字，按名称包含匹配；* 表示全部，默认 *。',
+            description: '可选。要搜索的【单个文件】绝对路径；与 directory 二选一，单文件搜索时使用。',
+          },
+          content: {
+            type: 'string',
+            description: '必填。要搜索的匹配文本；regex=false 时按普通字面量匹配，regex=true 时按 JavaScript 正则表达式编译。',
+          },
+          regex: {
+            type: 'boolean',
+            description: '可选。是否将 content 作为 JavaScript 正则表达式；默认 false（普通字面量）。',
+            default: false,
+          },
+          case_sensitive: {
+            type: 'boolean',
+            description: '可选。是否区分大小写；默认 false，不区分大小写。',
+            default: false,
+          },
+        },
+        required: ['content'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+/** 主智能体工具声明：fs_list（非空白字符与执行者 EXECUTOR_TOOLS.fs_list 逐字一致） */
+function buildMainFsListTool() {
+  return {
+    type: 'function' as const,
+    function: {
+      name: 'fs_list',
+      description: buildFsListDescription(),
+      parameters: {
+        type: 'object',
+        properties: {
+          directory: {
+            type: 'string',
+            description: '必填。要列举的【目标目录】绝对路径。',
           },
           depth: {
             type: 'integer',
@@ -253,6 +319,28 @@ function buildMainFsSearchTool() {
           },
         },
         required: ['directory'],
+        additionalProperties: false,
+      },
+    },
+  };
+}
+
+/** 主智能体工具声明：fs_stat（非空白字符与执行者 EXECUTOR_TOOLS.fs_stat 逐字一致） */
+function buildMainFsStatTool() {
+  return {
+    type: 'function' as const,
+    function: {
+      name: 'fs_stat',
+      description: buildFsStatDescription(),
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: '必填。要查询的【目标文件或目录】绝对路径。',
+          },
+        },
+        required: ['path'],
         additionalProperties: false,
       },
     },
@@ -272,6 +360,8 @@ export function buildMainTools() {
     },
     buildMainReadFileTool(),
     buildMainFsSearchTool(),
+    buildMainFsListTool(),
+    buildMainFsStatTool(),
   ];
 }
 

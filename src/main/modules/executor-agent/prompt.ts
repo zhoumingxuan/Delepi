@@ -3,6 +3,8 @@ import { runShell } from '@/main/tools/run-shell';
 import { readFileTool } from '@/main/tools/read-file';
 import { InspectMedia } from '@/main/tools/inspect-media';
 import { fsSearch } from '@/main/tools/fs-search';
+import { fsList } from '@/main/tools/fs-list';
+import { fsStat } from '@/main/tools/fs-stat';
 import { scriptTool } from '@/main/tools/script-tool';
 
 function getShellLabel(): string {
@@ -61,13 +63,39 @@ function buildReadFileDescription(): string {
 function buildFsSearchDescription(): string {
     return `
     - 【高优先级】
-    - 文件系统搜索工具，仅适配【文件名和目录名】以及【目录扫描】功能。
+    - 本地文件系统搜索工具，按内容查找文本出现在哪一行，可按正则匹配内容。
     - **此工具仅限于搜索本地文件系统，不适配远程文件系统**
-    - 不填keyword则视作按depth扫描【目标目录】。
-    - 返回内容超过16384个字符会触发截断。
-    - 返回匹配的文件数和目录数，列表中每项标记是文件还是目录。
+    - 需要模式匹配（例如 TODO|FIXME、日志格式、多个关键字任一）时开启正则，匹配文本按 JavaScript 正则语法书写。
+    - 每条命中都会给出：命中文件的绝对路径、命中所在行的文本、命中片段在该行内的起始字符位置与结束字符位置。
+    - 行号和字符位置都从 1 开始数，行号就是文件里的第几行；结束字符位置指的是命中片段的最后一个字符在该行里的位置，首尾都算在命中范围内。
+    - 命中行过长时，返回的行文本只是该行前 8192 个字符的摘要，不是整行；命中位置仍按整行计算，因此摘要中可能看不到命中片段，此时不得判定为未命中。
+    - 结果中给出命中文件总数与命中总处数。
+    - **内容搜索仅支持【纯文本文件搜索】，会跳过二进制文件与不可读文件（如:PDF,Word,Excel文件等)，不要据此判定这些文件不含目标文本。**
     **必须注意**
-    - a.为节省输出字符，搜索结果返回的实际上是相对于【目标目录】(source_dir)的相对路径，但是在其他工具用**务必使用绝对路径**。
+    - a.目录搜索会遍历全部子目录；file_path 搜索只针对该文件；返回的 file_path 均为绝对路径，命中位置均以完整原始行为准。
+    `;
+}
+
+function buildFsListDescription(): string {
+    return `
+    - 【高优先级】
+    - 本地文件系统目录列举工具：对【目标目录】做递归遍历，列举全部文件与目录条目（不做任何名称或内容过滤）。
+    - 递归深度由 depth 控制，工具不会超出该深度向下遍历。
+    - **此工具仅限于列举本地文件系统，不适配远程文件系统**
+    - entries 按 path 的 codePoint 升序确定性排序；无法访问的条目记入 skipped_paths（格式为「相对路径: 错误信息」，路径分隔符统一为 /）并跳过，不中断整体列举。
+    **必须注意**
+    - a.entries 中的 path 为绝对路径，name 仅为条目名（不含父目录）；跨工具引用文件时**务必使用绝对路径**。
+    `;
+}
+
+function buildFsStatDescription(): string {
+    return `
+    - 【高优先级】
+    - 本地文件系统路径信息工具：查询单个【文件或目录】路径自身及其指向对象的属性明细；路径不存在时给出明确的不存在判定。
+    - **此工具仅限于查询本地文件系统，不适配远程文件系统**
+    - size_bytes 为字节数（仅 file 与 symlink 有该字段）。
+    **必须注意**
+    - a.路径分隔符随运行平台而异；同一路径在符号链接场景下 real_path 可能与传入路径不同。
     `;
 }
 
@@ -145,11 +173,44 @@ export const EXECUTOR_TOOLS = {
             properties: {
                 directory: {
                     type: 'string',
-                    description: '必填。要搜索的【目标目录】绝对路径。',
+                    description: '可选。要搜索的【目标目录】绝对路径；与 file_path 二选一，目录搜索时使用。',
                 },
-                keyword: {
+                file_path: {
                     type: 'string',
-                    description: '可选。搜索关键字，按名称包含匹配；* 表示全部，默认 *。',
+                    description: '可选。要搜索的【单个文件】绝对路径；与 directory 二选一，单文件搜索时使用。',
+                },
+                content: {
+                    type: 'string',
+                    description: '必填。要搜索的匹配文本；regex=false 时按普通字面量匹配，regex=true 时按 JavaScript 正则表达式编译。',
+                },
+                regex: {
+                    type: 'boolean',
+                    description: '可选。是否将 content 作为 JavaScript 正则表达式；默认 false（普通字面量）。',
+                    default: false,
+                },
+                case_sensitive: {
+                    type: 'boolean',
+                    description: '可选。是否区分大小写；默认 false，不区分大小写。',
+                    default: false,
+                },
+            },
+            required: ['content'],
+            additionalProperties: false,
+        },
+        execute: fsSearch,
+    },
+    fs_list: {
+        config: {
+            name: 'fs_list',
+            displayName: '目录列表',
+            buildDescription: buildFsListDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                directory: {
+                    type: 'string',
+                    description: '必填。要列举的【目标目录】绝对路径。',
                 },
                 depth: {
                     type: 'integer',
@@ -162,7 +223,26 @@ export const EXECUTOR_TOOLS = {
             required: ['directory'],
             additionalProperties: false,
         },
-        execute: fsSearch,
+        execute: fsList,
+    },
+    fs_stat: {
+        config: {
+            name: 'fs_stat',
+            displayName: '路径详情',
+            buildDescription: buildFsStatDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: '必填。要查询的【目标文件或目录】绝对路径。',
+                },
+            },
+            required: ['path'],
+            additionalProperties: false,
+        },
+        execute: fsStat,
     },
     read_file: {
         config: {

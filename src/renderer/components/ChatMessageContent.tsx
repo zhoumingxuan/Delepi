@@ -288,6 +288,8 @@ function resolveTaskDisplayTitle(options: {
 const BUILTIN_TOOL_DISPLAY_NAMES: Record<string, string> = {
   read_file: '文件读取',
   fs_search: '文件系统搜索',
+  fs_list: '目录列表',
+  fs_stat: '路径详情',
 };
 
 export function resolveToolDisplayName(

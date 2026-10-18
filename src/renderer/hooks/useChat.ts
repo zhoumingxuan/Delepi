@@ -1618,6 +1618,51 @@ const scheduleProjection = useCallback(() => {
           isDelegatedExecutor: data.isDelegatedExecutor,
         };
 
+        // ★ 方案A：主智能体自身工具（非委派）→ 运行态占位消息（工具启动瞬间即可见，带 loading 态）
+        //   占位消息 id 固定为 `running-tool:` + callId（可推导，禁止随机 id；供 tool-result /
+        //   真实 tool 消息到达时按同一 id 精确收口）；已存在同 id 则原地推进（幂等，禁止重复追加）
+        if (data.isDelegatedExecutor !== true) {
+          const placeholderId = `running-tool:${data.callId}`;
+          const placeholderIdx = entry.messages.findIndex((m) => m.id === placeholderId);
+          if (placeholderIdx !== -1) {
+            const occupied = [...entry.messages];
+            occupied[placeholderIdx] = {
+              ...occupied[placeholderIdx],
+              status: 'loading',
+              toolCall: {
+                ...occupied[placeholderIdx].toolCall,
+                callId: data.callId,
+                name: data.name,
+                arguments: data.arguments,
+                status: 'loading',
+                startedAt: occupied[placeholderIdx].toolCall?.startedAt ?? startedAt,
+                createdAt: occupied[placeholderIdx].toolCall?.createdAt ?? startedAt,
+                isDelegatedExecutor: false,
+              },
+            };
+            entry.messages = occupied;
+            return;
+          }
+          const runningPlaceholder: ChatMessage = {
+            id: placeholderId,
+            role: 'tool',
+            content: '',
+            createdAt: startedAt,
+            status: 'loading',
+            toolCall: {
+              callId: data.callId,
+              name: data.name,
+              arguments: data.arguments,
+              status: 'loading',
+              startedAt,
+              createdAt: startedAt,
+              isDelegatedExecutor: false,
+            },
+          };
+          entry.messages = [...entry.messages, runningPlaceholder];
+          return;
+        }
+
         // ★ M06：目标 id 查找由 Map 迁移至 per-conversation 运行态条目
         const targetId = entry.assistantMessageId;
         if (!targetId) return;
@@ -1669,6 +1714,26 @@ const scheduleProjection = useCallback(() => {
             entry.messages = next;
           }
         }
+        // ★ 方案A：同步收口运行态占位消息（字段与 assistant 侧 toolCall 结果保持一致）
+        const placeholderId = `running-tool:${data.callId}`;
+        const placeholderIdx = entry.messages.findIndex((m) => m.id === placeholderId);
+        const placeholderToolCall =
+          placeholderIdx === -1 ? undefined : entry.messages[placeholderIdx].toolCall;
+        if (placeholderToolCall) {
+          const withPlaceholder = [...entry.messages];
+          withPlaceholder[placeholderIdx] = {
+            ...withPlaceholder[placeholderIdx],
+            status: data.success ? ('success' as const) : ('error' as const),
+            toolCall: {
+              ...placeholderToolCall,
+              result: data.result,
+              status: data.success ? ('success' as const) : ('error' as const),
+              isError: !data.success,
+              finishedAt,
+            },
+          };
+          entry.messages = withPlaceholder;
+        }
         // P1 防重复：处理完成后记录 callId，防止后续重复处理
         entry.completedToolCallIds.add(data.callId);
       });
@@ -1686,8 +1751,11 @@ const scheduleProjection = useCallback(() => {
         entry.conversationRunning = false;
         entry.terminal = true;
         entry.terminalAt = Date.now();
+        // ★ 方案A：终态清掉仍残留的运行态工具占位（id 以 running-tool: 开头且仍 loading）
+        const nextMsgs = entry.messages.filter(
+          (m) => !(m.id.startsWith('running-tool:') && m.status === 'loading'),
+        );
         // ★ 关闭所有 loading 状态的 assistant 消息（处理 while 循环多轮迭代）
-        const nextMsgs = [...entry.messages];
         for (let idx = 0; idx < nextMsgs.length; idx++) {
           if (nextMsgs[idx].role === 'assistant' && nextMsgs[idx].status === 'loading') {
             nextMsgs[idx] = { ...nextMsgs[idx], status: 'success' };
@@ -1934,6 +2002,10 @@ const scheduleProjection = useCallback(() => {
           //   运行中虚拟任务卡由 ChatArea existingToolCallIds 去重替换（新链路自然切换）
           if (toolCallId) {
             entry.completedToolCallIds.add(toolCallId);
+            // ★ 方案A：真实 tool 消息落位前先按 running-tool: 前缀精确移除该 callId 的运行态占位
+            entry.messages = entry.messages.filter(
+              (m) => !m.id.startsWith(`running-tool:${toolCallId}`),
+            );
           }
           entry.messages = upsertMessageById(entry.messages, data.message);
         });
@@ -1979,6 +2051,10 @@ const scheduleProjection = useCallback(() => {
           entry.conversationRunning = false;
           entry.terminal = true;
           entry.terminalAt = Date.now();
+          // ★ 方案A：终态先清掉仍 loading 的运行态工具占位（避免终态后残留 loading 占位）
+          entry.messages = entry.messages.filter(
+            (m) => !(m.id.startsWith('running-tool:') && m.status === 'loading'),
+          );
           entry.messages = markRunningMessagesAbortedInList(entry.messages);
         });
 
