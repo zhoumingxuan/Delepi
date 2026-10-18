@@ -63,6 +63,12 @@ export const ERR_NOT_TEXT_FILE = 'NOT_TEXT_FILE';
 export const ERR_UNSUPPORTED_ENCODING = 'UNSUPPORTED_ENCODING';
 
 // ============================================================
+// fs-append-text 错误码
+// ============================================================
+
+export const ERR_APPEND_VERIFY_FAILED = 'APPEND_VERIFY_FAILED';
+
+// ============================================================
 // 乱码警告
 // ============================================================
 

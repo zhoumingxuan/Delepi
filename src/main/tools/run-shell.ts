@@ -1,7 +1,7 @@
 /**
  * run_shell：极简单条操作系统命令执行器（用户 2026-08-27 00:03:10 修订版，取代旧版多行脚本方案）。
  * - Input 仅接受单条 `command` 命令字符串，无多行命令/多行脚本支持；
- * - 每次调用 spawn 一个独立 shell 子进程（Windows: powershell.exe -NoProfile -Command <command>；
+ * - 每次调用 spawn 一个独立 shell 子进程（Windows: 绝对路径 PowerShell -NoProfile -Command <command>；
  *   Linux: /bin/bash -c <command>），命令经命令行参数直传，工作目录经 spawn cwd 传入，进程执行完即退出；
  * - 无常驻/单例 shell 会话、无模块级可变状态、无临时脚本文件；
  * - timeout 默认 180s（可覆盖），超时 kill 后 returncode=124，abort 后 returncode=130；
@@ -13,9 +13,11 @@ import { spawn } from 'node:child_process';
 import { stat } from 'node:fs/promises';
 import path from 'node:path';
 import { normalizeOptionalString, type ToolRuntimeContext } from './runtime-context';
+import { markTaskProcessClosed, registerTaskProcess, type TaskJobList } from './task-job-list';
 import { buildExecutedToolResultData, buildToolResult, truncateToolOutput, type ToolResult } from './result';
 import { ensureErrorMessage } from '../utils/index';
 import { killProcessTree } from '../utils/process-kill';
+import { resolveWindowsPowerShellPath } from '../utils/windows-system-exe';
 import {
   DEFAULT_TIMEOUT_SECONDS,
   TOOL_TIMEOUT_MAX_SECONDS,
@@ -53,10 +55,14 @@ function getShellPlatform(): ShellPlatform {
   return 'linux';
 }
 
-/** shell 子进程命令构造：命令经命令行参数直传（spawn 参数风格参照 run-with-python.ts L315-422） */
+/**
+ * shell 子进程命令构造：命令经命令行参数直传（spawn 参数风格参照 run-with-python.ts L315-422）。
+ * Windows 使用 PowerShell 绝对路径：裸名 PowerShell 在 PATH 长度=55 的环境下无法解析
+ * （2026-10-18 实测 FileNotFoundError，0.5 ms），绝对路径不依赖 PATH。
+ */
 function buildShellSpawn(platform: ShellPlatform, command: string): { command: string; args: string[] } {
   if (platform === 'windows') {
-    return { command: 'powershell.exe', args: ['-NoProfile', '-Command', command] };
+    return { command: resolveWindowsPowerShellPath(), args: ['-NoProfile', '-Command', command] };
   }
   if (platform === 'macos') {
     return { command: '/bin/zsh', args: ['-c', command] };
@@ -160,23 +166,36 @@ async function runSpawnCommand(
   userCommand: string,
   options: { cwd: string | null; timeoutMs: number },
   signal?: AbortSignal,
+  jobList?: TaskJobList,
 ): Promise<SpawnCommandResult> {
   return new Promise<SpawnCommandResult>((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error('ABORTED'));
       return;
     }
-    const shell = buildShellSpawn(platform, userCommand);
+    // PowerShell 对原生命令的非零退出码默认折叠为 1（实测 cmd /c exit 3 → 1）；
+    // 非挂起执行追加 LASTEXITCODE 透传，保证 returncode 与命令体原样一致（挂起模式不经过此分支）。
+    const execCommand = platform === 'windows'
+      ? `${userCommand}; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }`
+      : userCommand;
+    const shell = buildShellSpawn(platform, execCommand);
+    // 非挂起模式直接 spawn 命令体：POSIX 以 detached 建立独立进程组（供进程组信号清理后代），
+    // Windows 关闭 detached（无内核级进程树所有权，超时/abort 仅能终止直接子进程）。
     const child = spawn(shell.command, shell.args, {
       cwd: options.cwd ?? undefined,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
     });
+    registerTaskProcess(jobList, child.pid, 'run_shell', false, child);
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let timedOut = false;
     let aborted = false;
     let settled = false;
+    child.once('exit', (code, signal) => {
+      if (typeof child.pid === 'number') markTaskProcessClosed(jobList, child.pid, timedOut ? 'timeout' : aborted ? 'abort' : 'natural', code, signal);
+    });
     let timer: NodeJS.Timeout | null = setTimeout(() => { timedOut = true; killProcessTree(child, 'run-shell'); }, options.timeoutMs);
     const abortHandler = () => {
       if (settled) return;
@@ -198,6 +217,7 @@ async function runSpawnCommand(
     child.stdout.on('data', (chunk: Buffer | string) => collect(stdoutChunks, chunk));
     child.stderr.on('data', (chunk: Buffer | string) => collect(stderrChunks, chunk));
     child.once('error', (error) => {
+      if (typeof child.pid === 'number' && (child.exitCode !== null || child.signalCode !== null)) markTaskProcessClosed(jobList, child.pid, 'spawn_error');
       if (settled) return;
       settled = true; cleanup(); reject(error);
     });
@@ -227,6 +247,7 @@ async function runSuspendedSpawnCommand(
   userCommand: string,
   options: { cwd: string | null },
   signal?: AbortSignal,
+  jobList?: TaskJobList,
 ): Promise<SuspendedSpawnResult> {
   if (signal?.aborted) {
     throw new Error('ABORTED');
@@ -239,18 +260,26 @@ async function runSuspendedSpawnCommand(
     windowsHide: true,
   });
 
-  // error 事件挂空监听：异步启动失败不再改写已返回结果，仅防未处理 'error' 事件崩溃
-  child.once('error', () => {});
+  // error 事件监听仍不改写已返回结果（仅防未处理 'error' 崩溃）；仅在句柄确认已终止时补 spawn_error 销账
+  child.once('error', () => {
+    if (typeof child.pid === 'number' && (child.exitCode !== null || child.signalCode !== null)) markTaskProcessClosed(jobList, child.pid, 'spawn_error');
+  });
 
   // 立即 resume 丢弃输出（不采集、防背压），进程后续输出与退出码不再关心
   child.stdout.resume();
   child.stderr.resume();
+
+  child.once('exit', (code, signal) => {
+    if (typeof child.pid === 'number') markTaskProcessClosed(jobList, child.pid, 'natural', code, signal);
+  });
 
   const pid = child.pid;
   if (typeof pid !== 'number') {
     child.kill();
     throw new Error('无法获取挂起 Shell 进程 PID');
   }
+
+  registerTaskProcess(jobList, pid, 'run_shell', true, child);
 
   return { pid, platform: process.platform };
 }
@@ -317,7 +346,7 @@ export async function runShell(input: unknown, context: ToolRuntimeContext): Pro
   // 挂起模式：spawn 后立即返回真实子进程 PID（不等待不采集、无执行超时）
   if (suspend) {
     try {
-      const suspended = await runSuspendedSpawnCommand(platform, command, { cwd: workDir }, context.signal);
+      const suspended = await runSuspendedSpawnCommand(platform, command, { cwd: workDir }, context.signal, context?.jobList);
       return buildToolResult({
         success: true,
         code: ERR_OK,
@@ -342,7 +371,7 @@ export async function runShell(input: unknown, context: ToolRuntimeContext): Pro
 
   // 普通模式
   try {
-    const result = await runSpawnCommand(platform, command, { cwd: workDir, timeoutMs: timeoutSeconds * 1000 }, context.signal);
+    const result = await runSpawnCommand(platform, command, { cwd: workDir, timeoutMs: timeoutSeconds * 1000 }, context.signal, context?.jobList);
     if (result.timedOut) {
       const resultMessage = `命令执行超时（${timeoutSeconds}s），已终止进程`;
       return buildToolResult({

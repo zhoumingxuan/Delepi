@@ -63,6 +63,7 @@ import {
 import {
   type ToolRuntimeContext,
 } from '../../tools/runtime-context';
+import { createTaskJobList, reapTaskJobList } from '../../tools/task-job-list';
 import {
   ensureErrorMessage,
   normalizeString,
@@ -1224,6 +1225,8 @@ export async function runDelegatedTask(
 ): Promise<RunDelegatedTaskResult> {
   // 任务开始时间（本地时间，不带时区）
   const taskStartedAt = formatCurrentDateTime();
+  // ★ 任务级进程台账（方案 D1/D5）：一任务一份，纯内存；任务收敛时统一收网清理非挂起存活进程
+  const jobList = createTaskJobList(options.taskId);
 
   // 解析委派任务输入
   const parseResult = parseDelegateExecutorInput(options.rawArguments);
@@ -1266,6 +1269,7 @@ export async function runDelegatedTask(
     ...options.toolContext,
     conversationId: options.conversationId,
     signal: options.signal,
+    jobList,
   };
 
   // 获取工具定义
@@ -1656,5 +1660,8 @@ export async function runDelegatedTask(
       (error as Error & { executionLogPath?: string }).executionLogPath = executionLogPathOnError;
     }
     throw error;
+  } finally {
+    // ★ 任务级进程台账收网（方案 D5）：任务收敛统一清理「running 且非挂起」的存活进程；收网自身永不抛错
+    await reapTaskJobList(jobList);
   }
 }

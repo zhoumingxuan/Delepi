@@ -11,6 +11,7 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 import type { ToolRuntimeContext } from './runtime-context';
+import { markTaskProcessClosed, registerTaskProcess, type TaskJobList } from './task-job-list';
 import { pythonManager, PythonState } from '../modules/python';
 import { configManager } from '../modules/config/config-manager';
 import {
@@ -306,23 +307,31 @@ async function runSpawnCommand(
     encoding: string;
   },
   signal?: AbortSignal,
+  jobList?: TaskJobList,
 ): Promise<SpawnCommandResult> {
   return new Promise<SpawnCommandResult>((resolve, reject) => {
     if (signal?.aborted) {
       reject(new Error('ABORTED'));
       return;
     }
+    // 非挂起模式直接 spawn 命令体：POSIX 以 detached 建立独立进程组（供进程组信号清理后代），
+    // Windows 关闭 detached（无内核级进程树所有权，超时/abort 仅能终止直接子进程）。
     const child = spawn(pythonCommand.command, [...pythonCommand.prefixArgs, ...args], {
       cwd: options.cwd,
       env: buildPythonUtf8Env(),
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
+      detached: process.platform !== 'win32',
     });
+    registerTaskProcess(jobList, child.pid, 'run_with_python', false, child);
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let timedOut = false;
     let aborted = false;
     let settled = false;
+    child.once('exit', (code, signal) => {
+      if (typeof child.pid === 'number') markTaskProcessClosed(jobList, child.pid, timedOut ? 'timeout' : aborted ? 'abort' : 'natural', code, signal);
+    });
     let timer: NodeJS.Timeout | null = setTimeout(() => {
       timedOut = true;
       killProcessTree(child, 'run-with-python');
@@ -363,6 +372,7 @@ async function runSpawnCommand(
     });
 
     child.once('error', (error) => {
+      if (typeof child.pid === 'number' && (child.exitCode !== null || child.signalCode !== null)) markTaskProcessClosed(jobList, child.pid, 'spawn_error');
       if (settled) {
         return;
       }
@@ -414,6 +424,7 @@ async function runSuspendedSpawnCommand(
     cwd: string;
   },
   signal?: AbortSignal,
+  jobList?: TaskJobList,
 ): Promise<SuspendedSpawnResult> {
   if (signal?.aborted) {
     throw new Error('ABORTED');
@@ -426,18 +437,26 @@ async function runSuspendedSpawnCommand(
     windowsHide: true,
   });
 
-  // error 事件挂空监听：异步启动失败不再改写已返回结果，仅防未处理 'error' 事件崩溃
-  child.once('error', () => {});
+  // error 事件监听仍不改写已返回结果（仅防未处理 'error' 崩溃）；仅在句柄确认已终止时补 spawn_error 销账
+  child.once('error', () => {
+    if (typeof child.pid === 'number' && (child.exitCode !== null || child.signalCode !== null)) markTaskProcessClosed(jobList, child.pid, 'spawn_error');
+  });
 
   // 立即 resume 丢弃输出（不采集、防背压），进程后续输出与退出码不再关心
   child.stdout.resume();
   child.stderr.resume();
+
+  child.once('exit', (code, signal) => {
+    if (typeof child.pid === 'number') markTaskProcessClosed(jobList, child.pid, 'natural', code, signal);
+  });
 
   const pid = child.pid;
   if (typeof pid !== 'number') {
     child.kill();
     throw new Error('无法获取挂起 Python 进程 PID');
   }
+
+  registerTaskProcess(jobList, pid, 'run_with_python', true, child);
 
   return { pid, platform: process.platform };
 }
@@ -661,6 +680,7 @@ export async function runWithPython(
           cwd: runDir,
         },
         context.signal,
+        context?.jobList,
       );
 
       // 挂起成功：spawn 后立即返回 pid/platform/scriptPath（timeout 忽略、不等待不采集、无执行超时）
@@ -735,6 +755,7 @@ export async function runWithPython(
         encoding: resolvedRuntimeEncoding,
       },
       context.signal,
+      context?.jobList,
     );
 
     if (compileResult.returncode !== 0) {
@@ -795,6 +816,7 @@ export async function runWithPython(
         encoding: resolvedRuntimeEncoding,
       },
       context.signal,
+      context?.jobList,
     );
 
     if (runResult.timedOut) {

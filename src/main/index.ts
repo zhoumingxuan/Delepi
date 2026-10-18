@@ -27,6 +27,7 @@ import {
   SCRIPTS_TOOLS_DIR_NAME,
 } from './constants';
 import { ensureDir, resolveConversationsRootDir } from './utils/storage-paths';
+import { resolveWindowsPowerShellPath, resolveWindowsTaskkillPath } from './utils/windows-system-exe';
 console.log('[sandbox-diag] argv =', JSON.stringify(process.argv));
 console.log('[sandbox-diag] ELECTRON_DISABLE_SANDBOX =', process.env.ELECTRON_DISABLE_SANDBOX ?? '(unset)');
 
@@ -72,7 +73,7 @@ function killStaleSamePathInstances(): void {
       '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ' +
       `Get-CimInstance Win32_Process -Filter "Name='${wqlName}'" | ` +
       'ForEach-Object { "$($_.ProcessId)|$($_.ExecutablePath)" }';
-    const listed = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', query], {
+    const listed = spawnSync(resolveWindowsPowerShellPath(), ['-NoProfile', '-NonInteractive', '-Command', query], {
       encoding: 'utf8',
       timeout: 10000,
       windowsHide: true,
@@ -93,7 +94,7 @@ function killStaleSamePathInstances(): void {
       if (pid === process.pid) continue; // 条件②：进程ID与自身相同 → 排除自身进程
       if (path.basename(exePath).toLowerCase() !== selfExeName.toLowerCase()) continue; // 条件①：进程名称不同 → 排除
       if (normalizeWinPath(exePath) !== selfPathKey) continue; // 条件③：启动路径不同 → 排除
-      const killed = spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+      const killed = spawnSync(resolveWindowsTaskkillPath(), ['/PID', String(pid), '/T', '/F'], {
         encoding: 'utf8',
         timeout: 10000,
         windowsHide: true,

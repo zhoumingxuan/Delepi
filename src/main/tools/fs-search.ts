@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 
 import { type ToolRuntimeContext } from './runtime-context';
-import { buildToolResult, type ToolResult } from './result';
+import { buildToolResult, truncateFsResultJson, type ToolResult } from './result';
 import { normalizeString, ensureErrorMessage } from '../utils/index';
 import {
   ERR_ABORTED,
@@ -211,7 +211,7 @@ async function collectContentFileMatches(
  * - 每条命中给出文件绝对路径、行号、行文本、命中起止字符位置与行截断信息，索引为 1 基且基于完整原始行；
  * - 单行超过 8192 字符仅输出前 8192 字符摘要，索引仍基于完整行；
  * - 二进制或不可读文件记入 skipped_content_files；不可访问路径记入 skipped_paths；
- * - 结果条数与 JSON 字符串长度均不做任何截断（不调用任何输出截断工具函数）。
+ * - 结果 JSON 序列化后超过 MAX_OUTPUT_LENGTH(16384) 字符时，仅保留前 16384 字符并标注截断。
  * 纯 Node fs 只读；仅支持本地文件系统。
  */
 export async function fsSearch(
@@ -472,18 +472,20 @@ export async function fsSearch(
     messageLines.push(`已跳过 ${skippedContentFiles.length} 个二进制或不可读文件。`);
   }
 
-  return buildToolResult({
-    success: true,
-    code: ERR_OK,
-    message: messageLines.join('\n'),
-    data: {
-      index_base: 1,
-      content_line_summary_limit: CONTENT_LINE_SUMMARY_LIMIT,
-      match_file_count: contentResults.length,
-      total_content_match_count: totalHits,
-      content_results: contentResults,
-      skipped_content_files: skippedContentFiles,
-      skipped_paths: skipped,
-    },
-  });
+  return truncateFsResultJson(
+    buildToolResult({
+      success: true,
+      code: ERR_OK,
+      message: messageLines.join('\n'),
+      data: {
+        index_base: 1,
+        content_line_summary_limit: CONTENT_LINE_SUMMARY_LIMIT,
+        match_file_count: contentResults.length,
+        total_content_match_count: totalHits,
+        content_results: contentResults,
+        skipped_content_files: skippedContentFiles,
+        skipped_paths: skipped,
+      },
+    }),
+  );
 }

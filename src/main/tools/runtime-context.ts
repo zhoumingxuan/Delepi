@@ -4,12 +4,15 @@
  * 已从 ToolRuntimeContext 中移除：signal 由 main-agent/executor-agent 层通过独立 signal 链路透传，
  * 事件统一走 eventBus.emit，视觉模型配置由 inspect-media 直接从 configManager 读取。
  */
+import type { TaskJobList } from './task-job-list';
 
 export interface ToolRuntimeContext {
   /** 对话 ID */
   conversationId?: string;
   /** 工具默认运行目录；run_dir 未传时使用 */
   runDir?: string;
+  /** 任务级进程台账（可选）；由 runDelegatedTask 注入，工具侧经 context?.jobList 读取 */
+  jobList?: TaskJobList;
   /** 中止信号；由上层通过独立 signal 链路传入 */
   signal?: AbortSignal;
 }

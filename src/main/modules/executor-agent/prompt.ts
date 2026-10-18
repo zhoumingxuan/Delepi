@@ -5,6 +5,7 @@ import { InspectMedia } from '@/main/tools/inspect-media';
 import { fsSearch } from '@/main/tools/fs-search';
 import { fsList } from '@/main/tools/fs-list';
 import { fsStat } from '@/main/tools/fs-stat';
+import { fsAppendText } from '@/main/tools/fs-append-text';
 import { scriptTool } from '@/main/tools/script-tool';
 
 function getShellLabel(): string {
@@ -34,7 +35,7 @@ function buildRunWithPythonDescription(): string {
 
     return `
     - 【低优先级】
-    - 执行 Python 代码工具，先写入脚本再运行，返回结构化结果。
+    - 执行 Python 代码工具，返回结构化结果。
     - 【新增/修改】文本文件，检索文件【关键信息】，则【最优先】使用的工具。
     - 同时适合较长逻辑、批处理逻辑、复杂解析以及稳定的文件改写任务。
     - Python【已预置】统一按 UTF-8 执行、读写和解码。
@@ -56,7 +57,7 @@ function buildReadFileDescription(): string {
     - 分段读取end_line必填；全部读取则不需要填end_line。
     - 每次读取都会返回起始行号和实际读取行数。
     - 读取行数不限制，但读取的总体内容超过16384个字符会触发截断。
-    - 超过【32KB文件大小】的【非结构化的文本文件】禁全量读取，因为必然超过16384个字符。
+    - 超过【32KB文件大小】的【非结构化的文本文件】禁全量读取。
     `;
 }
 
@@ -80,9 +81,8 @@ function buildFsListDescription(): string {
     return `
     - 【高优先级】
     - 本地文件系统目录列举工具：对【目标目录】做递归遍历，列举全部文件与目录条目（不做任何名称或内容过滤）。
-    - 递归深度由 depth 控制，工具不会超出该深度向下遍历。
     - **此工具仅限于列举本地文件系统，不适配远程文件系统**
-    - entries 按 path 的 codePoint 升序确定性排序；无法访问的条目记入 skipped_paths（格式为「相对路径: 错误信息」，路径分隔符统一为 /）并跳过，不中断整体列举。
+    - 无法访问的条目记入 skipped_paths（格式为「相对路径: 错误信息」，路径分隔符统一为 /）并跳过，不中断整体列举。
     **必须注意**
     - a.entries 中的 path 为绝对路径，name 仅为条目名（不含父目录）；跨工具引用文件时**务必使用绝对路径**。
     `;
@@ -94,8 +94,18 @@ function buildFsStatDescription(): string {
     - 本地文件系统路径信息工具：查询单个【文件或目录】路径自身及其指向对象的属性明细；路径不存在时给出明确的不存在判定。
     - **此工具仅限于查询本地文件系统，不适配远程文件系统**
     - size_bytes 为字节数（仅 file 与 symlink 有该字段）。
+    `;
+}
+
+function buildFsAppendTextDescription(): string {
+    return `
+    - 【高优先级】
+    - 本地文件系统工具：只把文本追加到单个【纯文本文件】的末尾，绝不覆盖、绝不截断、绝不插入到文件中间；需要这些能力请改用 run_with_python。
+    - **仅适用于本地纯文本 UTF-8 文件：不适配远程文件系统；目标文件不是纯文本或不是 UTF-8（如 PDF、Word、Excel、图片等）时会被拒绝，不会自动转码，也不写入任何内容。**
+    - 返回主要为四个字段：lines_before（追加前的行数）、lines_added（本次实际新增的行数）、lines_after（追加后的行数）、file_path（目标文件绝对路径）。
     **必须注意**
-    - a.路径分隔符随运行平台而异；同一路径在符号链接场景下 real_path 可能与传入路径不同。
+    - a.lines_added 为 0 表示新增内容并入了末尾已有的一行，不代表追加失败。
+    - 写.jsonl文件或者.md文件，新增行或者段落时，使用此工具【最佳】。
     `;
 }
 
@@ -173,11 +183,11 @@ export const EXECUTOR_TOOLS = {
             properties: {
                 directory: {
                     type: 'string',
-                    description: '可选。要搜索的【目标目录】绝对路径；与 file_path 二选一，目录搜索时使用。',
+                    description: '可选。要搜索的【目标目录】绝对路径，递归包含全部子目录；与 file_path 二选一。',
                 },
                 file_path: {
                     type: 'string',
-                    description: '可选。要搜索的【单个文件】绝对路径；与 directory 二选一，单文件搜索时使用。',
+                    description: '可选。要搜索的【单个文件】绝对路径；与 directory 二选一。',
                 },
                 content: {
                     type: 'string',
@@ -260,7 +270,7 @@ export const EXECUTOR_TOOLS = {
                 },
                 start_line: {
                     type: 'integer',
-                    description: '必填。起始行号，从 1 开始计数的正整数。',
+                    description: '必填。起始行号，从 1 开始计数。',
                     minimum: 1,
                 },
                 end_line: {
@@ -402,5 +412,33 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: runShell,
-    }
+    },
+    fs_append_text: {
+        config: {
+            name: 'fs_append_text',
+            displayName: '文本追加',
+            buildDescription: buildFsAppendTextDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: '要追加文本的目标【纯文本文件】绝对路径。',
+                },
+                content: {
+                    type: 'string',
+                    description: '要追加到文件末尾的文本，可以为多行；空字符串会被拒绝。',
+                },
+                ensure_leading_newline: {
+                    type: 'boolean',
+                    description: '是否需要对content自动补齐换行，默认为true，若content【开头或末尾】不存在换行符则会自动补齐（目标文件为0字节或末尾已是换行符时不补）；若为false，则不存在自动补齐换行的逻辑',
+                    default: true,
+                },
+            },
+            required: ['path', 'content'],
+            additionalProperties: false,
+        },
+        execute: fsAppendText,
+    },
 }

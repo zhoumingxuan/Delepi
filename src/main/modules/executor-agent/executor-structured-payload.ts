@@ -16,6 +16,8 @@ import {
   DELIVERY_TYPE_PLAN_BOOK,
   DELIVERY_TYPE_RESEARCH_REPORT,
   DELIVERY_TYPE_TEST_CASE,
+  DELIVERY_TYPE_CLUE_COLLECTION,
+  DELIVERY_TYPE_AUTHORITATIVE_CONCLUSION,
   type ExecutorDeliveryType,
 } from '../../constants';
 
@@ -237,6 +239,29 @@ async function readDeliverable(
     return content ? { [nameWithoutExt]: content } : {};
   }
 
+
+  if (
+    deliveryType === DELIVERY_TYPE_CLUE_COLLECTION
+    || deliveryType === DELIVERY_TYPE_AUTHORITATIVE_CONCLUSION
+  ) {
+    const normalized = content.charCodeAt(0) === 0xfeff ? content.slice(1) : content;
+    const lineList = normalized.split(/\r\n|\r|\n/);
+    const values: string[] = [];
+
+    for (const lineText of lineList) {
+      if (!lineText.trim()) continue;
+
+      const item = parseJsonText(lineText);
+
+      if (typeof item === 'string') {
+        values.push(item);
+      }
+    }
+
+    return deliveryType === DELIVERY_TYPE_CLUE_COLLECTION
+      ? { clues: values }
+      : { conclusions: values };
+  }
 
   const parsed = parseJsonText(content);
   if (!isRecord(parsed)) return {};

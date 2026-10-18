@@ -49,6 +49,7 @@ export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
   fs_list: '目录列表',
   fs_stat: '路径详情',
   use_script_tool: '经验工具库调用',
+  fs_append_text: '文本追加',
 };
 
 /**
@@ -124,6 +125,10 @@ export const DELIVERY_TYPE_RESEARCH_REPORT = '研究报告';
 /** 测试用例交付类型 */
 export const DELIVERY_TYPE_TEST_CASE = '测试用例';
 
+/** 线索集合交付类型 */
+export const DELIVERY_TYPE_CLUE_COLLECTION = '线索集合';
+/** 权威结论交付类型 */
+export const DELIVERY_TYPE_AUTHORITATIVE_CONCLUSION = '权威结论';
 /** 图片交付类型对应的文件路径字段名 */
 export const IMAGE_FILES_FIELD_NAME = 'image_files';
 

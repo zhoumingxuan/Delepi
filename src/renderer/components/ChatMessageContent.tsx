@@ -290,6 +290,7 @@ const BUILTIN_TOOL_DISPLAY_NAMES: Record<string, string> = {
   fs_search: '文件系统搜索',
   fs_list: '目录列表',
   fs_stat: '路径详情',
+  fs_append_text: '文本追加',
 };
 
 export function resolveToolDisplayName(

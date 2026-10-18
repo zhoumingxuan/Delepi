@@ -2,7 +2,7 @@ import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { type ToolRuntimeContext } from './runtime-context';
-import { buildToolResult, type ToolResult } from './result';
+import { buildToolResult, truncateFsResultJson, type ToolResult } from './result';
 import { ensureErrorMessage } from '../utils/index';
 import {
   ERR_ABORTED,
@@ -57,7 +57,7 @@ function compareByCodePoint(a: string, b: string): number {
  * - depth 0-3（默认 0）：depth=0 只列当前一层，depth=1 列出子目录内一层，依此类推；
  * - entries 每项固定 5 字段：path/name/type/size_bytes/mtime，按 path 的 codePoint 升序排序；
  * - 无法访问的条目记入 skipped_paths（relativePath: 错误信息）并跳过，不中断整体列举；
- * - 结果条数与 JSON 字符串长度均不做任何截断（不调用任何输出截断工具函数）。
+ * - 结果 JSON 序列化后超过 MAX_OUTPUT_LENGTH(16384) 字符时，仅保留前 16384 字符并标注截断。
  * 纯 Node fs 只读；仅支持本地文件系统。
  */
 export async function fsList(
@@ -204,16 +204,18 @@ export async function fsList(
   const fileCount = entries.filter((item) => item.type === 'file').length;
   const dirCount = totalCount - fileCount;
 
-  return buildToolResult({
-    success: true,
-    code: ERR_OK,
-    message: `- 目录列举完成：共 ${totalCount} 项（文件 ${fileCount}，目录 ${dirCount}）。`,
-    data: {
-      total_count: totalCount,
-      file_count: fileCount,
-      dir_count: dirCount,
-      entries,
-      skipped_paths: skippedPaths,
-    },
-  });
+  return truncateFsResultJson(
+    buildToolResult({
+      success: true,
+      code: ERR_OK,
+      message: `- 目录列举完成：共 ${totalCount} 项（文件 ${fileCount}，目录 ${dirCount}）。`,
+      data: {
+        total_count: totalCount,
+        file_count: fileCount,
+        dir_count: dirCount,
+        entries,
+        skipped_paths: skippedPaths,
+      },
+    }),
+  );
 }

@@ -21,6 +21,7 @@ import { IncomingMessage } from 'node:http';
 import path from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import type { SystemPythonInfo } from '../../types/python';
+import { resolveWindowsPowerShellPath } from '../../utils/windows-system-exe';
 export type { SystemPythonInfo };
 
 // ================================================================
@@ -566,7 +567,7 @@ export class PythonManager {
 
   private _runPowerShell(script: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const child = spawn('powershell.exe', [
+      const child = spawn(resolveWindowsPowerShellPath(), [
         '-NoProfile',
         '-NonInteractive',
         '-Command',

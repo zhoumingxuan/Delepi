@@ -640,22 +640,6 @@ export const ChatArea = memo(function ChatArea({
       },
       'tool-group': {
         placement: 'start' as const,
-        avatar: (
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: '50%',
-              background: 'var(--dpl-color-tool)',
-              color: '#fff',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <ToolOutlined />
-          </div>
-        ),
         variant: 'borderless' as const,
         contentRender: (
           _content: unknown,
