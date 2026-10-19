@@ -1241,7 +1241,8 @@ export async function runMainAgent(
         // ★ 任务级隔离停止：任务级 AbortController（会话级取消经手工桥接先例模式传导至此——
         //   对齐上方 titleController/onSessionAbort 既有模式，不引入 AbortSignal.any）；
         //   注册表登记后 stopExecutorTask 可按 (conversationId, toolCall.id) 精确停止单个任务，
-        //   不影响同批其他并发任务，也不触发任何会话级事件。
+        //   不影响同批其他并发任务；整体执行收尾不在本层触发——由 executor:stop-task IPC
+        //   按“本会话剩余 running 任务数归零”统一判定并走会话级终态通道。
         const taskStopController = new AbortController();
         registerTaskStopController(conversationId, toolCall.id, taskStopController);
         const onSessionAbort = () =>

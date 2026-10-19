@@ -39,7 +39,9 @@ import { getRunningAssistantMessage } from '../modules/main-agent/running-assist
 import {
   queryExecutorTaskRecord,
   clearExecutorTaskRecords,
-  stopExecutorTask, sendTaskUserMessage,
+  stopExecutorTask,
+  sendTaskUserMessage,
+  countRunningExecutorTasks,
 } from '../modules/executor-agent/executor-task-record-store';
 import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../constants/events';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
@@ -1443,13 +1445,37 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   /**
    * executor:stop-task — 任务级隔离停止（渲染→主，invoke）
    * 双防线校验（session 存在且 running 且 controller 未 aborted）通过后：
-   * 先同步写入停止文案条目、再 abort 任务级 controller（main-agent 委派闭包 catch 收敛 aborted）；
-   * 不触发 chat:aborted / MAIN_AGENT_ABORTED_EVENT 等任何会话级事件（A/B 并发隔离）。
+   * 同步写入停止文案条目 → 冻结 → 收敛任务终态 → abort 任务级 controller（仅目标任务）。
+   *
+   * ★ 整体执行收尾判定（右侧任务面板停止入口专属；仅在本会话本次执行内生效）：
+   *   - 停止成功后统计同一 conversationId 内仍处于 running 的任务数（stopExecutorTask 已把
+   *     被停止任务 markTerminal('aborted')，故该值 = 本次整体执行内剩余未终态任务数）；
+   *   - 归零才收尾：经会话级终态通道 abortConversationRun（仅本会话控制器）+
+   *     setConversationRunning(false) + conv:updated + MAIN_AGENT_ABORTED_EVENT（→ chat:aborted，
+   *     渲染层 useChat / useExecutorTaskRecords 既有终态双保险守卫完成 loading/执行态归一化）；
+   *   - 仍有 running 任务时保持整体运行（多任务陆续停止语义：仅最后一个停止才收尾）；
+   *   - 重复点击/任务已终态：stopExecutorTask 返回 stopped=false，本判定不执行（幂等）；
+   *   - 作用域严格限定 params.conversationId：其他并发会话的任务与执行流零影响；
+   *   - 返回契约不变：仍为 { stopped, taskName }（渲染层不消费额外字段）。
    */
   ipcMain.handle(
     IPC_EXECUTOR.STOP_TASK,
-    (_event, params: { conversationId: string; delegateCallId: string }) =>
-      stopExecutorTask(params.conversationId, params.delegateCallId),
+    (_event, params: { conversationId: string; delegateCallId: string }) => {
+      const result = stopExecutorTask(params.conversationId, params.delegateCallId);
+      if (result.stopped && countRunningExecutorTasks(params.conversationId) === 0) {
+        // 本次整体执行内已无未终态任务：复用 chat:abort 的会话级终态收敛序列
+        // （先 abort 控制器、再复位 is_running 并推送、最后发 aborted 终态信号），
+        // 保证渲染层终止态先于 main-agent 真实 settle 到达，杜绝 loading 悬挂。
+        if (abortConversationRun(params.conversationId)) {
+          emitConversationUpdated(
+            mainWindow,
+            setConversationRunning(params.conversationId, false),
+          );
+          eventBus.emit(MAIN_AGENT_ABORTED_EVENT, { conversationId: params.conversationId });
+        }
+      }
+      return result;
+    },
   );
 
   /**

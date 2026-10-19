@@ -58,7 +58,8 @@ export interface UseExecutorTaskRecordsResult {
   openTask: (delegateCallId: string) => void;
   /** 关闭右栏 */
   closePanel: () => void;
-  /** 任务级隔离停止（仅停止目标任务；静默容错，无乐观更新与全局提示，状态收敛由终态信号链路完成） */
+  /** 任务级隔离停止（仅停止目标任务；静默容错，无乐观更新与全局提示；任务终态由主进程信号链路收敛，
+   *  整体执行收尾由主进程在“本会话已无其他 running 任务”时经 chat:aborted 链路联动） */
   stopTask: (delegateCallId: string) => void;
 
   /** 任务级交互消息发送：返回后端受理结果（accepted 后视觉态由 record-signal 链路驱动；

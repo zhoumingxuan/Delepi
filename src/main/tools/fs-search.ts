@@ -25,11 +25,27 @@ const BINARY_PROBE_BYTES = 8192;
 
 type FsSearchInput = {
   directory?: unknown;
+  depth?: unknown;
   file_path?: unknown;
   content?: unknown;
   regex?: unknown;
   case_sensitive?: unknown;
 };
+
+/** 解析 depth：未传/null/纯空白字符串 → undefined（默认 0）；0-3 整数 → 该值；其余 → null（非法） */
+function parseDepth(value: unknown): number | null | undefined {
+  if (
+    value === undefined ||
+    value === null ||
+    (typeof value === 'string' && value.trim() === '')
+  ) {
+    return undefined;
+  }
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 3) {
+    return value;
+  }
+  return null;
+}
 
 /** 单条内容命中：行内容 + 命中在【完整原始行】中的起止字符位置（1 基、首尾均含）。 */
 type ContentLineMatch = {
@@ -206,7 +222,8 @@ async function collectContentFileMatches(
 
 /**
  * fs_search 主入口：文件内容搜索（纯文本逐行匹配，支持普通字面量与 JavaScript 正则）。
- * - directory 与 file_path 必须且只能传一个：directory 为全递归遍历的目录，file_path 为单个普通文件；
+ * - directory 与 file_path 必须且只能传一个：directory 为按 depth 限定层级遍历的目录，file_path 为单个普通文件；
+ * - depth 仅作用于 directory 目录搜索：取值 0-3 的整数（默认 0），depth=0 只搜索目录当前层的直接文件、不进入任何子目录；file_path 单文件搜索不受 depth 影响；
  * - content 为必填的匹配文本；regex 控制是否按正则编译；case_sensitive 控制是否区分大小写；
  * - 每条命中给出文件绝对路径、行号、行文本、命中起止字符位置与行截断信息，索引为 1 基且基于完整原始行；
  * - 单行超过 8192 字符仅输出前 8192 字符摘要，索引仍基于完整行；
@@ -297,6 +314,18 @@ export async function fsSearch(
     }
   }
 
+  // depth 仅用于 directory 目录搜索；file_path 单文件模式完全忽略该参数（传入任何值都不报错）
+  const parsedDepth = targetFilePath ? undefined : parseDepth(resolvedInput.depth);
+
+  if (parsedDepth === null) {
+    return buildToolResult({
+      success: false,
+      code: ERR_INVALID_ARGUMENT,
+      message: 'depth 必须为 0-3 的整数',
+    });
+  }
+
+  const depth = parsedDepth ?? 0;
   const rootPath = (targetFilePath ?? directory) as string;
   const parsedRegex = parseBooleanOption(resolvedInput.regex);
 
@@ -345,7 +374,8 @@ export async function fsSearch(
     return relativePath.split(path.sep).join('/');
   };
 
-  const walk = async (dir: string): Promise<void> => {
+  /** 收集待搜索文件：level 为当前目录层级（rootPath 为 0），仅当 level < depth 时递归进入子目录 */
+  const walk = async (dir: string, level: number): Promise<void> => {
     if (context.signal?.aborted) {
       throw new Error(ERR_ABORTED);
     }
@@ -365,7 +395,9 @@ export async function fsSearch(
 
       if (isDirectory) {
         try {
-          await walk(full);
+          if (level < depth) {
+            await walk(full, level + 1);
+          }
         } catch (error) {
           const message = ensureErrorMessage(error);
 
@@ -388,7 +420,7 @@ export async function fsSearch(
     if (targetFilePath) {
       files.push({ path: targetFilePath });
     } else {
-      await walk(rootPath);
+      await walk(rootPath, 0);
     }
   } catch (error) {
     const message = ensureErrorMessage(error);

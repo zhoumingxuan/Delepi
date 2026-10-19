@@ -20,7 +20,7 @@
  * - 归档空态（hasRecords=false）：居中"任务记录已随本轮结束归档"（13px secondary），
  *   标题区保留任务名+终态 Tag，关闭按钮可用。
  *
- * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均为 UI 占位轻提示，草稿按 delegateCallId 键控隔离；原"纯只读面板"声明随之废止，§1.2-A 修订）。
+ * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均已接线：停止经 onStopTask → 任务级 IPC 精确停止，发送经 onSendTaskMessage → 任务级消息入队；草稿按 delegateCallId 键控隔离；原"纯只读面板"声明随之废止，§1.2-A 修订）。
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -593,7 +593,7 @@ function AssistantReplyRecordItem(options: {
 export function ExecutorRecordDrawer(options: {
   taskView: ExecutorTaskView;
   onClose: () => void;
-  /** 任务级停止回调（UI 占位预留：真实任务级停止 IPC 接入后由调用方接线；不传时静默跳过、不报错） */
+  /** 任务级停止回调（ChatShell 已接线至 executorRecords.stopTask → preload executor.stopTask → executor:stop-task；不传时静默跳过、不报错） */
   onStopTask?: (delegateCallId: string) => void;
   /** 任务级交互消息回调（受理结果制；不传时静默跳过、不报错——对齐 onStopTask 可选先例） */
   onSendTaskMessage?: (
@@ -653,7 +653,7 @@ export function ExecutorRecordDrawer(options: {
       });
   };
 
-  /** 停止占位（running 恒可点）：仅轻提示 + 预留回调，不改动任何状态；真实任务级停止 IPC 后续接入 */
+  /** 停止当前任务（running 恒可点）：调用 onStopTask → 任务级 IPC 精确停止；任务终态与整体收尾由主进程收敛 */
   const handleTaskStop = (): void => {
     onStopTask?.(taskView.delegateCallId);
   };

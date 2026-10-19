@@ -73,7 +73,7 @@ function buildFsSearchDescription(): string {
     - 结果中给出命中文件总数与命中总处数。
     - **内容搜索仅支持【纯文本文件搜索】，会跳过二进制文件与不可读文件（如:PDF,Word,Excel文件等)，不要据此判定这些文件不含目标文本。**
     **必须注意**
-    - a.目录搜索会遍历全部子目录；file_path 搜索只针对该文件；返回的 file_path 均为绝对路径，命中位置均以完整原始行为准。
+    - a.目录搜索仅在 depth 限定的层级内遍历子目录；file_path 搜索只针对该文件，不受 depth 影响；返回的 file_path 均为绝对路径，命中位置均以完整原始行为准。
     `;
 }
 
@@ -100,7 +100,7 @@ function buildFsStatDescription(): string {
 function buildFsAppendTextDescription(): string {
     return `
     - 【高优先级】
-    - 本地文件系统工具：只把文本追加到单个【纯文本文件】的末尾，绝不覆盖、绝不截断、绝不插入到文件中间；需要这些能力请改用 run_with_python。
+    - 本地文件系统工具：只把文本追加到单个【纯文本文件】的末尾。
     - **仅适用于本地纯文本 UTF-8 文件：不适配远程文件系统；目标文件不是纯文本或不是 UTF-8（如 PDF、Word、Excel、图片等）时会被拒绝，不会自动转码，也不写入任何内容。**
     - 返回主要为四个字段：lines_before（追加前的行数）、lines_added（本次实际新增的行数）、lines_after（追加后的行数）、file_path（目标文件绝对路径）。
     **必须注意**
@@ -183,7 +183,14 @@ export const EXECUTOR_TOOLS = {
             properties: {
                 directory: {
                     type: 'string',
-                    description: '可选。要搜索的【目标目录】绝对路径，递归包含全部子目录；与 file_path 二选一。',
+                    description: '可选。要搜索的【目标目录】绝对路径；与 file_path 二选一。目录搜索时按 depth 控制遍历层级。',
+                },
+                depth: {
+                    type: 'integer',
+                    description: '可选。目录搜索的递归深度，默认 0（仅搜索当前层直接文件），最大 3；file_path 单文件搜索忽略该参数。',
+                    default: 0,
+                    minimum: 0,
+                    maximum: 3,
                 },
                 file_path: {
                     type: 'string',
@@ -293,6 +300,34 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: readFileTool,
+    },
+    fs_append_text: {
+        config: {
+            name: 'fs_append_text',
+            displayName: '文本追加',
+            buildDescription: buildFsAppendTextDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                path: {
+                    type: 'string',
+                    description: '要追加文本的目标【纯文本文件】绝对路径。',
+                },
+                content: {
+                    type: 'string',
+                    description: '要追加到文件末尾的文本，可以为多行；空字符串会被拒绝。',
+                },
+                ensure_leading_newline: {
+                    type: 'boolean',
+                    description: '是否需要对content自动补齐换行，默认为true，若content【开头或末尾】不存在换行符则会自动补齐（目标文件为0字节或末尾已是换行符时不补）；若为false，则不存在自动补齐换行的逻辑',
+                    default: true,
+                },
+            },
+            required: ['path', 'content'],
+            additionalProperties: false,
+        },
+        execute: fsAppendText,
     },
     use_script_tool: {
         config: {
@@ -412,33 +447,5 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: runShell,
-    },
-    fs_append_text: {
-        config: {
-            name: 'fs_append_text',
-            displayName: '文本追加',
-            buildDescription: buildFsAppendTextDescription(),
-        },
-        parameters: {
-            type: 'object',
-            properties: {
-                path: {
-                    type: 'string',
-                    description: '要追加文本的目标【纯文本文件】绝对路径。',
-                },
-                content: {
-                    type: 'string',
-                    description: '要追加到文件末尾的文本，可以为多行；空字符串会被拒绝。',
-                },
-                ensure_leading_newline: {
-                    type: 'boolean',
-                    description: '是否需要对content自动补齐换行，默认为true，若content【开头或末尾】不存在换行符则会自动补齐（目标文件为0字节或末尾已是换行符时不补）；若为false，则不存在自动补齐换行的逻辑',
-                    default: true,
-                },
-            },
-            required: ['path', 'content'],
-            additionalProperties: false,
-        },
-        execute: fsAppendText,
     },
 }

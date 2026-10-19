@@ -187,7 +187,7 @@ function buildFsSearchDescription(): string {
     - 结果中给出命中文件总数与命中总处数。
     - **内容搜索仅支持【纯文本文件搜索】，会跳过二进制文件与不可读文件（如:PDF,Word,Excel文件等)，不要据此判定这些文件不含目标文本。**
     **必须注意**
-    - a.目录搜索会遍历全部子目录；file_path 搜索只针对该文件；返回的 file_path 均为绝对路径，命中位置均以完整原始行为准。
+    - a.目录搜索仅在 depth 限定的层级内遍历子目录；file_path 搜索只针对该文件，不受 depth 影响；返回的 file_path 均为绝对路径，命中位置均以完整原始行为准。
     `;
 }
 
@@ -270,6 +270,13 @@ function buildMainFsSearchTool() {
           directory: {
             type: 'string',
             description: '可选。要搜索的【目标目录】绝对路径；与 file_path 二选一，目录搜索时使用。',
+          },
+          depth: {
+            type: 'integer',
+            description: '可选。目录搜索的递归深度，默认 0（仅搜索当前层直接文件），最大 3；file_path 单文件搜索忽略该参数。',
+            default: 0,
+            minimum: 0,
+            maximum: 3,
           },
           file_path: {
             type: 'string',

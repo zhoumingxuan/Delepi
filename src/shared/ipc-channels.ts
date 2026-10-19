@@ -117,8 +117,9 @@ export const IPC_EXECUTOR = {
   /**
    * 执行子智能体任务级隔离停止（渲染→主，invoke）
    * 请求 { conversationId, delegateCallId }；返回 { stopped, taskName }。
-   * 仅停止该委派任务（任务级 AbortController 精确取消），不影响同会话其他并发任务，
-   * 也不触发会话级 chat:aborted / MAIN_AGENT_ABORTED_EVENT。
+   * 仅停止该委派任务（任务级 AbortController 精确取消），不影响同会话其他并发任务；
+   * 仅当同一 conversationId 内已无其他 running 任务（本次整体执行内未终态任务数归零）时，
+   * 才联动本会话整体执行收尾（abortConversationRun + chat:aborted），其他并发会话零影响。
    */
   STOP_TASK: 'executor:stop-task',
   /**

@@ -609,8 +609,9 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   /** 停止请求写入冻结：置位后除 markTerminal 外全部写入 API no-op（幂等——重复调用安全）。
-   *  调用契约：stopExecutorTask 校验通过后、abort 前置位；本方法不触碰 terminal/status，
-   *  终态收敛仍由 main-agent catch 的 markTerminal('aborted') 独占完成。 */
+   *  调用契约：stopExecutorTask 校验通过后、markTerminal/abort 前置位；本方法不触碰
+   *  terminal/status——终态收敛由 stopExecutorTask 紧随其后 markTerminal('aborted') 完成，
+   *  main-agent catch 的同态调用受 terminal 守卫幂等 no-op（既有双保险语义不变）。 */
   freezeForStop(): void {
     if (this.terminal) {
       return;
@@ -803,14 +804,18 @@ export function unregisterTaskStopController(conversationId: string, delegateCal
 /**
  * 任务级隔离停止（executor:stop-task 唯一后端出口）：
  * - 双防线校验：session 不存在 / status!=='running' / controller 不存在或 signal.aborted 已为 true
- *   → 直接返回未停止（不写通知、不重复 abort，天然防连点与终态幂等）；
- * - 通过后同步三步（通知→冻结→abort，全在同一同步执行栈内完成——Node 事件循环无法在同步栈
- *   执行期间插入任何残余流回调，abort→markTerminal 窗口内零写入）：
+ *   → 直接返回未停止（不写通知、不重复 abort / markTerminal，天然防连点与终态幂等）；
+ * - 通过后同步四步（通知→冻结→终态收敛→abort，全在同一同步执行栈内完成——Node 事件循环
+ *   无法在同步栈执行期间插入任何残余流回调，冻结后零写入）：
  *   1) appendStopNotice：先写停止通知条目（kind='notice'/type='stop'，冻结前写入）；
  *   2) freezeForStop()：置 stopRequested 冻结——此后除 markTerminal 外全部写入 API no-op，
  *      迟到残余 reasoning/tool 回调一律丢弃（思考 #3 机制级根除）；
- *   3) controller.abort(reason)：中止经 executor-agent 既有 abort 检查点抛出，
- *      由 main-agent 委派闭包 catch 的 markTerminal('aborted') 收敛终态（冻结后唯一合法写入）。
+ *   3) markTerminal('aborted')：停止入口直接收敛任务终态并立即冲刷终态信号——保证“当前任务
+ *      无论如何都必须停止”，不依赖执行链路对 abort 的响应时机（工具忽略 signal / 收尾竞态下
+ *      不会停留在 running）；main-agent 委派闭包 catch 的 markTerminal('aborted') 随后幂等
+ *      no-op（冻结后 markTerminal 为唯一合法写入，既有双保险语义不变）；
+ *   4) controller.abort(reason)：中止经 executor-agent 既有 abort 检查点抛出，
+ *      驱动委派闭包尽快退出（失败消息化与批次收口仍由既有 catch 路径承担）。
  */
 export function stopExecutorTask(
   conversationId: string,
@@ -826,8 +831,34 @@ export function stopExecutorTask(
   }
   session.appendStopNotice(`${session.taskName || '子智能体任务'} 已停止，用户手动取消。`);
   session.freezeForStop();
+  // ★ 停止入口直接收敛终态（不等执行链路响应 abort）：终态信号立即下发，且早于任何
+  //   abort 触发的迟到回调；随后 main-agent catch 的同态 markTerminal 受 terminal 守卫幂等 no-op。
+  session.markTerminal('aborted');
   controller.abort(new Error(ERR_ABORTED));
   return { stopped: true, taskName: session.taskName };
+}
+
+/**
+ * 统计同一会话内仍处于 running 的任务记录会话数（整体执行收尾判定唯一口径）：
+ * - 仅按 conversationId 隔离，绝不跨会话；
+ * - stopExecutorTask 已把被停止任务 markTerminal('aborted')，故本函数返回值即
+ *   “本次整体执行内剩余未终态任务数”——归零才允许触发会话级收尾；
+ * - 历史轮次任务在各自 run settle 前均已收敛为终态（run 闸门保证同会话至多一个活跃 run），
+ *   不会被误计；若存在无法判定归属的遗留 running 记录，则按“仍在执行”保守计入，
+ *   只会推迟收尾、不会误停整体执行。
+ */
+export function countRunningExecutorTasks(conversationId: string): number {
+  const sessions = taskRecordSessions.get(conversationId);
+  if (!sessions) {
+    return 0;
+  }
+  let runningCount = 0;
+  for (const session of sessions.values()) {
+    if (session.status === 'running') {
+      runningCount += 1;
+    }
+  }
+  return runningCount;
 }
 
 /**
