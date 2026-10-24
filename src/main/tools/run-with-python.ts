@@ -24,6 +24,7 @@ import {
   ioPrint,
 } from '../utils/index';
 import { killProcessTree } from '../utils/process-kill';
+import { closeJobHandle, createJobForChild } from './win-job-object';
 import {
   DEFAULT_TIMEOUT_SECONDS,
   TOOL_TIMEOUT_MAX_SECONDS,
@@ -324,6 +325,8 @@ async function runSpawnCommand(
       detached: process.platform !== 'win32',
     });
     registerTaskProcess(jobList, child.pid, 'run_with_python', false, child);
+    // 创建期 Job Object 所有权绑定：spawn 后立即 assign（先于任何后代派生）；失败返回 null → 维持现状行为
+    const job = createJobForChild(child);
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let timedOut = false;
@@ -334,7 +337,7 @@ async function runSpawnCommand(
     });
     let timer: NodeJS.Timeout | null = setTimeout(() => {
       timedOut = true;
-      killProcessTree(child, 'run-with-python');
+      killProcessTree(child, 'run-with-python', job);
     }, options.timeoutMs);
 
     const abortHandler = () => {
@@ -346,7 +349,7 @@ async function runSpawnCommand(
         clearTimeout(timer);
         timer = null;
       }
-      killProcessTree(child, 'run-with-python');
+      killProcessTree(child, 'run-with-python', job);
     };
 
     if (signal) {
@@ -361,6 +364,7 @@ async function runSpawnCommand(
       if (signal) {
         signal.removeEventListener('abort', abortHandler);
       }
+      closeJobHandle(job);
     };
 
     child.stdout.on('data', (chunk: Buffer | string) => {

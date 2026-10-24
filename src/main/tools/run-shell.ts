@@ -17,6 +17,7 @@ import { markTaskProcessClosed, registerTaskProcess, type TaskJobList } from './
 import { buildExecutedToolResultData, buildToolResult, truncateToolOutput, type ToolResult } from './result';
 import { ensureErrorMessage } from '../utils/index';
 import { killProcessTree } from '../utils/process-kill';
+import { closeJobHandle, createJobForChild } from './win-job-object';
 import { resolveWindowsPowerShellPath } from '../utils/windows-system-exe';
 import {
   DEFAULT_TIMEOUT_SECONDS,
@@ -188,6 +189,8 @@ async function runSpawnCommand(
       detached: process.platform !== 'win32',
     });
     registerTaskProcess(jobList, child.pid, 'run_shell', false, child);
+    // 创建期 Job Object 所有权绑定：spawn 后立即 assign（先于任何后代派生）；失败返回 null → 维持现状行为
+    const job = createJobForChild(child);
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let timedOut = false;
@@ -196,12 +199,12 @@ async function runSpawnCommand(
     child.once('exit', (code, signal) => {
       if (typeof child.pid === 'number') markTaskProcessClosed(jobList, child.pid, timedOut ? 'timeout' : aborted ? 'abort' : 'natural', code, signal);
     });
-    let timer: NodeJS.Timeout | null = setTimeout(() => { timedOut = true; killProcessTree(child, 'run-shell'); }, options.timeoutMs);
+    let timer: NodeJS.Timeout | null = setTimeout(() => { timedOut = true; killProcessTree(child, 'run-shell', job); }, options.timeoutMs);
     const abortHandler = () => {
       if (settled) return;
       aborted = true;
       if (timer) { clearTimeout(timer); timer = null; }
-      killProcessTree(child, 'run-shell');
+      killProcessTree(child, 'run-shell', job);
     };
     if (signal) {
       signal.addEventListener('abort', abortHandler, { once: true });
@@ -209,6 +212,7 @@ async function runSpawnCommand(
     const cleanup = () => {
       if (timer) { clearTimeout(timer); timer = null; }
       if (signal) signal.removeEventListener('abort', abortHandler);
+      closeJobHandle(job);
     };
     // 流式收集
     const collect = (chunks: Buffer[], chunk: Buffer | string) => {
