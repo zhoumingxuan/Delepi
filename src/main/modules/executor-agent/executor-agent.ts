@@ -115,9 +115,9 @@ export interface DelegatedUploadedFile {
 
 type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 type DelegateExecutorInput = {
-  taskname?: unknown;
+  task_name?: unknown;
   task_type?: unknown;
-  tasktarget?: unknown;
+  task_target?: unknown;
   constraints?: unknown;
   delivery_type?: unknown;
   delivery_spec?: unknown;
@@ -207,13 +207,13 @@ function normalizeExpectedDeliveryType(value: unknown): ExecutorDeliveryType | '
     : '';
 }
 function normalizeTaskTarget(value: DelegateExecutorInput): unknown {
-  const tasktarget = normalizeString(value.tasktarget);
+  const taskTarget = normalizeString(value.task_target);
 
-  // 兼容映射：tasktarget 缺失或为空但 target 非空时，将 target 的值映射为 tasktarget
+  // 兼容映射：task_target 缺失或为空但 target 非空时，将 target 的值映射为 task_target
   const mapped =
-    !tasktarget && normalizeString((value as Record<string, unknown>).target)
+    !taskTarget && normalizeString((value as Record<string, unknown>).target)
       ? (value as Record<string, unknown>).target
-      : value.tasktarget;
+      : value.task_target;
 
   return mapped;
 }
@@ -260,16 +260,16 @@ function collectDelegateExecutorInputIssues(parsed: DelegateExecutorInput): stri
 
   // 报错文案写法：精确指向失败的单个参数并输出其当前值——值缺失/为空时写“缺失（未提供）”，
   // 值非空时通过 formatParamCurrentValue 原样输出该参数当前值本身（不截断、不截取、不输出入参整体原文）
-  if (!normalizeString(parsed.taskname)) {
-    issues.push('taskname 缺失（未提供），期望为非空字符串');
+  if (!normalizeString(parsed.task_name)) {
+    issues.push('task_name 缺失（未提供），期望为非空字符串');
   }
 
   if (!normalizeString(parsed.task_type)) {
     issues.push('task_type 缺失（未提供），期望为非空字符串');
   }
 
-  if (!normalizeString(parsed.tasktarget)) {
-    issues.push('tasktarget 缺失（未提供），期望为非空字符串（允许用同义字段 target 传入）');
+  if (!normalizeString(parsed.task_target)) {
+    issues.push('task_target 缺失（未提供），期望为非空字符串（允许用同义字段 target 传入）');
   }
 
   if (!normalizeExpectedDeliveryType(parsed.delivery_type)) {
@@ -340,14 +340,14 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
 
   const parsed = rawParsed as DelegateExecutorInput;
 
-  parsed.tasktarget = normalizeTaskTarget(parsed);
+  parsed.task_target = normalizeTaskTarget(parsed);
 
   const issues = collectDelegateExecutorInputIssues(parsed);
 
-  const taskName = normalizeString(parsed.taskname);
+  const taskName = normalizeString(parsed.task_name);
   const taskType = normalizeString(parsed.task_type);
   const contextData = normalizeString(parsed.context);
-  const taskTarget = normalizeString(parsed.tasktarget);
+  const taskTarget = normalizeString(parsed.task_target);
   const taskConstraints = collectTaskConstraintDescriptions(parsed.constraints);
   const expectedDelivery = collectExpectedDelivery(parsed);
   const skillTags = normalizeTaskTags(parsed.skills);

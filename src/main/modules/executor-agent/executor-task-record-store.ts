@@ -161,7 +161,7 @@ export interface ExecutorTaskRecordSession {
   readonly taskId: string;
   /** 承载该委派批次的 assistant 消息 id */
   readonly messageId: string;
-  /** 任务名（委派参数 taskname 解析，规则与 main-agent 既有先例一致） */
+  /** 任务名（委派参数 task_name 解析，规则与 main-agent 既有先例一致） */
   readonly taskName: string;
   readonly createdAt: string;
   /** ★ 真实内容视图：executor 循环唯一 push 目标，与 completeExecutorTurn 入参同引用（模型上下文共享） */

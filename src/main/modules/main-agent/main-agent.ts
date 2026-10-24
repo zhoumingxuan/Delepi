@@ -1178,7 +1178,7 @@ export async function runMainAgent(
         // ★ 新版方案 §7.3-8：executor 任务记录会话创建（abort 检查前——未启动即中止分支
         //   亦需 markTerminal('aborted') 收敛）；modelMessages 将被 runDelegatedTask 经
         //   adoptMessages 领养为 runtimeMessages（同一数组引用，真实视图与模型上下文共享）。
-        //   任务名解析规则沿用下方批末 completedEntry 既有先例（taskname 字段 trim）。
+        //   任务名解析规则沿用下方批末 completedEntry 既有先例（task_name 字段 trim）。
         const recordSession = beginExecutorTaskRecord({
           conversationId,
           delegateCallId: toolCall.id,
@@ -1187,10 +1187,10 @@ export async function runMainAgent(
           taskName: (() => {
             try {
               const parsedRecordArguments = JSON.parse(toolCall.function.arguments) as {
-                taskname?: unknown;
+                task_name?: unknown;
               };
-              return typeof parsedRecordArguments.taskname === 'string'
-                ? parsedRecordArguments.taskname.trim()
+              return typeof parsedRecordArguments.task_name === 'string'
+                ? parsedRecordArguments.task_name.trim()
                 : '';
             } catch {
               return '';
@@ -1368,10 +1368,10 @@ export async function runMainAgent(
           let completedEntry: CompletedTask | null = null;
           try {
             const parsedArguments = JSON.parse(toolCall.function.arguments) as {
-              taskname?: unknown;
+              task_name?: unknown;
             };
-            const parsedTaskName = typeof parsedArguments.taskname === 'string'
-              ? parsedArguments.taskname.trim()
+            const parsedTaskName = typeof parsedArguments.task_name === 'string'
+              ? parsedArguments.task_name.trim()
               : '';
             completedEntry = {
               seq: 0,

@@ -61,7 +61,7 @@ function buildDelegateToolParameters(): ToolSchema {
   return {
     type: 'object',
     properties: {
-      taskname: {
+      task_name: {
         type: 'string',
         description: '精简且严谨的任务中文名称',
       },
@@ -70,21 +70,6 @@ function buildDelegateToolParameters(): ToolSchema {
         enum: TASK_TYPE_VALUES,
         description:
           '任务类型，单选',
-      },
-      tasktarget: {
-        type: 'string',
-        description:
-          `任务目标，必须达到【原子级】粒度，至少包含：a. 所有目标对象和执行对象。b. 所有执行【基线场景】（表述必须含有基线场景语义）。c. 【目标达成】判定规则（表述必须包含可观察到的细微特征）`,
-      },
-      constraints: {
-        type: 'array',
-        description:
-          `任务规则和约束，必须以【意图分析结果】为【构建来源】不得自行补全，若没有则写【无】，至少覆盖：a. 执行越界判定规则。b. 过度执行判定规则。c. 中止执行判定规则。`,
-        items: {
-          type: 'string',
-          description:
-            '单条原子【任务规则和约束】，必须写清【约束对象、规则对象以及严谨的判定条件】',
-        },
       },
       delivery_type: {
         type: 'string',
@@ -97,13 +82,20 @@ function buildDelegateToolParameters(): ToolSchema {
         description:
           '交付物描述，必须写清内容范围、粒度要求和格式限定。',
       },
-      context: {
+      task_target: {
         type: 'string',
-        minLength: 1,
-        description: `
-        提交给【执行者】的上下文内容，禁止有任何指代性表述，至少包含：
-        - 从【中间存储信息变量】按【时间顺序】提取的**与当前【任务目标】相关的所有【结论、线索、信息等】以及交付物产出**，并标记【时序】和【来源】。
-        `
+        description:
+          `任务目标，必须【自包含】，不得出现任何上下文指代性表述。同时至少包含：a. 所有目标对象和执行对象。b. 所有执行【基线场景】（表述必须含有基线场景语义）。c. 【目标达成】判定规则（表述必须包含可观察到的细微特征）`,
+      },
+      constraints: {
+        type: 'array',
+        description:
+          `任务规则和约束，必须以【意图分析结果】为【构建来源】不得自行补全，若没有则写【无】，至少覆盖：a. 执行越界判定规则。b. 过度执行判定规则。c. 中止执行判定规则。`,
+        items: {
+          type: 'string',
+          description:
+            '单条原子【任务规则和约束】，必须写清【约束对象、规则对象以及严谨的判定条件】',
+        },
       },
       skills: {
         type: 'array',
@@ -116,16 +108,24 @@ function buildDelegateToolParameters(): ToolSchema {
           enum: getAllTaskTags(configManager.getSettings().customSkillTags),
         },
       },
+      context: {
+        type: 'string',
+        minLength: 1,
+        description: `
+        提交给【执行者】的上下文内容，禁止有任何指代性表述，至少包含：
+        - 从【中间存储信息变量】按【时间顺序】提取的**与当前【任务目标】相关的所有【结论、线索、信息等】以及交付物产出**，并标记【时序】和【来源】。
+        `
+      },
     },
     required: [
-      'taskname',
+      'task_name',
       'task_type',
-      'tasktarget',
-      'constraints',
       'delivery_type',
       'delivery_spec',
-      'context',
+      'task_target',
+      'constraints',
       'skills',
+      'context',
     ],
     additionalProperties: false,
   } satisfies ToolSchema;

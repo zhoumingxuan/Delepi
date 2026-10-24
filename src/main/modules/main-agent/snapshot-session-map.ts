@@ -26,7 +26,7 @@ export interface TaskSnapshotEntry {
   createdAt: string;
   status: 'init' | 'running' | 'finished';
   finishedAt?: string;
-  /** 任务名称：来自 delegate_executor 委派参数 taskname（创建点解析写入，缺失时前端走"子智能体任务"兜底） */
+  /** 任务名称：来自 delegate_executor 委派参数 task_name（创建点解析写入，缺失时前端走"子智能体任务"兜底） */
   taskName?: string;
   /** ★ M9：任务期间累计的工具调用数组（仅内存；按 callId upsert，末项=最新一条） */
   toolCalls: ExecutorToolCallSnapshot[];
