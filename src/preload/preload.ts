@@ -56,7 +56,7 @@ const electronAPI = {
     importProfile: (params: { filePath: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_IMPORT, params),
   },
   skills: {
-    /** 列出内置8标签（只读）与自定义标签元数据+上限 */
+    /** 列出内置9标签（只读，含归属）与自定义标签元数据+上限 */
     list: () => ipcRenderer.invoke(IPC_SKILLS.LIST),
     /** 新建/编辑自定义技能标签与模板（originalName=编辑时的原标签名；新建不传） */
     save: (params: unknown) => ipcRenderer.invoke(IPC_SKILLS.SAVE, params),

@@ -38,19 +38,24 @@ export interface ModelProfile {
 
 /**
  * 自定义技能标签元数据（settings 新键 customSkillTags 的数组元素）。
- * 内置8标签只读锁定：name 不可与内置重名；内置模板映射不可被自定义覆盖。
+ * 内置9标签只读锁定：name 不可与内置重名；内置模板映射不可被自定义覆盖。
  */
+/** 技能归属（主智能体/执行子智能体二值；内置归属由常量锁定，自定义技能按本字段归属） */
+export type SkillOwner = 'main' | 'executor';
+
 export interface CustomSkillTag {
-  /** 技能标签名（自定义集合内唯一；不可与内置8标签重名） */
+  /** 技能标签名（自定义集合内唯一；不可与内置9标签重名） */
   name: string;
   /** 模板目录 slug（userData/custom-skills/<slug>/template.md；新建后锁定不变） */
   slug: string;
-  /** 模板注入标题（包装为「##【{title}】工作方式」代码块） */
+  /** 模板注入标题（包装为「##【{title}】技能」代码块） */
   title: string;
-  /** 模板描述（技能管理列表展示） */
+  /** 模板描述（技能管理列表展示；对外作为该技能的适用条件） */
   description: string;
-  /** 启用状态（停用后不进入放行链与 enum，元数据保留） */
+  /** 启用状态（停用后不进入清单与 enum，元数据保留） */
   enabled: boolean;
+  /** 技能归属（'main'=主智能体技能；'executor'=执行子智能体技能；存量数据缺失时按 'executor' 懒归一） */
+  owner: SkillOwner;
 }
 
 /** 应用可配配置 */

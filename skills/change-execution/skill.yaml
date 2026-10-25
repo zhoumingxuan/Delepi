@@ -1,0 +1,3 @@
+# skills/change-execution/skill.yaml
+name: 执行变更
+applicable_conditions: 用于新增、修改、修复、重构、优化等会改变既有或新增产物的任务。

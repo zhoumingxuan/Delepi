@@ -199,13 +199,13 @@ export const IPC_PYTHON = {
 } as const;
 
 
-// --- 自定义技能 IPC 通道（方向2：内置8标签只读锁定，自定义标签/模板管理） ---
+// --- 自定义技能 IPC 通道（方向2：内置9标签只读锁定，自定义标签/模板管理） ---
 export const IPC_SKILLS = {
-  /** 列出内置8标签（只读）与自定义标签元数据+上限（渲染→主，invoke） */
+  /** 列出内置9标签（只读，含归属）与自定义标签元数据+上限（渲染→主，invoke） */
   LIST: 'skills:list',
-  /** 新建/编辑自定义技能标签与模板（渲染→主，invoke）：写 settings customSkillTags 键 + userData 模板文件，成功后刷新主智能体 skills enum */
+  /** 新建/编辑自定义技能标签与模板（渲染→主，invoke）：写 settings customSkillTags 键 + userData 模板文件，成功后刷新主智能体 query_skill enum */
   SAVE: 'skills:save',
-  /** 删除自定义技能标签（渲染→主，invoke）：连带删除 userData 模板目录，成功后刷新主智能体 skills enum */
+  /** 删除自定义技能标签（渲染→主，invoke）：连带删除 userData 模板目录，成功后刷新主智能体 query_skill enum */
   DELETE: 'skills:delete',
   /** 读取技能模板内容（builtin=fileName 白名单+覆写优先；custom=slug 回显，未写过模板返回空；渲染→主，invoke） */
   READ_TEMPLATE: 'skills:read-template',

@@ -1,0 +1,3 @@
+# skills/use-case-writing/skill.yaml
+name: 用例编写
+applicable_conditions: 用于按需求、变更、接口、流程、风险或验收口径设计可执行测试用例。

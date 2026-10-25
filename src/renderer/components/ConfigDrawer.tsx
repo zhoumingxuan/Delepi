@@ -98,12 +98,13 @@ type DialogApi = {
   showOpenDialog: (options: unknown) => Promise<{ canceled: boolean; filePaths: string[] }>;
 };
 
-/** 内置技能标签只读条目（skills:list 返回；内置8项不可编辑/删除） */
+/** 内置技能标签只读条目（skills:list 返回；内置9项不可编辑/删除；owner=归属分组） */
 interface SkillBuiltinItem {
   name: string;
   title: string;
   description: string;
   fileName: string;
+  owner: 'main' | 'executor';
 }
 
 /** 技能列表结果（skills:list 返回） */
@@ -126,6 +127,7 @@ type SkillsConfigApi = {
     title: string;
     description?: string;
     enabled?: boolean;
+    owner?: 'main' | 'executor';
     templateContent?: string;
   }) => Promise<{ custom: CustomSkillTag[] }>;
   delete: (params: { name: string }) => Promise<{ custom: CustomSkillTag[] }>;
@@ -633,6 +635,16 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const [skillFormTemplate, setSkillFormTemplate] = useState('');
   /** 内置技能编辑态（非空=弹框处于内置编辑模式；标签名/标题/描述常量锁定，仅允许编辑模板内容） */
   const [skillEditingBuiltin, setSkillEditingBuiltin] = useState<SkillBuiltinItem | null>(null);
+  /** 技能归属表单值（新建默认执行子智能体；内置编辑模式只读回显） */
+  const [skillFormOwner, setSkillFormOwner] = useState<'main' | 'executor'>('executor');
+  /** 内置技能按归属双分组（B1：主智能体技能/执行子智能体技能；按 item.owner 前端分组，不依赖后端返回顺序） */
+  const builtinSkillGroups = useMemo(() => {
+    const builtin = skillsData?.builtin ?? [];
+    return [
+      { key: 'main', label: '主智能体技能', items: builtin.filter((item) => item.owner === 'main') },
+      { key: 'executor', label: '执行子智能体技能', items: builtin.filter((item) => item.owner !== 'main') },
+    ].filter((group) => group.items.length > 0);
+  }, [skillsData?.builtin]);
 
   const loadSkills = useCallback(async () => {
     if (!skillsApi) {
@@ -649,7 +661,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
   }, [skillsApi, antdMessage]);
 
-  // 抽屉打开时刷新技能列表（含内置8项只读展示与自定义元数据）
+  // 抽屉打开时刷新技能列表（含内置9项只读展示与自定义元数据）
   useEffect(() => {
     if (open) {
       void loadSkills();
@@ -659,6 +671,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const openSkillCreateModal = useCallback(() => {
     setSkillEditingBuiltin(null);
     setSkillEditingOriginalName('');
+    setSkillFormOwner('executor');
     setSkillFormName('');
     setSkillFormTitle('');
     setSkillFormDescription('');
@@ -669,6 +682,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const openSkillEditModal = useCallback(async (item: CustomSkillTag) => {
     setSkillEditingBuiltin(null);
     setSkillEditingOriginalName(item.name);
+    setSkillFormOwner(item.owner ?? 'executor');
     setSkillFormName(item.name);
     setSkillFormTitle(item.title);
     setSkillFormDescription(item.description);
@@ -696,6 +710,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
     setSkillEditingBuiltin(item);
     setSkillEditingOriginalName('');
+    setSkillFormOwner(item.owner);
     setSkillFormName(item.name);
     setSkillFormTitle(item.title);
     setSkillFormDescription(item.description);
@@ -747,6 +762,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         title: skillFormTitle,
         description: skillFormDescription,
         enabled: true,
+        owner: skillFormOwner,
         templateContent: skillFormTemplate || undefined,
       });
       setSkillModalOpen(false);
@@ -759,7 +775,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     } finally {
       setSkillsSaving(false);
     }
-  }, [skillsApi, skillEditingBuiltin, skillEditingOriginalName, skillFormName, skillFormTitle, skillFormDescription, skillFormTemplate, antdMessage]);
+  }, [skillsApi, skillEditingBuiltin, skillEditingOriginalName, skillFormName, skillFormTitle, skillFormDescription, skillFormTemplate, skillFormOwner, antdMessage]);
 
   const handleResetBuiltinSkill = useCallback(async () => {
     if (!skillsApi || !skillEditingBuiltin) {
@@ -800,6 +816,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         title: item.title,
         description: item.description,
         enabled,
+        owner: item.owner ?? 'executor',
         templateContent: undefined,
       });
       if (result?.custom) {
@@ -1464,7 +1481,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
               label: "技能管理",
               children: (
                 <>
-                  {/* 内置8标签：Tag 标签化展示（标签名/标题/描述常量锁定；仅允许编辑模板内容） */}
+                  {/* 内置9标签：按归属双分区展示（标签名/标题/描述常量锁定；仅允许编辑模板内容） */}
                   <div
                     style={{
                       borderLeft: `3px solid ${token.colorBorderSecondary}`,
@@ -1490,62 +1507,78 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         <TagsOutlined /> 内置技能（标签固定；可编辑内容）
                       </Flex>
                     </Typography.Title>
-                    <Flex vertical gap={token.paddingSM}>
-                      {(skillsData?.builtin ?? []).map((item) => (
-                        <div
-                          key={item.name}
+                    {builtinSkillGroups.map((group) => (
+                      <div key={group.key}>
+                        <Typography.Text
+                          type="secondary"
                           style={{
-                            display: "flex",
-                            gap: token.paddingXS,
-                            alignItems: "flex-start",
+                            fontSize: 12,
+                            fontWeight: 500,
+                            display: "block",
+                            marginTop: token.paddingXS,
+                            marginBottom: token.paddingXS,
                           }}
                         >
-                          <Tag
-                            color="geekblue"
-                            style={{
-                              marginInlineEnd: 0,
-                              fontSize: 13,
-                              minWidth: 84,
-                              flexBasis: 84,
-                            }}
-                          >
-                            {item.name}
-                          </Tag>
-                          <Typography.Text
-                            type="secondary"
-                            style={{ fontSize: 11, flex: "0 0 auto" }}
-                          >
-                            内置
-                          </Typography.Text>
-                          <Typography.Text
-                            type="secondary"
-                            style={{
-                              fontSize: 12,
-                              flex: "1 1 0%",
-                              minWidth: 0,
-                            }}
-                          >
-                            {item.description}
-                          </Typography.Text>
-                          <Flex style={{ marginLeft: "auto" }}>
-                            <Button
-                              size="small"
-                              type="link"
+                          {group.label}
+                        </Typography.Text>
+                        <Flex vertical gap={token.paddingSM}>
+                          {group.items.map((item) => (
+                            <div
+                              key={item.name}
                               style={{
-                                padding: 0,
-                                height: "auto",
-                                fontSize: 12,
-                              }}
-                              onClick={() => {
-                                void openSkillEditBuiltinModal(item);
+                                display: "flex",
+                                gap: token.paddingXS,
+                                alignItems: "flex-start",
                               }}
                             >
-                              编辑
-                            </Button>
-                          </Flex>
-                        </div>
-                      ))}
-                    </Flex>
+                              <Tag
+                                color={group.key === "main" ? "purple" : "geekblue"}
+                                style={{
+                                  marginInlineEnd: 0,
+                                  fontSize: 13,
+                                  minWidth: 84,
+                                  flexBasis: 84,
+                                }}
+                              >
+                                {item.name}
+                              </Tag>
+                              <Tag
+                                color={group.key === "main" ? "purple" : "geekblue"}
+                                style={{ marginInlineEnd: 0, fontSize: 11, flex: "0 0 auto" }}
+                              >
+                                {group.key === "main" ? "主智能体·内置" : "子智能体·内置"}
+                              </Tag>
+                              <Typography.Text
+                                type="secondary"
+                                style={{
+                                  fontSize: 12,
+                                  flex: "1 1 0%",
+                                  minWidth: 0,
+                                }}
+                              >
+                                {item.description}
+                              </Typography.Text>
+                              <Flex style={{ marginLeft: "auto" }}>
+                                <Button
+                                  size="small"
+                                  type="link"
+                                  style={{
+                                    padding: 0,
+                                    height: "auto",
+                                    fontSize: 12,
+                                  }}
+                                  onClick={() => {
+                                    void openSkillEditBuiltinModal(item);
+                                  }}
+                                >
+                                  编辑
+                                </Button>
+                              </Flex>
+                            </div>
+                          ))}
+                        </Flex>
+                      </div>
+                    ))}
                   </div>
 
                   {/* 自定义技能标签：列表/新建/编辑/启停/删除 */}
@@ -1584,8 +1617,8 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       type="secondary"
                       style={{ fontSize: 12, marginBottom: token.paddingMD }}
                     >
-                      创建你自己的技能：保存后主智能体执行任务时会按需启用；模板为纯
-                      Markdown；单次任务最多同时启用 3 个技能。
+                      创建你自己的技能并分配归属：主智能体技能由其直接使用；执行子智能体技能在委派任务时由【执行者】自行匹配；模板为纯
+                      Markdown；停用后双端均不再生效。
                     </Typography.Paragraph>
                     <Flex
                       gap={token.paddingSM}
@@ -1629,6 +1662,12 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                             >
                               {item.title}
                             </Typography.Text>
+                            <Tag
+                              color={item.owner === "main" ? "purple" : "geekblue"}
+                              style={{ fontSize: 11 }}
+                            >
+                              {item.owner === "main" ? "主智能体" : "子智能体"}
+                            </Tag>
                             <Flex
                               gap={token.paddingXS}
                               style={{
@@ -1834,13 +1873,30 @@ export const ConfigDrawer = memo(function ConfigDrawer({
             </div>
             <div>
               <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                技能归属（决定该技能出现在哪个智能体的技能清单）
+              </Typography.Text>
+              <Tooltip title={skillEditingBuiltin ? "内置技能归属固定" : undefined}>
+                <Select
+                  style={{ width: "100%", marginTop: 4 }}
+                  value={skillFormOwner}
+                  onChange={setSkillFormOwner}
+                  disabled={Boolean(skillEditingBuiltin)}
+                  options={[
+                    { value: "executor", label: "执行子智能体" },
+                    { value: "main", label: "主智能体" },
+                  ]}
+                />
+              </Tooltip>
+            </div>
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                 模板内容（纯 Markdown）
               </Typography.Text>
               <Input.TextArea
                 placeholder={
                   skillEditingOriginalName || skillEditingBuiltin
                     ? "修改后保存即覆盖生效"
-                    : "## 适用\n（工作方式正文，Markdown）"
+                    : "## 适用\n（技能正文，Markdown）"
                 }
                 value={skillFormTemplate}
                 onChange={(e) => setSkillFormTemplate(e.target.value)}

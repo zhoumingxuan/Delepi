@@ -47,18 +47,20 @@ import { EXECUTOR_RECORD_SIGNAL_EVENT } from '../constants/events';
 import { runMainAgent, abortTitleGeneration } from '../modules/main-agent/main-agent';
 import { refreshMainTools } from '../modules/main-agent/prompt';
 import {
-  EXECUTOR_WORKFLOW_TEMPLATES,
-  TASK_TAG_WORKFLOW_TEMPLATE_ID,
   deleteBuiltinOverride,
   isValidCustomSkillSlug,
   listCustomSkillTagMeta,
-  readBuiltinTemplateContent,
   readCustomSkillTemplateContent,
   removeCustomSkillTemplateDir,
   validateCustomSkillTagInput,
   writeBuiltinOverride,
   writeCustomSkillTemplate,
 } from '../modules/executor-agent/executor-workflow-templates';
+import {
+  getBuiltinSkillTemplateMeta,
+  listBuiltinSkillTemplateFileNames,
+  readBuiltinSkillTemplateContent,
+} from '../modules/skill-system/skill-registry';
 import { truncateConversationTitle } from '../modules/main-agent/title-generation';
 import { configManager } from '../modules/config/config-manager';
 import {
@@ -327,7 +329,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   }
   eventBusCleanups = [];
   // 方向2：启动链中 configManager.reload() 先于本函数执行（index.ts），此处刷新一次
-  // MAIN_TOOLS 使主智能体 skills enum 含已持久化的启用自定义标签（live binding，main-agent 零改动）。
+  // MAIN_TOOLS 使主智能体 query_skill enum 含已持久化的启用自定义标签（live binding，main-agent 零改动）。
   refreshMainTools();
   // 方向5：启动扫描注册动态工具（userData/dyn-tools/<tool_name>/{manifest.json,main.py}）。
   // 异步 fire-and-forget：单目录校验失败仅告警不阻塞启动（A5-2 启动扫描语义；
@@ -723,7 +725,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(IPC_CONFIG.RELOAD, async (): Promise<void> => {
     configManager.reload();
-    // 方向2：reload 可能恢复/变更 customSkillTags，同步刷新主智能体 skills enum
+    // 方向2：reload 可能恢复/变更 customSkillTags，同步刷新主智能体 query_skill enum
     refreshMainTools();
   });
 
@@ -1111,10 +1113,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return { ok: true, profile: newProfile, profiles, activeProfileId, importedCount, skippedCount, renamed };
   });
   // ================================================================
-  // 自定义技能处理器（方向2：skills 三通道；内置8标签只读锁定，自定义标签/模板管理）
+  // 自定义技能处理器（方向2：skills 五通道；内置12标签（主3+执行9）只读锁定，自定义标签/模板管理）
   // ================================================================
 
-  type SkillBuiltinItem = { name: string; title: string; description: string; fileName: string };
+  type SkillBuiltinItem = { name: string; title: string; description: string; fileName: string; owner: 'main' | 'executor' };
   type SkillsListResult = {
     builtin: SkillBuiltinItem[];
     custom: CustomSkillTag[];
@@ -1127,16 +1129,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     title: string;
     description?: string;
     enabled?: boolean;
+    owner?: string;
     templateContent: string;
   };
   type SkillsMutationResult = { custom: CustomSkillTag[] };
   type SkillDeleteParams = { name: string };
 
   ipcMain.handle(IPC_SKILLS.LIST, async (): Promise<SkillsListResult> => {
-    // 内置8标签只读展示（从内置注册表组装，不含自定义来源）
+    // 内置13标签只读展示（主4+执行9：按归属分别从主源/执行源注册表组装，含归属字段，不含自定义来源）
     const builtin: SkillBuiltinItem[] = BUILTIN_TASK_TAGS.map((name) => {
-      const template = EXECUTOR_WORKFLOW_TEMPLATES[TASK_TAG_WORKFLOW_TEMPLATE_ID[name]];
-      return { name, title: template.title, description: template.description, fileName: template.fileName };
+      const template = getBuiltinSkillTemplateMeta(name);
+      if (!template) {
+        throw new Error(`内置技能标签「${name}」未在主源/执行源任一注册表中登记`);
+      }
+      return {
+        name,
+        title: template.title,
+        description: template.description,
+        fileName: template.fileName,
+        owner: template.owner,
+      };
     });
     return {
       builtin,
@@ -1154,6 +1166,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const title = typeof params?.title === 'string' ? params.title.trim() : '';
     const description = typeof params?.description === 'string' ? params.description.trim() : '';
     const enabled = params?.enabled !== false;
+    // owner 归一（缺省/非法值按 'executor' 兜底，与存量懒归一口径一致；枚举硬校验在 validate 内）
+    const owner = params?.owner === 'main' ? 'main' : 'executor';
     // templateContent 缺省 = 保持现有模板文件不变（编辑元数据/启停场景；新建时必填由 validate 保证）
     const templateContent = typeof params?.templateContent === 'string' ? params.templateContent : null;
 
@@ -1165,7 +1179,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     // 校验（编辑场景排除自身；内置重名/数量上限/模板长度等硬约束在 validateCustomSkillTagInput 内）
     const others = existing.filter((item) => item !== current);
     const issues = validateCustomSkillTagInput(
-      { name, title, description, enabled, templateContent },
+      { name, title, description, enabled, owner, templateContent },
       others,
       { isCreate: !current },
     );
@@ -1183,7 +1197,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       await writeCustomSkillTemplate(slug, templateContent);
     }
 
-    const entry: CustomSkillTag = { name, slug, title, description, enabled };
+    const entry: CustomSkillTag = { name, slug, title, description, enabled, owner };
     const next = current
       ? existing.map((item) => (item === current ? entry : item))
       : [...existing, entry];
@@ -1218,14 +1232,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const source = typeof params?.source === 'string' ? params.source : '';
       const key = typeof params?.key === 'string' ? params.key.trim() : '';
       if (source === 'builtin') {
-        // 内置分支：fileName 必须命中内置模板白名单（防路径穿越；fileName 含同构子目录）
-        const allowedFileNames = new Set(Object.values(EXECUTOR_WORKFLOW_TEMPLATES).map((template) => template.fileName));
+        // 内置分支：fileName 必须命中内置模板白名单（主4+执行9 双源合并；防路径穿越；fileName 含同构子目录）
+        const allowedFileNames = new Set(listBuiltinSkillTemplateFileNames());
         if (!allowedFileNames.has(key)) {
           return { success: false, error: `内置模板文件名不在白名单内: ${key}` };
         }
         try {
-          // 覆写优先：userData/builtin-skill-overrides/<fileName> 存在则读覆写，否则读内置目录
-          return { success: true, content: await readBuiltinTemplateContent(key) };
+          // 覆写优先：userData/builtin-skill-overrides/<fileName> 存在则读覆写，否则读归属对应内置目录（主源 main-skills／执行源 skills）
+          return { success: true, content: await readBuiltinSkillTemplateContent(key) };
         } catch (error) {
           return { success: false, error: `读取内置模板内容失败: ${error instanceof Error ? error.message : String(error)}` };
         }
@@ -1255,8 +1269,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     IPC_SKILLS.SAVE_BUILTIN_OVERRIDE,
     async (_event, params: { fileName?: string; content?: string | null }): Promise<{ success: boolean; error?: string }> => {
       const fileName = typeof params?.fileName === 'string' ? params.fileName.trim() : '';
-      // fileName 白名单校验（防路径穿越；仅允许内置8模板的既定 fileName）
-      const allowedFileNames = new Set(Object.values(EXECUTOR_WORKFLOW_TEMPLATES).map((template) => template.fileName));
+      // fileName 白名单校验（主4+执行9 双源合并；防路径穿越；仅允许内置13模板的既定 fileName）
+      const allowedFileNames = new Set(listBuiltinSkillTemplateFileNames());
       if (!allowedFileNames.has(fileName)) {
         return { success: false, error: `内置模板文件名不在白名单内: ${fileName}` };
       }

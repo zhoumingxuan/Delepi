@@ -291,6 +291,7 @@ const BUILTIN_TOOL_DISPLAY_NAMES: Record<string, string> = {
   fs_list: '目录列表',
   fs_stat: '路径详情',
   fs_append_text: '文本追加',
+  query_skill: '技能内容查询',
 };
 
 export function resolveToolDisplayName(

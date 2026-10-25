@@ -83,7 +83,7 @@ export interface ElectronAPI {
     selectCustom: () => Promise<import('./python').SystemPythonInfo>;
   };
   skills: {
-    /** 列出内置8标签（只读，含 fileName）与自定义标签元数据+上限 */
+    /** 列出内置9标签（只读，含 fileName 与归属）与自定义标签元数据+上限 */
     list: () => Promise<unknown>;
     /** 新建/编辑自定义技能标签与模板（originalName=编辑时的原标签名；新建不传） */
     save: (params: unknown) => Promise<unknown>;

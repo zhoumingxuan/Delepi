@@ -13,6 +13,8 @@ extraResources:
       - "**/*"
   - from: skills
     to: skills
+  - from: main-skills
+    to: main-skills
 mac:
   target: dmg
   icon: resources/icon.png

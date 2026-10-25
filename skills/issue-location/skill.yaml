@@ -1,0 +1,3 @@
+# skills/issue-location/skill.yaml
+name: 问题诊断
+applicable_conditions: 用于报错、异常、差异、瓶颈、错误结果、状态不一致等问题追踪和根因定位类任务。

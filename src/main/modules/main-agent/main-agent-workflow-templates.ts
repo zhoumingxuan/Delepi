@@ -1,0 +1,59 @@
+/**
+ * 主智能体内置技能模板注册表（2026-10-26 技能载体彻底分离：主智能体专属载体）
+ * 载体内涵：主智能体三项技能（交互设计/思路设计/问题解答）的模板 id、kind、标题、描述与正文相对路径。
+ * 与执行者载体 executor-agent/executor-workflow-templates.ts 零交叉：执行者侧只承载九项执行者技能。
+ * 主技能正文目录：MAIN_AGENT_SKILLS_DIR（生产 resources/main-skills；开发 项目根 main-skills）。
+ */
+import { BUILTIN_MAIN_TASK_TAGS } from '../../constants';
+
+export type MainAgentWorkflowTemplateId =
+  | 'interaction_design'
+  | 'approach_design'
+  | 'question_answering';
+
+export type MainAgentWorkflowTemplateKind = 'specific';
+
+export type MainAgentWorkflowTemplate = {
+  id: MainAgentWorkflowTemplateId;
+  kind: MainAgentWorkflowTemplateKind;
+  title: string;
+  description: string;
+  fileName: string;
+};
+
+export const MAIN_AGENT_WORKFLOW_TEMPLATES: Record<
+  MainAgentWorkflowTemplateId,
+  MainAgentWorkflowTemplate
+> = {
+  interaction_design: {
+    id: 'interaction_design',
+    kind: 'specific',
+    title: '交互设计',
+    description: '用于确定用户操作路径、状态迁移、界面反馈与异常恢复方式的交互行为设计类任务。',
+    fileName: 'interaction-design/interaction-design.md',
+  },
+  approach_design: {
+    id: 'approach_design',
+    kind: 'specific',
+    title: '思路设计',
+    description: '用于目标问题已明确、解决路径尚未确定，需要发散多条思路并比较收敛为唯一设计思路的任务。',
+    fileName: 'approach-design/approach-design.md',
+  },
+  question_answering: {
+    id: 'question_answering',
+    kind: 'specific',
+    title: '问题解答',
+    description: '用于用户最新意图属于提问类型、需要先取得权威结论再据以作答的任务。',
+    fileName: 'question-answering/question-answering.md',
+  },
+};
+
+/** 主智能体任务标签 → 主模板 id（键类型直取 BUILTIN_MAIN_TASK_TAGS，标签归属变更时编译期强制同步） */
+export const MAIN_TASK_TAG_WORKFLOW_TEMPLATE_ID: Record<
+  (typeof BUILTIN_MAIN_TASK_TAGS)[number],
+  MainAgentWorkflowTemplateId
+> = {
+  交互设计: 'interaction_design',
+  思路设计: 'approach_design',
+  问题解答: 'question_answering',
+};

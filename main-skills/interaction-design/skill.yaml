@@ -1,0 +1,3 @@
+# skills/interaction-design/skill.yaml
+name: 交互设计
+applicable_conditions: 适用于操作行为尚未定稿的界面或系统：需要把用户要走的操作序列、状态迁移、即时反馈与异常恢复逐条定死；任务类型取【设计方案】或【执行落地】，交付类型取【详细规划】或【文件链接】。

@@ -29,12 +29,13 @@ import {
 } from './main-agent-message-content';
 import { contentPartsToText } from '../../utils/chat-content';
 import { formatCurrentDateTime } from '../../utils/helper';
-import { SYSTEM_PROMPT, MAIN_TOOLS } from './prompt';
+import { buildMainSystemPrompt, MAIN_TOOLS } from './prompt';
 import { getLatestCompletedContextCompression, runContextCompressionIfNeeded } from './context-compression-task';
 import { generateConversationTitle, truncateConversationTitle } from './title-generation';
 import { runDelegatedTask, computeTaskDurationSeconds } from '../executor-agent/executor-agent';
 import { buildToolResult, stringifyToolResult, type ToolResult } from '../../tools/result';
 import { executeToolCall } from '../../tools/executor-registry';
+import { skillQuery } from '../../tools/skill-query';
 import { ensureErrorMessage } from '../../utils';
 import type { AssistantRuntimeConfig } from '../executor-agent/assistant-config';
 import { eventBus, type ExecutorAgentEvents } from '../event-bus/event-bus';
@@ -499,7 +500,7 @@ export async function runMainAgent(
   const conversationId = options.conversationId;
 
   // 1. 构建 system prompt
-  const systemPrompt = SYSTEM_PROMPT;
+  const systemPrompt = buildMainSystemPrompt();
 
   // 2. 准备当前用户消息内容
   const currentSeq = getNextMessageSeq(conversationId);
@@ -1462,6 +1463,65 @@ export async function runMainAgent(
           options.signal?.removeEventListener('abort', onSessionAbort);
           unregisterTaskStopController(conversationId, toolCall.id);
         }
+      } else if (toolCall.function.name === 'query_skill') {
+        // 主智能体技能内容读取：owner 固定 'main'。
+        // 禁止改走 executeToolCall：EXECUTOR_TOOLS.query_skill 的 execute 固定 owner='executor'
+        //（见 src/main/modules/executor-agent/prompt.ts:286），复用会导致主技能全部查不到。
+        // 参数解析行为与 executor-registry.parseToolArguments 等价（该函数未导出，无法复用）。
+        let queryResult: ToolResult;
+        try {
+          const parsedArguments = parseMainToolArguments(toolCall.function.arguments);
+          queryResult = await skillQuery(
+            parsedArguments,
+            {
+              conversationId,
+              runDir: resolveConversationDir(conversationId),
+              signal: options.signal,
+            },
+            'main',
+          );
+        } catch (error) {
+          queryResult = buildToolResult({
+            success: false,
+            code: 'TOOL_EXECUTION_EXCEPTION',
+            message: ensureErrorMessage(error),
+          });
+        }
+        const queryResultText = stringifyToolResult(queryResult);
+        const queryFinishedAt = new Date().toISOString();
+        turnMessages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: queryResultText,
+        });
+        eventBus.emit(MAIN_AGENT_TOOL_RESULT_EVENT, {
+          conversationId,
+          callId: toolCall.id,
+          name: toolCall.function.name,
+          result: queryResultText,
+          success: queryResult.success,
+        });
+        toolSlotPaired[slotIndex] = true;
+        pendingToolMessagePayloads.push({
+          role: 'tool',
+          payload: {
+            toolCallId: toolCall.id,
+            name: toolCall.function.name,
+            arguments: toolCall.function.arguments,
+            result: queryResultText,
+            isError: !queryResult.success,
+            startedAt: toolStartedAt,
+            finishedAt: queryFinishedAt,
+          },
+        });
+        batchResults.push({
+          callId: toolCall.id,
+          status: queryResult.success ? 'success' : 'failed',
+        });
+        return {
+          toolCall,
+          status: queryResult.success ? ('success' as const) : ('failed' as const),
+        };
       } else if (
         toolCall.function.name === 'read_file' ||
         toolCall.function.name === 'fs_search' ||
@@ -1859,4 +1919,20 @@ export async function runMainAgent(
     completedTasks = [];
     deleteRunningAssistantMessage(conversationId);
   }
+}
+
+/** 主侧工具参数解析：与 executor-registry.parseToolArguments 行为等价（该函数未导出，无法复用） */
+function parseMainToolArguments(rawArguments: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = rawArguments ? JSON.parse(rawArguments) : {};
+  } catch (error) {
+    throw new Error(`工具参数不是合法 JSON：${ensureErrorMessage(error)}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('工具参数必须是 JSON 对象');
+  }
+  const next = { ...(parsed as Record<string, unknown>) };
+  delete next.context;
+  return next;
 }

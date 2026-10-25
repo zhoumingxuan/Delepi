@@ -1,17 +1,21 @@
+/**
+ * 执行子智能体内置技能模板注册表（执行者专属载体）
+ * 载体内涵：执行子智能体九项内置技能的模板 id、kind、标题、描述与正文相对路径（本文件不承载任何非执行者技能）。
+ * 正文目录：EXECUTOR_WORKER_SKILLS_DIR（生产 resources/skills；开发 项目根 skills）。
+ */
 import { access, mkdir, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { app } from 'electron';
 
-import type { CustomSkillTag } from '@shared/types/config';
+import type { CustomSkillTag, SkillOwner } from '@shared/types/config';
 import { configManager } from '../config/config-manager';
 import {
+  BUILTIN_EXECUTOR_TASK_TAGS,
   CUSTOM_TASK_TAG_LIMIT,
   EXECUTOR_WORKER_SKILLS_DIR,
   TASK_TAG_SET,
-  getAllTaskTags,
 } from '../../constants';
-import type { TaskTag } from '../../constants';
 
 export type ExecutorWorkflowTemplateId =
   | 'doc-writing'
@@ -100,11 +104,11 @@ export const EXECUTOR_WORKFLOW_TEMPLATES: Record<
     title: '视觉设计',
     description: '用于海报、封面、插画、图标、示意图、视觉素材等视觉内容的设计和生成类任务。',
     fileName: 'visual-design/visual-design.md',
-  }
+  },
 };
 
 export const TASK_TAG_WORKFLOW_TEMPLATE_ID: Record<
-  TaskTag,
+  (typeof BUILTIN_EXECUTOR_TASK_TAGS)[number],
   ExecutorWorkflowTemplateId
 > = {
   问题诊断: 'issue_location',
@@ -119,7 +123,7 @@ export const TASK_TAG_WORKFLOW_TEMPLATE_ID: Record<
 };
 
 // ============================================================
-// 自定义技能模板（运行时来源；上方内置注册表与映射 Record 只读锁定，不可被自定义覆盖）
+// 自定义技能模板（运行时来源；上方执行者内置注册表与映射 Record 只读锁定，不可被自定义覆盖）
 // 载体：app.getPath('userData')/custom-skills/<slug>/template.md（固定名+纯 Markdown，
 // 同构内置格式：无变量占位符、无 front matter；不进 skills 打包目录规避只读风险 D2R5）
 // ============================================================
@@ -139,8 +143,9 @@ export function getCustomSkillTemplatePath(slug: string): string {
 
 // ============================================================
 // 内置模板覆写层（方向2扩展：内置技能允许编辑模板内容；标签名/标题/描述常量锁定不动）
-// 载体：userData/builtin-skill-overrides/<fileName>（fileName 含同构子目录）；执行链读取时
-// 覆写优先（executor-agent readWorkflowTemplateContent），content=null 删除覆写=恢复默认
+// 载体：userData/builtin-skill-overrides/<fileName>（fileName 含同构子目录）；主/执行两侧共用同一覆写根，
+// 两源 fileName 命名空间互不重叠故不分目录；读取时覆写优先（skill-registry readSkillContent /
+// readBuiltinSkillTemplateContent），content=null 删除覆写=恢复默认
 // ============================================================
 
 /** 内置模板覆写根目录（userData/builtin-skill-overrides） */
@@ -153,8 +158,14 @@ export function getBuiltinOverridePath(fileName: string): string {
   return path.join(getBuiltinOverridesDir(), fileName);
 }
 
-/** 读取内置模板内容（userData 覆写优先；无覆写回退内置目录；读取失败抛错由调用方处理） */
-export async function readBuiltinTemplateContent(fileName: string): Promise<string> {
+/**
+ * 读取内置模板内容（userData 覆写优先；无覆写回退 skillsDir 指定的内置目录；读取失败抛错由调用方处理）。
+ * skillsDir 缺省为执行者内置目录；主智能体正文目录由调用方（skill-registry 归属判定）显式传入，本函数不感知归属。
+ */
+export async function readBuiltinTemplateContent(
+  fileName: string,
+  skillsDir: string = EXECUTOR_WORKER_SKILLS_DIR,
+): Promise<string> {
   const overridePath = getBuiltinOverridePath(fileName);
   let useOverride = false;
   try {
@@ -165,7 +176,7 @@ export async function readBuiltinTemplateContent(fileName: string): Promise<stri
   }
   const templatePath = useOverride
     ? overridePath
-    : path.join(EXECUTOR_WORKER_SKILLS_DIR, fileName);
+    : path.join(skillsDir, fileName);
   return readFile(templatePath, 'utf-8');
 }
 
@@ -191,20 +202,20 @@ export function isValidCustomSkillSlug(slug: unknown): slug is string {
   return typeof slug === 'string' && /^[a-z0-9][a-z0-9-]{0,63}$/.test(slug);
 }
 
-/** 读取全部自定义技能标签元数据（settings.customSkillTags；异常容错返回 []） */
+/** 存量数据懒归一：settings 中无 owner 的条目补默认 'executor'（不写盘；用户下次保存任一自定义技能时自然持久化） */
+function normalizeCustomSkillTagOwner(item: CustomSkillTag): CustomSkillTag {
+  return { ...item, owner: item.owner ?? 'executor' };
+}
+
+/** 读取全部自定义技能标签元数据（settings.customSkillTags；owner 归一化出口；异常容错返回 []） */
 export function listCustomSkillTagMeta(): CustomSkillTag[] {
   const tags = configManager.getSettings().customSkillTags;
-  return Array.isArray(tags) ? tags : [];
+  return Array.isArray(tags) ? tags.map(normalizeCustomSkillTagOwner) : [];
 }
 
 /** 读取启用状态的自定义技能标签元数据（放行链与模板映射的自定义来源） */
 export function getEnabledCustomSkillTags(): CustomSkillTag[] {
   return listCustomSkillTagMeta().filter((item) => item && item.enabled === true);
-}
-
-/** 放行集合统一数据源：内置∪启用自定义（单一定义源，放行链三关共用） */
-export function getAllowedTaskTagSet(): ReadonlySet<string> {
-  return new Set<string>(getAllTaskTags(listCustomSkillTagMeta()));
 }
 
 /** skills:save 输入结构（新建/编辑共用；slug 由主进程管理：新建生成、编辑锁定） */
@@ -213,13 +224,15 @@ export interface CustomSkillTagSaveInput {
   title: string;
   description: string;
   enabled: boolean;
+  /** 技能归属（'main'=主智能体技能；'executor'=执行子智能体技能） */
+  owner: SkillOwner;
   /** null = 保持现有模板文件不变（编辑元数据/启停场景，三通道约束下无模板读取通道）；新建时必填 */
   templateContent: string | null;
 }
 
 /**
  * 校验自定义技能标签输入（existingOthers=除自身外的既有自定义标签；空 issues=通过）。
- * 硬约束：不可与内置8标签重名（内置映射锁定不可被覆盖）；数量上限 CUSTOM_TASK_TAG_LIMIT。
+ * 硬约束：不可与内置13标签重名（主智能体4项＋执行子智能体9项，两侧内置映射锁定不可被覆盖）；数量上限 CUSTOM_TASK_TAG_LIMIT；owner 二值枚举校验。
  */
 export function validateCustomSkillTagInput(
   input: CustomSkillTagSaveInput,
@@ -231,6 +244,7 @@ export function validateCustomSkillTagInput(
   const title = (input.title ?? '').trim();
   const description = (input.description ?? '').trim();
   const templateContent = input.templateContent;
+  const owner = input.owner;
 
   if (!name) {
     issues.push('标签名不能为空');
@@ -250,6 +264,10 @@ export function validateCustomSkillTagInput(
     issues.push('模板描述长度不能超过 200 字符');
   }
 
+  if (owner !== 'main' && owner !== 'executor') {
+    issues.push('技能归属参数非法，仅允许 main（主智能体）或 executor（执行子智能体）');
+  }
+
   if (templateContent == null) {
     // 保持现有模板文件：仅新建场景必填
     if (options.isCreate) {
@@ -263,7 +281,7 @@ export function validateCustomSkillTagInput(
     issues.push(`标签名「${name}」已存在`);
   }
   if (existingOthers.length + 1 > CUSTOM_TASK_TAG_LIMIT) {
-    issues.push(`自定义技能标签数量已达上限 ${CUSTOM_TASK_TAG_LIMIT} 个（不含内置8项）`);
+    issues.push(`自定义技能标签数量已达上限 ${CUSTOM_TASK_TAG_LIMIT} 个（不含内置13项）`);
   }
 
   return issues;

@@ -1,0 +1,3 @@
+# skills/use-case-execution/skill.yaml
+name: 用例执行
+applicable_conditions: 用于按既有测试用例执行网站、API、单元和应用程序测试，并记录执行过程、阻塞和结果。

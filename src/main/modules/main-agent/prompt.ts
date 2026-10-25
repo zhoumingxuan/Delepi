@@ -3,14 +3,18 @@ import {
   EXECUTOR_DELIVERY_TYPES,
   TASK_TAGS,
   TASK_TYPE_VALUES,
-  getAllTaskTags,
 } from '../../constants';
-import { configManager } from '../config/config-manager';
+import { skillQuery } from '../../tools/skill-query';
+import {
+  buildSkillQueryParameters,
+  listSkillTags,
+  listSkillTagsWithConditions,
+} from '../skill-system/skill-registry';
 import { COMMON_WORKFLOW_PROMPT } from './workflow-prompt';
 
 type ToolSchema = Record<string, unknown>;
 
-export const SYSTEM_PROMPT = `
+const SYSTEM_PROMPT_BODY = `
 # 基本信息
 \`\`\`
 - 当前对话实际的日期和时间：${formatCurrentDateTime()}
@@ -97,17 +101,6 @@ function buildDelegateToolParameters(): ToolSchema {
             '单条原子【任务规则和约束】，必须写清【约束对象、规则对象以及严谨的判定条件】',
         },
       },
-      skills: {
-        type: 'array',
-        description: '任务需要使用的且最适配的技能标签集合，最多选择3个，至少选择1个',
-        minItems: 1,
-        maxItems: 3,
-        items: {
-          type: 'string',
-          
-          enum: getAllTaskTags(configManager.getSettings().customSkillTags),
-        },
-      },
       context: {
         type: 'string',
         minLength: 1,
@@ -124,7 +117,6 @@ function buildDelegateToolParameters(): ToolSchema {
       'delivery_spec',
       'task_target',
       'constraints',
-      'skills',
       'context',
     ],
     additionalProperties: false,
@@ -132,7 +124,7 @@ function buildDelegateToolParameters(): ToolSchema {
 }
 
 function buildDelegateExecutorDescription(): string {
-  // P-2【待用户定稿】：第 8 条为自定义技能选用规则默认文案（规划建议要点），待用户定稿后可调整措辞
+  // P-2 注记更新：原第3/6条技能选用规则已随 skills 参数移除（2026-10-25 技能体系主子分离改造）
   return `
 调用此工具可委派任务给独立的【执行者】
 ** 仅用于在符合【触发任务规则】的情况下，详细制定可独立执行的任务，委派并返回结果 **
@@ -143,12 +135,11 @@ function buildDelegateExecutorDescription(): string {
 \`\`\`
  1. **绝对严格注意：禁止预判"有无工具/能否执行"；任何情形都不得拒绝委派；即使【历史记忆】中有实证证明无法执行，也必须考虑【最新状态】存在变化，因此【绝不可拒绝委派】任务**。
  2. 重点关注【触发任务规则】的前置条件，以免在不符合前置条件的情况下触发任务。
- 3. 任务类型为【研究探索】时禁止使用【问题诊断】技能，任务类型【诊断问题】必须用【问题诊断】技能。
- 4. 交付物描述会影响任务完成质量和内容详细程度，描述的越详细越好，不得为空。
- 5. 交付物类型为【文件链接】或者【图片】，则最优先使用交付包含的URL而不是Path。
- 6. 自定义技能按其模板定义的适用范围选用，无特殊规则时按最适配原则。
- 7. 【用户最新意图】中【开放型要求】和【非开放性要求】必须透传到任务信息中；【开放型要求】禁止预设任何执行方向，必须交给【执行者】自主决策和创新。
- 8. **【越界条件】的来源仅依据【用户最新意图】，禁止自行补全 **。
+ 3. 交付物描述会影响任务完成质量和内容详细程度，描述的越详细越好，不得为空。
+ 4. 交付物类型为【文件链接】或者【图片】，则最优先使用交付包含的URL而不是Path。
+ 5. 自定义技能按其模板定义的适用范围选用，无特殊规则时按最适配原则。
+ 6. 【用户最新意图】中【开放型要求】和【非开放性要求】必须透传到任务信息中；【开放型要求】禁止预设任何执行方向，必须交给【执行者】自主决策和创新。
+ 7. **【越界条件】的来源仅依据【用户最新意图】，禁止自行补全 **。
 \`\`\`
 `;
 }
@@ -212,6 +203,27 @@ function buildFsStatDescription(): string {
     **必须注意**
     - a.路径分隔符随运行平台而异；同一路径在符号链接场景下 real_path 可能与传入路径不同。
     `;
+}
+
+/** 主智能体工具描述：query_skill（schema 与执行者侧逐字一致；主侧【最高优先级】已由 read_file 占用，本工具为【高优先级】） */
+function buildMainSkillQueryDescription(): string {
+  return `
+    - 【最高优先级】
+    - 按【技能标签】返回该技能的完整内容。
+    - 查询的技能标签必须在【技能清单】内，清单外标签会查询失败。
+  `;
+}
+
+/** 主智能体工具声明：query_skill（enum=主智能体技能集：交互设计/思路设计/问题解答+归属main的启用自定义） */
+function buildMainSkillQueryTool() {
+  return {
+    type: 'function' as const,
+    function: {
+      name: 'query_skill',
+      description: buildMainSkillQueryDescription(),
+      parameters: buildSkillQueryParameters(listSkillTags('main')),
+    },
+  };
 }
 
 /** 主智能体工具声明：read_file（非空白字符与执行者 EXECUTOR_TOOLS.read_file 逐字一致） */
@@ -355,7 +367,7 @@ function buildMainFsStatTool() {
   };
 }
 
-/** 主智能体工具声明构建函数（每次构建均从合并层取 skills enum，保证运行时含启用自定义标签） */
+/** 主智能体工具声明构建函数（query_skill enum 每次构建经 listSkillTags 实时取值，保证运行时含启用自定义标签） */
 export function buildMainTools() {
   return [
     {
@@ -366,6 +378,7 @@ export function buildMainTools() {
         parameters: buildDelegateToolParameters(),
       },
     },
+    buildMainSkillQueryTool(),
     buildMainReadFileTool(),
     buildMainFsSearchTool(),
     buildMainFsListTool(),
@@ -383,4 +396,21 @@ export let MAIN_TOOLS = buildMainTools();
 /** 刷新 MAIN_TOOLS（ES 模块 live binding，消费点自动取新值） */
 export function refreshMainTools(): void {
   MAIN_TOOLS = buildMainTools();
+}
+
+/**
+ * 主智能体系统提示工厂：SYSTEM_PROMPT 主体 + 主智能体技能清单（内置3项+归属main的启用自定义）。
+ * 清单与 query_skill enum 同源（listSkillTags），每次构建实时读取，自定义技能变更后无需重启即入下一轮。
+ */
+export function buildMainSystemPrompt(): string {
+  const skillEntries = listSkillTagsWithConditions('main');
+  const skillsSection = skillEntries.length
+    ? `
+# 技能清单（**可用query_skill工具查询技能详细内容**）
+\`\`\`json
+${JSON.stringify(skillEntries)}
+\`\`\`
+`
+    : '';
+  return `${SYSTEM_PROMPT_BODY}${skillsSection}`;
 }
