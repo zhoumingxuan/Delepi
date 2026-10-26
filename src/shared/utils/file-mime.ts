@@ -1,5 +1,5 @@
 /**
- * 文件 MIME 类型探测工具(P2)
+ * 文件 MIME 类型探测工具
  *
  * 从 E:\ai_fr\lib\utils\file-mime.ts 复制实现,适配 Delepi 客户端:
  * - 放在 src/shared/utils 目录,供主进程和渲染进程共享使用

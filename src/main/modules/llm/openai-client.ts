@@ -43,7 +43,7 @@ export interface StreamChatOptions {
   /** 思考内容回调 */
   onThinking?: (thinking: string) => void;
   /**
-   * 思考意图（S1-1 方向1流式化新增，可选）：
+   * 思考意图（可选）：
    * - 不传（undefined）：零思考参数（请求体不组装任何思考键）
    * - { reasoningEffort: string }：主/子智能体（档位分别读 AppSettings.mainThinkingLevel / executorThinkingLevel，空串=不设置）
    * 翻译收口与 nonStreamChatOnce 一致：buildThinkingParams（intent 未传时返回空对象，展开后请求体零思考键）
@@ -235,8 +235,8 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
     stream: true as const,
     messages: options.messages,
     tools: options.tools?.length ? options.tools : undefined,
-    // 思考参数由调用点意图决定（S1-1）：未传 thinking 时不组装任何思考键（buildThinkingParams
-    // 对 undefined 返回空对象，展开后请求体与改造前逐字节一致——主智能体既有调用零回归）；
+    // 思考参数由调用点意图决定：未传 thinking 时不组装任何思考键（buildThinkingParams
+    // 对 undefined 返回空对象，展开后请求体逐字节一致——主智能体既有调用零回归）；
     // 传 thinking 时经统一翻译收口展开 enable_thinking / reasoning_effort（与 nonStreamChatOnce 同构）
     ...buildThinkingParams(options.thinking),
     parallel_tool_calls: true,
@@ -350,7 +350,7 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
         finishReason = choice.finish_reason;
       }
 
-      // ★ Phase 3 P3-7 修复：finishReason 变化时也要触发 onChunk 回调
+      // ★ finishReason 变化时也要触发 onChunk 回调
       //   原实现：仅当 changed=true(文本/推理/工具增量)时触发,finishReason 单独变化时丢失推送
       //   影响：main-agent 无法通过 onChunk 收到 finishReason,需依赖 streamResult.finishReason 间接获取
       //   修复：finishReason 从 lastEmittedFinishReason 变化时也触发回调,确保 finishReason 状态对前端可达
@@ -376,7 +376,7 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
           options.onThinking?.(lastReasoningDelta);
         }
 
-        // ★ Phase 3 P3-7 更新上次推送的 finishReason
+        // ★ 更新上次推送的 finishReason
         lastEmittedFinishReason = finishReason;
       }
     }

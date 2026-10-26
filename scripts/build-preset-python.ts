@@ -27,7 +27,7 @@ const PYTHON_VERSION = '3.14.6';
 const PYTHON_SHORT = '3.14';
 const EMBED_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`;
 // mac/linux 变体运行时来源：python-build-standalone（PBS）便携发行版（python.org 无 macOS/Linux 免安装发行版）。
-// tag 固定 20260804：更新的 release tag 已无 cpython-3.14.6 资产（2026-08-22 盘点实测）。
+// tag 固定 20260804：更新的 release tag 已无 cpython-3.14.6 资产。
 const PBS_TAG = '20260804';
 // triple 运行时解析：mac 按宿主 process.arch（arm64→aarch64-apple-darwin，否则 x86_64-apple-darwin）；linux 固定 x86_64-unknown-linux-gnu
 const PBS_MAC_TRIPLE = process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
@@ -43,10 +43,10 @@ const PRESET_MARKER_FILE = '.beez-preset';
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 const PIP_INDEX_URL = process.env.DELEPI_PIP_INDEX_URL || 'https://mirrors.cloud.tencent.com/pypi/simple/';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
-const EXEC_TIMEOUT_MS = 1800_000;  // 2026-09-04 fix: 预装依赖大包下载在慢速源下超过 600s 会被杀；换源后仍留充足余量
+const EXEC_TIMEOUT_MS = 1800_000;  // 预装依赖大包下载在慢速源下超过 600s 会被杀；换源后仍留充足余量
 
 // ================================================================
-// 构建变体（Win10 差异化打包，2026-08-22 新增；mac/Linux 差异化打包，2026-08-22 新增）
+// 构建变体（Win10 差异化打包；mac/Linux 差异化打包）
 // 无参数 = default 变体：路径与命令与历史版本完全一致；
 // 传入 --win10 / win10 / --preset=win10 = win10 变体：
 //   独立输出目录 resources/python-win10、独立缓存 scripts/cache/win10、
@@ -69,7 +69,7 @@ interface BuildVariant {
   buildDirName: string;
   /** requirements 包清单文件；null = 使用 PRESET_PACKAGES 常量（主线行为） */
   requirementsFile: string | null;
-  /** pip 是否禁用本地缓存（win10：规避用户级 wheels 缓存权限问题，2026-08-22 实测 Errno13） */
+  /** pip 是否禁用本地缓存（win10：规避用户级 wheels 缓存权限问题，实测 Errno13） */
   pipNoCacheDir: boolean;
   /** 运行时来源：embed = python.org Windows embeddable zip；pbs = python-build-standalone 便携 tarball（mac/linux） */
   runtime: 'embed' | 'pbs';
@@ -159,14 +159,14 @@ const PRESET_PACKAGES: Record<string, string> = {
   'pandas': '>=1.5',
   // 报表导出（Excel写出）
   'xlsxwriter': '>=3.0',
-  // ---- HTML/XML/浏览器（2026-08-20 新增）----
+  // ---- HTML/XML/浏览器 ----
   'beautifulsoup4': '>=4.12.0',
   'html5lib':       '>=1.1',
   'xmltodict':      '>=0.13.0',
   'defusedxml':     '>=0.7.1',
   'playwright':     '>=1.40.0',
   'pygetwindow':    '>=0.0.9',
-  // ---- 数据库驱动与常用工具（2026-08-20 新增）----
+  // ---- 数据库驱动与常用工具 ----
   'pymysql':                '>=1.2.0',
   'mysql-connector-python': '>=26.7.0',
   'pyodbc':                 '>=5.3.0',
@@ -196,7 +196,7 @@ const IMPORT_NAMES: Record<string, string> = {
   'SQLAlchemy': 'sqlalchemy',
 };
 
-/** win10 增量包的 pip 包名 → import 模块名映射（追加生效；2026-08-22 预演实测 wheel 自带 pywin32.pth，import win32api 可用） */
+/** win10 增量包的 pip 包名 → import 模块名映射（追加生效；预演实测 wheel 自带 pywin32.pth，import win32api 可用） */
 const WIN10_IMPORT_NAMES: Record<string, string> = {
   pywin32: 'win32api',
 };

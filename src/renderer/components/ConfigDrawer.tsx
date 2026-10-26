@@ -637,7 +637,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const [skillEditingBuiltin, setSkillEditingBuiltin] = useState<SkillBuiltinItem | null>(null);
   /** 技能归属表单值（新建默认执行子智能体；内置编辑模式只读回显） */
   const [skillFormOwner, setSkillFormOwner] = useState<'main' | 'executor'>('executor');
-  /** 内置技能按归属双分组（B1：主智能体技能/执行子智能体技能；按 item.owner 前端分组，不依赖后端返回顺序） */
+  /** 内置技能按归属双分组（主智能体技能/执行子智能体技能；按 item.owner 前端分组，不依赖后端返回顺序） */
   const builtinSkillGroups = useMemo(() => {
     const builtin = skillsData?.builtin ?? [];
     return [

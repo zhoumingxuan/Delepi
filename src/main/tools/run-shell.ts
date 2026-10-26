@@ -1,5 +1,5 @@
 /**
- * run_shell：极简单条操作系统命令执行器（用户 2026-08-27 00:03:10 修订版，取代旧版多行脚本方案）。
+ * run_shell：极简单条操作系统命令执行器。
  * - Input 仅接受单条 `command` 命令字符串，无多行命令/多行脚本支持；
  * - 每次调用 spawn 一个独立 shell 子进程（Windows: 绝对路径 PowerShell -NoProfile -Command <command>；
  *   Linux: /bin/bash -c <command>），命令经命令行参数直传，工作目录经 spawn cwd 传入，进程执行完即退出；
@@ -59,7 +59,7 @@ function getShellPlatform(): ShellPlatform {
 /**
  * shell 子进程命令构造：命令经命令行参数直传（spawn 参数风格参照 run-with-python.ts L315-422）。
  * Windows 使用 PowerShell 绝对路径：裸名 PowerShell 在 PATH 长度=55 的环境下无法解析
- * （2026-10-18 实测 FileNotFoundError，0.5 ms），绝对路径不依赖 PATH。
+ * （实测 FileNotFoundError，0.5 ms），绝对路径不依赖 PATH。
  */
 function buildShellSpawn(platform: ShellPlatform, command: string): { command: string; args: string[] } {
   if (platform === 'windows') {

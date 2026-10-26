@@ -1,11 +1,10 @@
 /**
  * createProtocolAdapter - 适配器工厂（两分支，无方言注册表）+ 协议选择（用户指定/探查降级）
  *
- * A3 定案重申：v1.0"门面+resolveAdapter 路由+方言表+归一化"组织方式已被推翻；
  * CC 方言差异由现状 buildThinkingParams 承载（openai-client.ts L161-188），方言化留待
  * CC 适配器内部未来演进。
  *
- * 协议选择（2026-10-08 用户拍板）：主/子智能体各自经 AppSettings.mainModelProtocol /
+ * 协议选择：主/子智能体各自经 AppSettings.mainModelProtocol /
  * executorModelProtocol 显式指定协议（'cc'=Chat Completion，'responses'=Response API，
  * 默认 'cc'）——指定协议时按用户指定构造对应适配器并 await init，init 失败直接抛
  * ModelApiAbortError（禁止自动降级，用不了就换一个协议由用户自己换）；protocol 未
@@ -15,7 +14,7 @@
  * ModelApiAbortError（携带两次探查失败原因）交调用方既有错误面处理。
  * createProtocolAdapter 保留为纯构造入口（无网络、无探查，回归测试 harness 沿用）。
  *
- * Coding Plan 端点防呆（A3 RK-6）：protocol='responses' 且 baseUrl 含 coding 特征时
+ * Coding Plan 端点防呆：protocol='responses' 且 baseUrl 含 coding 特征时
  * 输出警告日志——智谱官方声明 Coding Plan 暂只支持 CC 协议，误配将全量失败。
  */
 
@@ -43,10 +42,10 @@ export interface AdapterProtocolSetup {
 }
 
 /**
- * 协议初始化（2026-10-08 用户拍板）：protocol 显式传入（'cc' | 'responses'）时按用户
+ * 协议初始化：protocol 显式传入（'cc' | 'responses'）时按用户
  * 指定构造对应适配器并 await init（init 内 POST 探端点，404=协议不支持=初始化失败）；
- * init 失败即抛 ModelApiAbortError 交调用方既有错误面——禁止自动降级到另一协议（用户
- * 拍板：用不了就换一个协议，由用户自己换）。主链路 runMainAgent catch →
+ * init 失败即抛 ModelApiAbortError 交调用方既有错误面——禁止自动降级到另一协议（
+ * 用不了就换一个协议，由用户自己换）。主链路 runMainAgent catch →
  * MAIN_AGENT_ERROR_EVENT；执行链路 runDelegatedTask catch → saveExecutionLogOnError
  * 后 rethrow → 主链路委派失败消息化。初始化失败的实例立即 close 释放（幂等），不残留
  * 可用假象。

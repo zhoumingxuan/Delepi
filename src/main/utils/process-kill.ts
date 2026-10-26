@@ -1,7 +1,7 @@
 /**
  * 共享进程终止辅助（run_shell / run_with_python 非挂起模式超时与 abort 路径专用）。
  *
- * 设计（2026-10-18 移除 Job Object 守门人机制后）：
+ * 设计：
  * - POSIX：两处非挂起 spawn 以 detached 建立独立进程组（子进程即组长，pid == pgid），
  *   超时/abort 向整组投递 SIGKILL（负 PID），组内后代一并终止；
  * - Windows：唯一清理手段是 child.kill()（TerminateProcess 直接子进程）。Windows 无内核级

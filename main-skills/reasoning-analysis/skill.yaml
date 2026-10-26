@@ -1,0 +1,3 @@
+# skills/reasoning-analysis/skill.yaml
+name: 推理分析
+applicable_conditions: 适用于用户要求需要对某个对象（例如：案件，现象，问题等）展开分析；或者产生了一些推测需要进行推理论证；或者需要判断现象之间的因果关联。

@@ -433,7 +433,7 @@ function buildExecutorPlainTextPrompt(options: {
   return sections.join('\n\n');
 }
 
-/** R5：经验库『可适配的工具清单』数据块（纯数据；空库返回空串=整块省略） */
+/** 经验库『可适配的工具清单』数据块（纯数据；空库返回空串=整块省略） */
 function buildScriptToolsInventoryBlock(entries: ScriptToolScanEntry[]): string {
   const valid = entries.filter((entry) => entry.ok);
   if (valid.length === 0) {
@@ -486,7 +486,7 @@ async function removeTemporaryPaths(temporaryPaths: string[]): Promise<void> {
 }
 
 /**
- * R5②：收集本次交付的源文件路径（复制到 output 前 payload.result 中的原始路径）。
+ * 收集本次交付的源文件路径（复制到 output 前 payload.result 中的原始路径）。
  */
 function collectSourceDeliveredFilePaths(
   payload: ExecutorStructuredPayload,
@@ -502,7 +502,7 @@ function collectSourceDeliveredFilePaths(
 }
 
 /**
- * R5②：收集复制到 output 后的最终交付文件路径（resultData.result 中）。
+ * 收集复制到 output 后的最终交付文件路径（resultData.result 中）。
  */
 function collectResultDeliveredFilePaths(
   resultData: Record<string, unknown> | undefined,
@@ -518,7 +518,7 @@ function collectResultDeliveredFilePaths(
 }
 
 /**
- * R5②：从待清理临时路径中剔除交付文件路径（兜底保护，防止 cleanable_info.json
+ * 从待清理临时路径中剔除交付文件路径（兜底保护，防止 cleanable_info.json
  * 登记的临时路径被递归删除时误删本次交付文件，含源文件与 output 副本）。
  * 剔除规则：临时路径与交付路径相同，或交付文件位于临时路径目录之内。
  */
@@ -617,7 +617,7 @@ ${errors}
  * 设计依据：参考 E:\ai_fr\lib\chat\executor-agent.ts:524-531
  *   local_files → can_openfile_url
  *   image_files → image_urls
- * Delepi 改造（R5①）：文件链接复制到 output（源已在 output 内不重复复制、重名自动追加序号），
+ * 文件链接复制到 output（源已在 output 内不重复复制、重名自动追加序号），
  * 基于 output 副本路径生成 file:// URL。
  */
 function getFileResultUrlFieldName(
@@ -628,11 +628,11 @@ function getFileResultUrlFieldName(
     : FILE_URLS_FIELD_NAME;
 }
 
-/** R4：文件链接交付 local_files 为空时的可观测警告文案 */
+/** 文件链接交付 local_files 为空时的可观测警告文案 */
 const EMPTY_LOCAL_FILES_WARNING = '本地文件列表为空，未生成文件链接';
 
 /**
- * R5①：local_files 逐个复制到输出目录，复制失败时保留原始路径并记录警告。
+ * local_files 逐个复制到输出目录，复制失败时保留原始路径并记录警告。
  * 复用 copyFileToOutputDir 既有模式：源文件已在输出目录内时不重复复制、重名自动追加序号。
  */
 async function copyLocalFilesToOutputDir(
@@ -684,7 +684,7 @@ async function buildExecutorResultData(options: {
       };
     }
 
-    // R4：local_files 为空时不再静默返回，注入可观测警告（不注入 URL 属合理降级）
+    // local_files 为空时不再静默返回，注入可观测警告（不注入 URL 属合理降级）
     const warnings = [...options.payload.warnings];
 
     if (!warnings.includes(EMPTY_LOCAL_FILES_WARNING)) {
@@ -698,7 +698,7 @@ async function buildExecutorResultData(options: {
   }
 
   if (fileFieldName === LOCAL_FILES_FIELD_NAME) {
-    // R5①：local_files 复制到输出目录后，基于 output 副本路径生成 file:// URL
+    // local_files 复制到输出目录后，基于 output 副本路径生成 file:// URL
     const {
       outputFilePaths,
       warnings: copyWarnings,
@@ -730,8 +730,8 @@ async function buildExecutorResultData(options: {
 }
 
 function resolveExecutorToolProgressName(toolName: string): string {
-  // S5-4 方向5：动态工具进度名三级回退（manifest.progressName→displayName→name，A5-3）；
-  // 内置工具 meta=null 走内置映射，输出与改造前逐字节一致（S5-1 等价性约束）。
+  // 动态工具进度名三级回退（manifest.progressName→displayName→name）；
+  // 内置工具 meta=null 走内置映射，输出逐字节一致（等价性约束）。
   return resolveExecutorToolProgressDisplayName(toolName, getDynamicExecutorToolMeta(toolName));
 }
 
@@ -861,13 +861,13 @@ function normalizeExecutorToolCalls(rawToolCalls: unknown[]): {
 }
 
 // ============================================================
-// 核心：流式 LLM 调用（ExecutorAgent 使用，S1-2 方向1思考流式化）
+// 核心：流式 LLM 调用（ExecutorAgent 使用，思考流式化）
 // ============================================================
 
 /**
  * 执行子智能体单轮补全（流式）。
  *
- * S1-2 流式化改造（A1-2 delta 聚合器，调用方零感知）：
+ * 流式化（delta 聚合器，调用方零感知）：
  * - 调用层从 nonStreamChat 整轮返回切换为 streamChat 流式调用；
  * - reasoning delta 经 options.onThinking 逐个透传（增量推送源，见 runDelegatedTask 内接线）；
  * - streamChat 内部已完成 delta 聚合（content 字符串累积 / tool_calls 按 index 合并 arguments 片段 /
@@ -890,7 +890,7 @@ async function completeExecutorTurn(options: {
     };
   }>;
   signal?: AbortSignal;
-  /** S1-2/A1-2 流式思考增量回调：每收到一个 reasoning delta 触发一次（delta 粒度推送） */
+  /** 流式思考增量回调：每收到一个 reasoning delta 触发一次（delta 粒度推送） */
   onThinking?: (delta: string) => void;
   /** ★ M14 重试回调重置协议（可选）：经 init.hooks.onStreamRetry 承载（任务级注册一次） */
   onStreamRetry?: () => void;
@@ -901,7 +901,7 @@ async function completeExecutorTurn(options: {
   //   onStreamRetry 经 init.hooks 承载（M14 复位链时序不变）；executor 链路现状无
   //   chunk 消费（content/end 信号不接线——方案 §四.2"事件源只替换模型流事件源"）
   options.adapter.onChunk((adapterChunk) => {
-    // reasoning 类且 delta 非空才透传（S1/S3 挂靠 reasoning 时 delta=''——end 信号
+    // reasoning 类且 delta 非空才透传（挂靠 reasoning 时 delta=''——end 信号
     // 跳过，"有值传没值空"语义保持，禁止清单⑩）
     if (adapterChunk.type === 'reasoning' && !adapterChunk.end && adapterChunk.delta) {
       options.onThinking?.(adapterChunk.delta);
@@ -912,7 +912,7 @@ async function completeExecutorTurn(options: {
     { multimodal: false, signal: options.signal },
   );
 
-  // A1-2 聚合收口：把聚合后的 reasoning 以 reasoning_content 挂回 assistantMessage
+  // 聚合收口：把聚合后的 reasoning 以 reasoning_content 挂回 assistantMessage
   //   （nonStreamChat 的 message 由服务端原样携带 reasoning_content；此处流式聚合后补挂同名字段，
   //    extractAssistantReasoning 读取 reasoning_content ?? reasoning 保持不变）
   const assistantMessage = streamResult.assistantMessage as unknown as OpenAI.Chat.ChatCompletionMessage & {
@@ -1059,7 +1059,7 @@ export async function runDelegatedTask(
 ): Promise<RunDelegatedTaskResult> {
   // 任务开始时间（本地时间，不带时区）
   const taskStartedAt = formatCurrentDateTime();
-  // ★ 任务级进程台账（方案 D1/D5）：一任务一份，纯内存；任务收敛时统一收网清理非挂起存活进程
+  // ★ 任务级进程台账：一任务一份，纯内存；任务收敛时统一收网清理非挂起存活进程
   const jobList = createTaskJobList(options.taskId);
 
   // 解析委派任务输入
@@ -1072,7 +1072,7 @@ export async function runDelegatedTask(
     inputIssues: parseResult.issues,
   });
 
-  // ★ API 报错保留现场（方案⑤5.3/⑥#16）：runDelegatedTask 主体整体包裹 try/catch——
+  // ★ API 报错保留现场：runDelegatedTask 主体整体包裹 try/catch——
   //   任何 throw 路径（含 executor streamChat 抛出的 ModelApiAbortError）先经
   //   saveExecutionLogOnError 复用唯一写盘点生成 executor_messages.json 快照，并把绝对
   //   路径挂载到 error.executionLogPath 后原样 rethrow（仅包装不吞错，既有上抛语义不变；
@@ -1107,20 +1107,20 @@ export async function runDelegatedTask(
   };
 
   // 获取工具定义
-  // 复用 executor-registry.getExecutorOpenAITools() 从合并视图（内置∪动态，S5-1 方向5）构建 OpenAI 工具声明。
+  // 复用 executor-registry.getExecutorOpenAITools() 从合并视图（内置∪动态）构建 OpenAI 工具声明。
   // 视觉识别总开关关闭时从合并视图全集排除视觉类工具 inspect_media（声明层过滤；执行层拦截见
-  // executor-registry.executeToolCall）。动态工具全部纳入本禁用名单机制（A5-4）——首期 requiresVision=true
+  // executor-registry.executeToolCall）。动态工具全部纳入本禁用名单机制——首期 requiresVision=true
   // 被拒绝注册，动态工具均为非视觉，视觉关闭时保留；空动态表时过滤结果与原硬编码
-  // 名单完全一致（S5-1 等价性约束）。
+  // 名单完全一致（等价性约束）。
   const executorTools = getExecutorOpenAITools(
     configManager.getSettings().visionEnabled
       ? undefined
       : getDefaultEnabledExecutorToolNames().filter((name) => name !== 'inspect_media'),
   );
 
-  // v2.0 R1/R5：tool_name 为自由字符串（无枚举）。委派组装期一次性扫描经验库：
+  // tool_name 为自由字符串（无枚举）。委派组装期一次性扫描经验库：
   // 空库（无合法工具）时不注入 use_script_tool；扫描结果同步构建『可适配的工具清单』文本块，
-  // 追加到用户提示词最后面（R5）。executor-registry.ts 保持零改动。
+  // 追加到用户提示词最后面。executor-registry.ts 保持零改动。
   const scriptToolEntries = await scanScriptToolsDir();
   const hasValidScriptTools = scriptToolEntries.some((entry) => entry.ok);
   const scriptToolsInventoryText = buildScriptToolsInventoryBlock(scriptToolEntries);
@@ -1129,10 +1129,10 @@ export async function runDelegatedTask(
   );
 
   // 技能清单注入（技能体系主子分离：清单取代工作方式预注入；执行者经 query_skill 按需获取技能内容）
-  // 统一位置改造：清单块由用户提示词迁至系统提示词尾拼（与主智能体 buildMainSystemPrompt 同形态）
+  // 清单块尾拼在系统提示词（与主智能体 buildMainSystemPrompt 同形态）
   const skillsInventory = buildSkillsInventoryBlock(await buildSkillInventory('executor'));
 
-  // 构建消息（统一位置改造：任务 intro 直接作为首条用户消息；经验库清单块仍尾拼用户消息最后）
+  // 构建消息（任务 intro 直接作为首条用户消息；经验库清单块仍尾拼用户消息最后）
   const plainExecutorPrompt = buildExecutorPlainTextPrompt({
     taskInput: parsedInput,
     completedTasks: options.completedTasks,
@@ -1151,7 +1151,7 @@ export async function runDelegatedTask(
         // 经验库根目录绝对路径注入（8.1 章节文案 {SCRIPTS_TOOLS_DIR} 占位消费点）
         scriptsToolsDirText: SCRIPTS_TOOLS_DIR,
         currentPid: process.pid,
-        skillsInventoryText: skillsInventory,   // ▲ 统一位置改造：清单块迁入系统提示词
+        skillsInventoryText: skillsInventory,   // ▲ 清单块尾拼在系统提示词
       }),
     },
     {
@@ -1176,12 +1176,12 @@ export async function runDelegatedTask(
   };
 
   // ============================================================
-  // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每任务一实例（P3 非常驻）——
+  // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每任务一实例（非常驻）——
   //   tools 传 delegatedExecutorTools 静态数组（L1285-1287 每任务局部构建，天然最新）；
   //   档位传 getter（每次 sendMessage 组装思考参数时实时重读 executorThinkingLevel，
   //   禁止清单⑨——init 注入值仅缺省兜底，与现状 L1069 每轮读取语义一致）；
   //   M14 复位链经 init.hooks.onStreamRetry 承载（重试边界时序不变）；
-  //   协议选择（2026-10-08 用户拍板）：子智能体协议经 AppSettings.executorModelProtocol
+  //   协议选择：子智能体协议经 AppSettings.executorModelProtocol
   //   实时注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定协议
   //   时仅构造并 init 对应适配器，init 失败即抛 ModelApiAbortError（禁止自动降级，用
   //   不了就换一个协议由用户自己换）；未指定时走原探查降级链：先 Responses（探
@@ -1191,7 +1191,7 @@ export async function runDelegatedTask(
   //   主链路委派失败消息化；warnCodingPlanMismatch 基于实际生效协议告警；
   //   实例边界 = runDelegatedTask 一次调用，finally 内 close 释放（§六.1）。
   // ============================================================
-  // stateful 内聚整改（2026-10-07）：宿主侧不再外放 stateful 接线——ResponsesAdapter 内部
+  // stateful 内聚：宿主侧不再外放 stateful 接线——ResponsesAdapter 内部
   //   恒 stateful=true 起步，经首轮 store 回显验证自动判定端点是否支持 ID 续接（支持→缓存
   //   previous_response_id 续接增量；不支持→本实例自动禁用退全量重传防静默丢历史）。
   const adapterInitConfig: AdapterInitConfig = {
@@ -1204,14 +1204,14 @@ export async function runDelegatedTask(
     systemMessage: String(initialMessages[0]?.content ?? ''),
     tools: delegatedExecutorTools as unknown as Array<Record<string, unknown>>,
     hooks: {
-      // ★ M14 重试复位（红线 R7 等价承载）：底层重试边界触发 → recordSession.resetThinkingDraft()
+      // ★ M14 重试复位：底层重试边界触发 → recordSession.resetThinkingDraft()
       onStreamRetry: () => options.onStreamRetry?.(),
     },
   };
   const adapterSetup = await initAdapterWithFallback(adapterInitConfig, configManager.getSettings().executorModelProtocol);
   const adapter = adapterSetup.adapter;
   warnCodingPlanMismatch(adapterSetup.protocol, options.assistantConfig.executorModel.baseUrl);
-  // ★ 阶段四（方案 §5.2）：适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；
+  // ★ 阶段四：适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；
   //   消费侧 L576 职责已移交 adapter.sendMessage 排水——显示视图权威仍在 record 侧）
   if (options.recordSession) {
     options.recordSession.registerAdapterInsertSink((message) => adapter.insertMessage(message));
@@ -1252,7 +1252,7 @@ export async function runDelegatedTask(
       messages: runtimeMessages,
       tools: delegatedExecutorTools,
       signal: options.signal,
-      // S1-3 增量推送：reasoning delta 到达即推送（token 级轮内可见）。
+      // 增量推送：reasoning delta 到达即推送（token 级轮内可见）。
       // 既有两条推送分支语义迁移到流式路径：
       //   - 分支2「reasoning 非空才推」→ delta 到达即推理非空的流式形态，逐 delta 推送 type='thinking'；
       //   - 分支1「reasoning 为空但 content 非空 → content 兜底充当 thinking」→ 已移除：思考流仅推送真实 reasoning，content 不再冒充 thinking。
@@ -1410,7 +1410,7 @@ export async function runDelegatedTask(
 
   // 构建最终结果（循环唯一 break 点即最终输出判定命中处，structuredPayload 必已赋值非空）
 
-  // R5②：本次交付文件路径（源文件 + output 副本）需在临时路径清理前剔除，防止误删交付文件
+  // 本次交付文件路径（源文件 + output 副本）需在临时路径清理前剔除，防止误删交付文件
   const deliveredFilePaths: string[] = [];
 
   try {
@@ -1419,7 +1419,7 @@ export async function runDelegatedTask(
       Object.keys(metadataResultData).length > 0 ? metadataResultData : undefined;
 
     if (structuredPayload.success) {
-      // R5②：先收集原始交付源文件路径（复制成功后 result 字段会被 output 副本路径覆盖）
+      // 先收集原始交付源文件路径（复制成功后 result 字段会被 output 副本路径覆盖）
       deliveredFilePaths.push(...collectSourceDeliveredFilePaths(structuredPayload, deliveryType));
 
       try {
@@ -1429,7 +1429,7 @@ export async function runDelegatedTask(
           context: toolContext as ExecutorRuntimeContext,
           outputDir: options.outputDir,
         });
-        // R5②：再收集复制到 output 后的最终交付路径
+        // 再收集复制到 output 后的最终交付路径
         deliveredFilePaths.push(...collectResultDeliveredFilePaths(resultData, deliveryType));
       } catch (error) {
         const failedResult = buildToolResult({
@@ -1478,7 +1478,7 @@ export async function runDelegatedTask(
     );
   }
   } catch (error) {
-    // ★ API 报错保留现场（方案⑤5.3/⑥#16）：写盘失败（saveExecutionLogOnError 返回
+    // ★ API 报错保留现场：写盘失败（saveExecutionLogOnError 返回
     //   undefined）时不挂载路径，错误原样上抛——失败结果 data 保持空对象，降级安全。
     const executionLogPathOnError = await saveExecutionLogOnError({
       log: executionLog,
@@ -1490,7 +1490,7 @@ export async function runDelegatedTask(
     }
     throw error;
   } finally {
-    // ★ 任务级进程台账收网（方案 D5）：任务收敛统一清理「running 且非挂起」的存活进程；收网自身永不抛错
+    // ★ 任务级进程台账收网：任务收敛统一清理「running 且非挂起」的存活进程；收网自身永不抛错
     await reapTaskJobList(jobList);
   }
 }

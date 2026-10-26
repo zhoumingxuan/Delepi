@@ -1,5 +1,5 @@
 /**
- * 动态工具加载器（方向5 S5-3：工具动态注册机制——新增工具免改代码）
+ * 动态工具加载器（工具动态注册机制——新增工具免改代码）
  *
  * 载体：app.getPath('userData')/dyn-tools/<tool_name>/{manifest.json, main.py}
  * 执行协议：临时文件 input.json 传参（规避命令行长度与转义；executor-registry.parseToolArguments
@@ -8,7 +8,7 @@
  *   → stdout 末行非空 JSON 解析映射 ToolResult{success,code,message,data?}
  * 超时：默认 DEFAULT_TIMEOUT_SECONDS=180 秒，manifest.timeoutSeconds 可覆盖（上限 3600）。
  * 加载：启动扫描（ipc-handlers.registerIpcHandlers 开头 fire-and-forget，失败告警不阻塞）
- *   + tools:dyn-reload IPC 手动重载（S5-4 四层通道）。
+ *   + tools:dyn-reload IPC 手动重载（四层通道）。
  * 内置4工具锁定：动态重名内置由 executor-registry.registerExecutorTool 拒绝。
  */
 
@@ -42,7 +42,7 @@ export interface DynToolManifest {
   /** 展示名（进度名三级回退第二级） */
   displayName: string;
   /**
-   * 动态工具描述：直接取 manifest.description 字符串（A5-3：内置工具保留求值后字符串，
+   * 动态工具描述：直接取 manifest.description 字符串（内置工具保留求值后字符串，
    * 两形态在合并视图统一为字符串）。
    * P-5（保守方案）：子智能体系统提示词中按工具名硬编码的约束条款保持不泛化，
    * 动态工具的行为约束通过 manifest.description 自身承担。【待用户定稿：P-5泛化决策】
@@ -493,7 +493,7 @@ export type DynToolsLoadResult = {
   warnings: string[];
 };
 
-/** 扫描并注册全部动态工具；单个失败仅告警不阻塞（A5-2 启动扫描语义） */
+/** 扫描并注册全部动态工具；单个失败仅告警不阻塞（启动扫描语义） */
 export async function loadDynamicTools(): Promise<DynToolsLoadResult> {
   const result: DynToolsLoadResult = { registered: [], failed: [], warnings: [] };
 

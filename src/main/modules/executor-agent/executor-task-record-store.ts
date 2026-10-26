@@ -1,5 +1,5 @@
 /**
- * 执行子智能体任务内存记录存储（新版设计方案 M1 / §3.2 / §7.2）
+ * 执行子智能体任务内存记录存储
  *
  * 双视图共享存储：
  * - modelMessages（真实内容视图）：executor 循环唯一 push 目标，与给大模型的上下文
@@ -56,8 +56,8 @@ import type {
 export type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 // ============================================================
-// 显示视图构造常量（上限，§4.2 脱敏格式化规则）
-// 2026-09-04 四点修复 Q1/Q2：思考文本 / 工具参数 / 工具结果预览均存净化后全文，
+// 显示视图构造常量（上限，脱敏格式化规则）
+// 思考文本 / 工具参数 / 工具结果预览均存净化后全文，
 // 显示层字数截断机制（truncateDisplay + 3 个阈值常量 + 尾标）已整体移除（零死代码）。
 // ============================================================
 
@@ -98,7 +98,7 @@ function buildResultPreview(message: string): string {
 /**
  * 工具条目显示名解析（查询出口 buildIncrementalEntries 统一附加）：
  * - 非 use_script_tool 条目：维持既有三级回退映射（内置 EXECUTOR_TOOL_PROGRESS_NAMES[toolName] ?? toolName；
- *   动态工具 manifest.progressName→displayName→name），行为与改造前完全一致；
+ *   动态工具 manifest.progressName→displayName→name），行为完全一致；
  * - use_script_tool 条目：按条目参数 action 两分支动态化——action='查看协议' → `查询 {tool_name} 工具协议`；
  *   action='调用' → `调用 {tool_name} 工具`；参数数据缺失 / action 不属于两者 / tool_name 缺失或纯空白 /
  *   argsPreview 非合法 JSON 对象 → 一律回退内置映射兜底值（use_script_tool→'经验工具库调用'，映射本身不改）。
@@ -197,7 +197,7 @@ export interface ExecutorTaskRecordSession {
    *  queue-full 拒收；records 新增 state=queued 条目（净化文本）+ pendingUserMessages 入队
    *  （原文，真实视图零加工）+ emitSignal(true) 立即信号；返回受理结果） */
   enqueueUserMessage(text: string): ExecutorTaskMessageSendResult;
-  /** ★ 阶段四（方案 §5.2）：注册适配器 insert 双写通道（模型上下文注入源；显示视图权威仍在 record 侧） */
+  /** ★ 阶段四：注册适配器 insert 双写通道（模型上下文注入源；显示视图权威仍在 record 侧） */
   registerAdapterInsertSink(
     sink: (message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number },
   ): void;
@@ -249,7 +249,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   /** ★ 任务级交互消息排队队列（真实视图原文，FIFO；安全点消费入口：executor-agent 循环
    *  SP1/SP2 调用 consumePendingUserMessages） */
   private pendingUserMessages: Array<{ seq: number; text: string }> = [];
-  /** ★ 阶段四（方案 §5.2）：适配器 insert 双写通道（runDelegatedTask 注册；模型上下文注入源） */
+  /** ★ 阶段四：适配器 insert 双写通道（runDelegatedTask 注册；模型上下文注入源） */
   private adapterInsertSink: ((message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number }) | null = null;
   /** 200ms leading+trailing 节流状态 */
   private lastSignalEmitAt = 0;
@@ -492,7 +492,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       this.draftRawText = '';
       this.mutatedSeqs.add(draft.seq);   // 同 seq 状态转移：登记供增量查询补发
     }
-    // running 工具条目处置（§8.1）：终态未收口的工具条目 → failed + 备注
+    // running 工具条目处置：终态未收口的工具条目 → failed + 备注
     const finishedAt = nowIso();
     for (const record of this.records) {
       if (record.kind === 'tool' && record.status === 'running') {
@@ -505,7 +505,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       }
     }
     // ★ 上下文压缩进行中条目终态清扫（单条目状态机兜底）：终态时仍处 in-progress 的压缩条目 → failed
-    //   收敛（aborted=用户取消；completed/failed=任务结束未完成）——统一覆盖 T7 中止丢弃、D8 抑制轮
+    //   收敛（aborted=用户取消；completed/failed=任务结束未完成）——统一覆盖中止丢弃、抑制轮
     //   悬挂、freezeForStop 冻结窗口残余（冻结后写 API no-op，markTerminal 为唯一合法收敛口），杜绝永久悬挂。
     for (const record of this.records) {
       if (record.kind === 'notice' && record.type === 'context-compression' && record.status === 'in-progress') {
@@ -573,10 +573,10 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     if (this.stopRequested || this.terminal) {
       return; // 与 appendStopNotice 同构冻结守卫（stopExecutorTask 时序下天然防迟到写入）
     }
-    // 单条目状态机（2026-10-11“先过程后结果”）：最新压缩条目仍处 in-progress（悬挂——本次压缩
-    //   正在进行，或上一轮失败被 D8 抑制未收敛、等待下一轮重试复用）→ 任意载荷一律同 seq 原位
+    // 单条目状态机（“先过程后结果”）：最新压缩条目仍处 in-progress（悬挂——本次压缩
+    //   正在进行，或上一轮失败被抑制未收敛、等待下一轮重试复用）→ 任意载荷一律同 seq 原位
     //   更新（mutatedSeqs 登记，前端按 seq 覆盖合并），本压缩事件绝不二次 append；无悬挂 →
-    //   按既有行为新增条目（进行中开槽 / 直发终态的兼容路径，行为与改造前一致）。
+    //   按既有行为新增条目（进行中开槽 / 直发终态的兼容路径，行为一致）。
     const target = this.findHangingContextCompression();
     if (target) {
       target.status = payload.status;
@@ -638,7 +638,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       createdAt: nowIso(),
     });
     this.pendingUserMessages.push({ seq, text });   // 真实视图：原文零加工
-    // ★ 阶段四（方案 §5.2 双写）：适配器队列同步双写（模型上下文注入源）——与显示记录
+    // ★ 阶段四（双写）：适配器队列同步双写（模型上下文注入源）——与显示记录
     //   同一次同步调用栈内完成（无时序窗口）；content 为包装后形态（与原 L576 push 形态
     //   逐字节一致：buildExecutorUserTaskMessage(item.text)，纯函数入队时求值等价）；
     //   适配器自带同构守卫（terminal/stop-requested/queue-full/invalid），双拒收一致时行为等价
@@ -651,8 +651,8 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   /**
-   * ★ 阶段四（方案 §5.2）：注册适配器 insert 通道（runDelegatedTask 创建适配器实例后注册）。
-   * record 队列保留为显示视图权威；适配器队列成为模型上下文注入源（P9 包装不替换）。
+   * ★ 阶段四：注册适配器 insert 通道（runDelegatedTask 创建适配器实例后注册）。
+   * record 队列保留为显示视图权威；适配器队列成为模型上下文注入源（包装不替换）。
    */
   registerAdapterInsertSink(
     sink: (message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number },
@@ -667,10 +667,10 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     let consumed = 0;
     while (this.pendingUserMessages.length > 0) {
       const item = this.pendingUserMessages.shift()!;
-      // ★ 阶段四（方案 §5.2 L576 单行职责移交）：modelMessages.push 单行移交适配器——
+      // ★ 阶段四（单行职责移交）：modelMessages.push 单行移交适配器——
       //   adapter.sendMessage 在构建协议请求体之前、同步（无 await）排空适配器队列，
       //   FIFO 追加宿主同引用数组（modelMessages，领养语义 executor-agent.ts L1322-1327 不变）
-      //   尾部。三项硬等价（§5.3）：注入时点=同一安全点紧随的 sendMessage 内部；注入序位=
+      //   尾部。三项硬等价：注入时点=同一安全点紧随的 sendMessage 内部；注入序位=
       //   同数组同尾部；无 await=排水纯同步（shift+push）。唯一差异=数组写入者从 record store
       //   换成适配器（数组与内容不变）。
       //   显示状态转移（queued→delivered）与 mutatedSeqs 登记保留（显示视图权威在 record 侧）。

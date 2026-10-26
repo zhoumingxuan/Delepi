@@ -1,6 +1,6 @@
 /**
- * 主智能体内置技能模板注册表（2026-10-26 技能载体彻底分离：主智能体专属载体）
- * 载体内涵：主智能体三项技能（交互设计/思路设计/问题解答）的模板 id、kind、标题、描述与正文相对路径。
+ * 主智能体内置技能模板注册表（主智能体专属载体）
+ * 载体内涵：主智能体四项技能（交互设计/思路设计/问题解答/推理分析）的模板 id、kind、标题、描述与正文相对路径。
  * 与执行者载体 executor-agent/executor-workflow-templates.ts 零交叉：执行者侧只承载九项执行者技能。
  * 主技能正文目录：MAIN_AGENT_SKILLS_DIR（生产 resources/main-skills；开发 项目根 main-skills）。
  */
@@ -9,7 +9,8 @@ import { BUILTIN_MAIN_TASK_TAGS } from '../../constants';
 export type MainAgentWorkflowTemplateId =
   | 'interaction_design'
   | 'approach_design'
-  | 'question_answering';
+  | 'question_answering'
+  | 'reasoning_analysis';
 
 export type MainAgentWorkflowTemplateKind = 'specific';
 
@@ -46,6 +47,13 @@ export const MAIN_AGENT_WORKFLOW_TEMPLATES: Record<
     description: '用于用户最新意图属于提问类型、需要先取得权威结论再据以作答的任务。',
     fileName: 'question-answering/question-answering.md',
   },
+  reasoning_analysis: {
+    id: 'reasoning_analysis',
+    kind: 'specific',
+    title: '推理分析',
+    description: '用于待证结论已经提出、支撑该结论的事实与推导尚未逐条核验，需要补齐推导链并检索反例后判定其成立性的分析类任务。',
+    fileName: 'reasoning-analysis/reasoning-analysis.md',
+  },
 };
 
 /** 主智能体任务标签 → 主模板 id（键类型直取 BUILTIN_MAIN_TASK_TAGS，标签归属变更时编译期强制同步） */
@@ -56,4 +64,5 @@ export const MAIN_TASK_TAG_WORKFLOW_TEMPLATE_ID: Record<
   交互设计: 'interaction_design',
   思路设计: 'approach_design',
   问题解答: 'question_answering',
+  推理分析: 'reasoning_analysis',
 };

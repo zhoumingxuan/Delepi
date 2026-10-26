@@ -13,7 +13,7 @@ import { SCRIPTS_TOOLS_DIR_NAME } from './paths';
 // 工作流模板
 // ============================================================
 
-/** 自定义技能标签数量上限（不含内置12项：主智能体3项＋执行子智能体9项） */
+/** 自定义技能标签数量上限（不含内置13项：主智能体4项＋执行子智能体9项） */
 export const CUSTOM_TASK_TAG_LIMIT = 16;
 
 /** 单个自定义模板最大字符数（与内置最大模板同量级，防上下文 token 膨胀） */
@@ -25,7 +25,7 @@ export const EXECUTOR_WORKER_SKILLS_DIR = path.join(
   'skills',
 );
 
-/** 主智能体技能目录（生产：打包 resources/main-skills；开发：项目根 main-skills；仅承载主智能体三项技能） */
+/** 主智能体技能目录（生产：打包 resources/main-skills；开发：项目根 main-skills；仅承载主智能体四项技能） */
 export const MAIN_AGENT_SKILLS_DIR = path.join(
   app.isPackaged ? process.resourcesPath : process.cwd(),
   'main-skills',
@@ -39,7 +39,7 @@ export const SCRIPTS_TOOLS_DIR = path.join(
   SCRIPTS_TOOLS_DIR_NAME,
 );
 
-/** 经验工具库目录数量上限（超出时扫描期自动剔除创建时间最旧的工具，R2） */
+/** 经验工具库目录数量上限（超出时扫描期自动剔除创建时间最旧的工具） */
 export const MAX_SCRIPT_TOOLS = 32;
 
 /** 工具进度名称映射 */
@@ -57,10 +57,10 @@ export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
 };
 
 /**
- * 工具进度名解析（S5-4 方向5：函数式查找——内置映射 + 动态工具三级回退）。
+ * 工具进度名解析（函数式查找——内置映射 + 动态工具三级回退）。
  * 内置工具（dynamicToolMeta 为 null/undefined）：EXECUTOR_TOOL_PROGRESS_NAMES[toolName] ?? toolName，
- *   与改造前直查映射行为逐字节一致（S5-1 等价性约束）。
- * 动态工具三级回退：manifest.progressName → displayName → 工具 name（A5-3；displayName 为 manifest
+ *   与直查映射行为逐字节一致（等价性约束）。
+ * 动态工具三级回退：manifest.progressName → displayName → 工具 name（displayName 为 manifest
  *   必填项保证回退链终点非空）。
  */
 export function resolveExecutorToolProgressDisplayName(
@@ -123,8 +123,8 @@ export const DELIVERY_TYPE_PLAN = '方案';
 /** 详细规划交付类型 */
 export const DELIVERY_TYPE_PLAN_BOOK = '详细规划';
 
-/** 研究报告交付类型 */
-export const DELIVERY_TYPE_RESEARCH_REPORT = '研究报告';
+/** 报告交付类型 */
+export const DELIVERY_TYPE_RESEARCH_REPORT = '报告';
 
 /** 测试用例交付类型 */
 export const DELIVERY_TYPE_TEST_CASE = '测试用例';
@@ -165,7 +165,7 @@ export const TASK_TYPE_VALUES = [
 ] as const;
 export type TaskType = (typeof TASK_TYPE_VALUES)[number];
 
-/** 内置技能标签（主智能体3项＋执行子智能体9项，只读锁定：一字不动、不可删除；内置模板映射不可被自定义覆盖） */
+/** 内置技能标签（主智能体4项＋执行子智能体9项，只读锁定：一字不动、不可删除；内置模板映射不可被自定义覆盖） */
 export const BUILTIN_TASK_TAGS = [
   '问题诊断',
   '方案设计',
@@ -179,11 +179,12 @@ export const BUILTIN_TASK_TAGS = [
   '交互设计',
   '思路设计',
   '问题解答',
+  '推理分析',
 ] as const;
 export type TaskTag = (typeof BUILTIN_TASK_TAGS)[number];
 
-/** 内置技能归属分组（用户 2026-10-25 明定，非开放要求：禁止调整划分或引入第三类归属；owner 仅存在于代码常量与自定义元数据，不落入模板/yaml 数据文件） */
-export const BUILTIN_MAIN_TASK_TAGS = ['交互设计', '思路设计', '问题解答'] as const;
+/** 内置技能归属分组（非开放要求：禁止调整划分或引入第三类归属；owner 仅存在于代码常量与自定义元数据，不落入模板/yaml 数据文件） */
+export const BUILTIN_MAIN_TASK_TAGS = ['交互设计', '思路设计', '问题解答', '推理分析'] as const;
 export const BUILTIN_EXECUTOR_TASK_TAGS = [
   '问题诊断',
   '自动化交互',
@@ -199,7 +200,7 @@ export const BUILTIN_EXECUTOR_TASK_TAGS = [
 /** 归属类型（主/子二值；shared/types/config.ts 中 CustomSkillTag.owner 复用同名语义） */
 export type SkillOwnerScope = 'main' | 'executor';
 
-/** 运行时链使用的宽化标签名（内置∪自定义）；内置 TaskTag 联合类型保留用于内置模板映射 Record 的类型级锁定（D2R3） */
+/** 运行时链使用的宽化标签名（内置∪自定义）；内置 TaskTag 联合类型保留用于内置模板映射 Record 的类型级锁定 */
 export type TaskTagName = string;
 
 /** 兼容别名（既有导出消费兼容；语义=内置只读标签集合） */
@@ -208,7 +209,7 @@ export const TASK_TAGS = BUILTIN_TASK_TAGS;
 /** 执行子智能体交付类型 */
 export const EXECUTOR_DELIVERY_TYPES = [
   '线索集合',
-  '研究报告',
+  '报告',
   '权威结论',
   '方案',
   '详细规划',
@@ -219,7 +220,7 @@ export const EXECUTOR_DELIVERY_TYPES = [
 export type ExecutorDeliveryType = (typeof EXECUTOR_DELIVERY_TYPES)[number];
 
 
-/** 内置任务标签集合（O(1) 查找；只读锁定=内置12项，用于自定义重名校验；放行集合统一走 getAllTaskTags 合并层） */
+/** 内置任务标签集合（O(1) 查找；只读锁定=内置13项，用于自定义重名校验；放行集合统一走 getAllTaskTags 合并层） */
 export const TASK_TAG_SET: ReadonlySet<string> = new Set<string>(BUILTIN_TASK_TAGS);
 
 /**

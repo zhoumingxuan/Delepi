@@ -6,10 +6,10 @@
  * - 分支二【调用】七步：根目录检查 → 定位工具目录（目录名精确等值）→ 读校验协议 → 校验 params string →
  *   将 params string（CLI/argparse 风格，--key value）直接作为启动命令 CLI 参数携带（不再落地 input.json、不再 --input 传参）
  *   → spawn python main.py（cwd=工具目录；PYTHONUTF8=1；
- *   SCRIPT_TOOL_WORK_DIR=会话工作目录，D14；超时=调用参数 timeout 显式传入时优先、否则按协议 timeout_seconds；
+ *   SCRIPT_TOOL_WORK_DIR=会话工作目录；超时=调用参数 timeout 显式传入时优先、否则按协议 timeout_seconds；
  *   timeout=-1=挂起类型调用：只启动进程，不等待/不采集输出/不超时终止）→ stdout 完整透传至 data、stderr 完整透传至 message（超 16K 截断并附提示后缀），success=进程退出码===0。
  *
- * 遵循 dyn-tool-loader.ts L228-230 “只读参照，不 import 不依赖”哲学（D6）：
+ * 遵循 dyn-tool-loader.ts L228-230 “只读参照，不 import 不依赖”哲学：
  * 执行内核独立参照实现，不 import dyn-tool-loader 内部函数。
  */
 
@@ -40,7 +40,7 @@ function fail(code: string, message: string): ToolResult {
   return buildToolResult({ success: false, code, message });
 }
 
-/** V1/C1：根目录存在性检查 + 兜底重建一次（R2 启动创建失败的补偿；重建失败才报 DIR_MISSING） */
+/** V1/C1：根目录存在性检查 + 兜底重建一次（启动创建失败的补偿；重建失败才报 DIR_MISSING） */
 function ensureScriptToolsRootDir(): { ok: true } | { ok: false; error: string } {
   if (existsSync(SCRIPTS_TOOLS_DIR)) {
     return { ok: true };
@@ -213,7 +213,7 @@ async function executeScriptToolView(toolName: string | undefined): Promise<Tool
     }。`;
   }
 
-  // 超限兜底提示（R2：扫描期自动剔除已在协议层收口，本分支为删除未完全成功时的不可达兜底；不硬阻断，存量工具仍可调用）
+  // 超限兜底提示（扫描期自动剔除已在协议层收口，本分支为删除未完全成功时的不可达兜底；不硬阻断，存量工具仍可调用）
   if (validEntries.length > MAX_SCRIPT_TOOLS) {
     data.warning =
       `SCRIPT_TOOL_DIR_LIMIT：合法工具数 ${validEntries.length} 超过 MAX_SCRIPT_TOOLS=${MAX_SCRIPT_TOOLS}（扫描期自动剔除未完全成功，存量工具仍可调用）；` +
@@ -384,7 +384,7 @@ function resolveScriptToolPythonCommand(): PythonCommand {
     : { command: 'python3', prefixArgs: [] };
 }
 
-/** 环境约定（5.3）：UTF-8 强制 + SCRIPT_TOOL_WORK_DIR 产物落点（D14；未注入会话目录时=系统临时目录） */
+/** 环境约定（5.3）：UTF-8 强制 + SCRIPT_TOOL_WORK_DIR 产物落点（未注入会话目录时=系统临时目录） */
 function buildScriptToolEnv(runDir: string | undefined): NodeJS.ProcessEnv {
   // Node.js child_process spread required: 子进程需要继承 PATH 等环境变量定位解释器
   return {

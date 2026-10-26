@@ -154,8 +154,8 @@ textarea {
   background: transparent !important;
 }
 
-/* ─── P07: content-visibility 静态兜底——历史消息气泡离屏跳过渲染 ───
- * 定位链（2026-08-24 实读 BubbleList.js/Bubble.js/use-x-provider-context.js）：
+/* ─── content-visibility 静态兜底——历史消息气泡离屏跳过渲染 ───
+ * 定位链（实读 BubbleList.js/Bubble.js/use-x-provider-context.js）：
  *   Bubble.List 根 > .{prefixCls}-list-scroll-box > .{prefixCls}-list-scroll-content > 每消息 Bubble 根(.{prefixCls})
  *   prefixCls 由 antd ConfigProvider 决定（defaultPrefixCls='ant'，App.tsx 未自定义 prefixCls）
  *   → 实际类名 .ant-bubble-list-scroll-content；直接子元素即每条消息气泡根节点。

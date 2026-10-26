@@ -9,8 +9,8 @@
  * 守卫对齐 executor-task-record-store.ts L546-554 既有三拒收（terminal / stop-requested /
  * queue-full，上限对齐 L68 EXECUTOR_TASK_MESSAGE_MAX_PENDING）+ 前置 invalid。
  *
- * 设计原则：P3 非常驻实例（实例即配置快照 + 排队边界 + 会话边界；禁止二次 init；close 幂等）；
- * P7 live-binding 禁快照（tools 双形态 Array | getter，每次 sendMessage resolve）。
+ * 设计原则：非常驻实例（实例即配置快照 + 排队边界 + 会话边界；禁止二次 init；close 幂等）；
+ * live-binding 禁快照（tools 双形态 Array | getter，每次 sendMessage resolve）。
  */
 
 // ============================================================
@@ -27,19 +27,19 @@ export interface AdapterApiConfig {
 /** 思考程度设置（对齐现状档位通道：main-agent.ts L702 / executor-agent.ts L1069；
  *  每轮实时读取 AppSettings.mainThinkingLevel / executorThinkingLevel；空串=不设置，
  *  现状语义：buildThinkingParams 对空串彻底不写 reasoning_effort 键（openai-client.ts L174-181）。
- *  含 'xhigh'：覆盖 shared ModelProfile 档位全集（CC 侧原样透传；Responses 侧 2026-10-07 起
- *  同为原样透传零收敛——vllm 原生含 xhigh/minimal 枚举，收敛分支已删除；空串不发 reasoning 参数，
+ *  含 'xhigh'：覆盖 shared ModelProfile 档位全集（CC 侧原样透传；Responses 侧
+ *  同为原样透传零收敛——vllm 原生含 xhigh/minimal 枚举；空串不发 reasoning 参数，
  *  服务端默认开 thinking）。 */
 export type AdapterThinkingLevel = '' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
-/** 单个流式 chunk（融合签名：A3 {type,delta,cumulative} + A4 end 枚举语义无损融合）：
+/** 单个流式 chunk（融合签名：{type,delta,cumulative} + end 枚举语义无损融合）：
  *  - delta = 本次增量文本，"有值传没值空"（纯终结信号回调时 delta=''）
  *  - cumulative = 截至本次的本轮累计文本（M13 重试复位全量覆盖通道的载体，
  *    对齐现状 StreamChunk L85-100 双粒度）
  *  - end = 可选瞬时流控制标志（S1/S2=end:'segment'；S3=end:'message'；缺省即纯增量）
  *  - finishReason = 可选终结原因视图（仅 finish 时刻的 chunk 携带；CC 侧为现状
  *    finish_reason 的等价透传通道——G5 实测 finish chunk 独立且 delta.content 空串，
- *    P3-7 修复的 finishReason 变化触发回调依赖该字段等价保持（§三.2.2 逐字段等价）；
+ *    finishReason 变化触发回调依赖该字段等价保持（§三.2.2 逐字段等价）；
  *    Responses 侧由终结事件推导（stop→completed 等）；普通增量 chunk 不携带） */
 export interface AdapterChunk {
   type: 'content' | 'reasoning'; // 增量归类仅两类（契约承诺 R1；summary 归入 reasoning）
@@ -106,19 +106,19 @@ export interface AdapterTurnResult {
 /** init 注入配置 */
 export interface AdapterInitConfig {
   api: AdapterApiConfig;
-  /** 档位双形态（对齐 tools 双形态，P7 live-binding 同源纪律）：
+  /** 档位双形态（对齐 tools 双形态，live-binding 同源纪律）：
    *  - string：静态档位（缺省兜底语义）
    *  - () => string：惰性 getter（宿主传 () => configManager.getSettings().xxxThinkingLevel，
    *    每次 sendMessage 组装思考参数时实时 resolve——与现状每轮读取档位语义完全一致，
    *    禁 init 快照缓存，禁止清单⑨） */
   thinkingLevel: AdapterThinkingLevel | (() => AdapterThinkingLevel);
   systemMessage: string;
-  /** 实例级工具定义，双形态（live-binding 修正，P7 禁快照）：
+  /** 实例级工具定义，双形态（live-binding 禁快照）：
    *  - Array：静态数组（executor 每任务局部构建的 delegatedExecutorTools，executor-agent.ts L1285-1287）
    *  - () => Array：惰性 getter（主智能体 MAIN_TOOLS live-binding；每次 sendMessage 时 resolve，
    *    与现状 main-agent.ts L700 每请求读取 live-binding 语义一致，禁快照） */
   tools?: Array<Record<string, unknown>> | (() => Array<Record<string, unknown>>);
-  /** 可选横切回调（非第八成员）：重试复位协议（红线 R7）的承载通道 */
+  /** 可选横切回调（非第八成员）：重试复位协议的承载通道 */
   hooks?: { onStreamRetry?: () => void };
 }
 
@@ -286,7 +286,7 @@ export abstract class ProtocolAdapter {
     return typeof this.thinkingLevel === 'function' ? this.thinkingLevel() : this.thinkingLevel;
   }
 
-  /** tools 双形态 resolve（每次调用求值；禁跨 sendMessage 缓存——P7 live-binding） */
+  /** tools 双形态 resolve（每次调用求值；禁跨 sendMessage 缓存——live-binding） */
   protected resolveTools(): Array<Record<string, unknown>> | undefined {
     if (this.toolsInput === undefined) {
       return undefined;

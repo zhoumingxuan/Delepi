@@ -1,7 +1,7 @@
 /**
  * useFileUpload Hook —— 「粘贴即落盘、无中间态」直通模型
  *
- * 核心理念（2026-09-04 上传链路整体重构）：剪贴板粘贴 = 一次本地文件复制粘贴
+ * 核心理念：剪贴板粘贴 = 一次本地文件复制粘贴
  * （剪贴板 → 读取 → Base64 → IPC → 本地落盘 → 附件就绪）。
  *
  * - 状态机三态：saving（读取+Base64+IPC+主进程写盘的物理异步窗口）/ ready（落盘完成，
@@ -222,7 +222,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
         const msg = err instanceof Error ? err.message : String(err);
         // eslint-disable-next-line no-console
         console.error('[useFileUpload] save failed:', msg);
-        // R3：渲染端失败转发主进程持久日志（ERROR 级含 err.message/stack），打包版亦可查
+        // 渲染端失败转发主进程持久日志（ERROR 级含 err.message/stack），打包版亦可查
         try {
           window.electronAPI?.log
             ?.write({
@@ -340,7 +340,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
         });
       }
 
-      // 预筛拒绝 toast（升级用户可见反馈——修复现状仅 console.warn 的 R3 盲区）
+      // 预筛拒绝 toast（升级用户可见反馈——修复现状仅 console.warn 的盲区）
       if (duplicateSkipped > 0 || limitSkipped > 0) {
         const skippedTotal = duplicateSkipped + limitSkipped;
         const reasons: string[] = [];

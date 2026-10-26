@@ -1,5 +1,5 @@
 /**
- * 技能内容查询工具（query_skill，2026-10-25 技能体系主子分离改造）
+ * 技能内容查询工具（query_skill）
  * 双端共用执行体：owner 由注册侧固定（executor=执行子智能体 / main=主智能体）。
  */
 import { type ToolRuntimeContext } from './runtime-context';

@@ -84,10 +84,10 @@ export function setExecutionLogStructuredOutput(
 }
 
 /**
- * S1 附加（方向1流式化日志粒度声明）：
+ * 附加（流式化日志粒度声明）：
  * 执行日志按「任务级最终态」记录——toolCalls 状态机（calling→completed/failed）、
  * finalStructuredOutput、finalResult、errors 均为任务收口时一次性写入
- * （attachExecutionLogPathToResult 唯一出口）；thinking 流式增量推送（S1-3）
+ * （attachExecutionLogPathToResult 唯一出口）；thinking 流式增量推送
  * 不进入本日志、不逐 delta 刷写——思考增量的持久化由 main-agent 侧
  * snapshot.json（thinking 字段随 sendToolSnapshot 覆盖式全量写入）承担。
  */
@@ -110,7 +110,7 @@ async function writeExecutorExecutionLog(
 }
 
 /**
- * ★ API 报错保留现场（方案⑤5.3/⑥#17）：throw 路径复用唯一写盘点生成 executor_messages.json。
+ * ★ API 报错保留现场：throw 路径复用唯一写盘点生成 executor_messages.json。
  * errors 追加错误信息后经 writeExecutorExecutionLog 写盘（与成功路径同目录同文件名），
  * 返回绝对路径；写盘失败（内部 catch 返回 undefined）时返回 undefined——调用方据此不挂载
  * 路径，错误原样上抛，失败结果 data 保持空对象（降级安全）。

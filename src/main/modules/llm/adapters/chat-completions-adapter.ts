@@ -1,7 +1,7 @@
 /**
  * ChatCompletionsAdapter - CC（Chat Completions）零变化包装适配器
  *
- * P1 零变化包装原则：只做参数搬运与回调分发，全部协议行为（请求体构造
+ * 零变化包装原则：只做参数搬运与回调分发，全部协议行为（请求体构造
  * openai-client.ts L233-244 流式 / L442-454 非流式、SSE 解析 L257-383、
  * 重试 L424-428）委托现状 streamChat——openai-client.ts 一行不改，
  * "message 原封回传逻辑放在 CC 适配器里面"的入向/出向双层原封落位（§三.2.3）：
@@ -11,16 +11,16 @@
  *    AdapterTurnResult.assistantMessage / AdapterFinished.assistantMessage 原样透出。
  *
  * onChunk 拆分（§三.2.2）：现状混合载荷回调（触发条件 changed||finishReasonChanged，
- * P3-7 修复含 finishReason 变化，L353-381）拆分为 reasoning/content 两类 AdapterChunk
- * + S1/S2/S3 段终结信号（§三.2.5 映射表）；reasoning 类与现状 onThinking 同源同频
+ * 含 finishReason 变化，L353-381）拆分为 reasoning/content 两类 AdapterChunk
+ * + 段终结信号（§三.2.5 映射表）；reasoning 类与现状 onThinking 同源同频
  * （仅 reasoningDelta 非空触发，L375-377——契约"有值传没值空"）。
  * 拆分顺序保持现状回调时序（onChunk 先于 onThinking，L364-377）：content 类先于
  * reasoning 类发出，保证宿主 F4 切段（forceNewReasoningSegment 标记先置、思考后到新开段）
  * 的段结构语义与现状一致。
  *
- * finishReason 等价保持（决策 D3）：收到 finish_reason 非 null 的 chunk 时发出
- * S3 回调 {type:<末段>, delta:'', cumulative, end:'message', finishReason}——G5 实测
- * finish_reason 位于独立 chunk 且 delta.content=空串，S3 空增量回调与现状 finishReason
+ * finishReason 等价保持：收到 finish_reason 非 null 的 chunk 时发出
+ * 回调 {type:<末段>, delta:'', cumulative, end:'message', finishReason}——G5 实测
+ * finish_reason 位于独立 chunk 且 delta.content=空串，空增量回调与现状 finishReason
  * 变化触发的空增量回调逐字段等价（含 finishReason 字段透传，IPC chat:chunk.finishReason
  * 通道依赖该字段逐层传递，A-04 断言 2）；"end:'message' 不得并入末增量回调"
  * （G5 实测 S3 触发 chunk 与末增量 chunk 天然分离）。
@@ -46,9 +46,9 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
   // ---- 拆分状态机（每轮 sendMessage 复位；C-1 事件式语义：不假设恰一次切换） ----
   /** 当前活动段类型（最后一次发出增量的段；初始无段） */
   private currentSegment: 'reasoning' | 'content' | null = null;
-  /** S3 挂靠末段（R4：该 message 中最后出现的段类型；纯 tool_calls 轮挂靠 content） */
+  /** 挂靠末段（该 message 中最后出现的段类型；纯 tool_calls 轮挂靠 content） */
   private lastSegmentType: 'content' | 'reasoning' = 'content';
-  /** tool_calls 是否已出现（S2 仅首次切换触发） */
+  /** tool_calls 是否已出现（仅首次切换触发） */
   private toolCallsStarted = false;
 
   constructor() {
@@ -109,7 +109,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
     this.lastSegmentType = 'content';
     this.toolCallsStarted = false;
 
-    // 排水：构建请求体之前、同步（无 await）排空 insert 队列（§5.4 硬约束）
+    // 排水：构建请求体之前、同步（无 await）排空 insert 队列（硬约束）
     this.drainPendingMessages(messages);
 
     const emit = (chunk: AdapterChunk): void => {
@@ -133,12 +133,12 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
       const finishReasonChanged = chunk.finishReason !== null && chunk.finishReason !== undefined;
       const hasToolCalls = Array.isArray(chunk.toolCalls) && chunk.toolCalls.length > 0;
 
-      // S1：R→C 切换点（delta 首次带 content 且此前为 reasoning 段）——先发段终结
+      // R→C 切换点（delta 首次带 content 且此前为 reasoning 段）——先发段终结
       if (hasContentDelta && this.currentSegment === 'reasoning' && chunk.reasoning) {
         emit({ type: 'reasoning', delta: '', cumulative: chunk.reasoning, end: 'segment' });
       }
-      // S2：C→tool 切换点（delta 首次带 tool_calls 且此前为 content 段）——先发段终结
-      //   （toolCallsStarted 首次到达即置位：S2 仅在 content 段已开启时发出一次）
+      // C→tool 切换点（delta 首次带 tool_calls 且此前为 content 段）——先发段终结
+      //   （toolCallsStarted 首次到达即置位：仅在 content 段已开启时发出一次）
       if (hasToolCalls && !this.toolCallsStarted) {
         if (this.currentSegment === 'content' && chunk.content) {
           emit({ type: 'content', delta: '', cumulative: chunk.content, end: 'segment' });
@@ -146,7 +146,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
         this.toolCallsStarted = true;
       }
 
-      // content 类：★现状每次回调必发（混合载荷 onChunk 半边的等价承载——P3-7 触发条件
+      // content 类：★现状每次回调必发（混合载荷 onChunk 半边的等价承载——触发条件
       // changed||finishReasonChanged 下，reasoning 帧 / tool_calls 帧 / finish 帧均产生
       // 一次 delta='' 或增量的 chunk 回调，G-CC-01/03/08/09 时间线依赖逐条一致）
       emit({
@@ -172,9 +172,9 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
         this.lastSegmentType = 'reasoning';
       }
 
-      // S3：finish_reason 非 null 的 chunk → 附加契约信号 end:'message'（R4 挂靠末段；
+      // finish_reason 非 null 的 chunk → 附加契约信号 end:'message'（挂靠末段；
       // 纯 tool_calls 轮挂靠 content 空串；不并入末增量回调——同帧 content 类已承载
-      // 现状 finish 回调等价（delta=''+finishReason 透传），S3 为可选消费信号）
+      // 现状 finish 回调等价（delta=''+finishReason 透传），为可选消费信号）
       if (finishReasonChanged) {
         const s3Type = this.lastSegmentType;
         const s3Cumulative = s3Type === 'reasoning' ? chunk.reasoning : chunk.content;
@@ -207,7 +207,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
         || (error instanceof Error && error.message === 'ABORTED')) {
         throw error;
       }
-      // 重试耗尽/致命（ModelApiAbortError）与其他失败：失败轮恒触发 onFinished（R8）后原样上抛
+      // 重试耗尽/致命（ModelApiAbortError）与其他失败：失败轮恒触发 onFinished 后原样上抛
       const message = error instanceof Error ? error.message : String(error);
       this.fireFinished({
         status: 'failed',
@@ -246,7 +246,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
     };
   }
 
-  /** onFinished 三情形映射（CC 侧 §3.2.4 表） */
+  /** onFinished 三情形映射 */
   private mapFinished(streamResult: StreamChatResult): AdapterFinished {
     const finishReason = streamResult.finishReason;
     const base: Omit<AdapterFinished, 'status'> = {

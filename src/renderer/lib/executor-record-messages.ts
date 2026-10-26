@@ -4,7 +4,7 @@
  * - buildExecutorTaskMessages：任务视图 → 虚拟 ChatMessage（role='tool'、source='executor'、
  *   携带 executorTask 徽标）；虚拟消息 id=executor-task-{delegateCallId}，
  *   toolCall.callId=delegateCallId（供 ChatArea 时间线合并时与真实 tool 消息去重）。
- * - latestThinkingLineOf：任务卡"最新一行思考"取值规则（§6.1-R1，数据源=executor 任务级思考）。
+ * - latestThinkingLineOf：任务卡"最新一行思考"取值规则（数据源=executor 任务级思考）。
  *
  * 纯函数无 React 依赖；类型与主进程 store 同构（@shared/types/executor-record）。
  */
@@ -35,7 +35,7 @@ export interface ExecutorTaskBadge {
   delegateCallId: string;
   taskName: string;
   status: ExecutorTaskRecordStatus;
-  /** 最新一行思考（草稿优先，§6.1-R1 规则）；无思考时为空串（卡显示占位） */
+  /** 最新一行思考（草稿优先）；无思考时为空串（卡显示占位） */
   latestThinkingLine: string;
   /** 记录是否仍在主进程存续（决定图标按钮可否打开右栏） */
   hasRecords: boolean;
@@ -59,7 +59,7 @@ function lastNonEmptyLine(text: string): string {
 }
 
 /**
- * 任务卡"最新一行思考"取值规则（§6.1-R1；数据源=executor 任务级思考，与主智能体思考零交集）：
+ * 任务卡"最新一行思考"取值规则（数据源=executor 任务级思考，与主智能体思考零交集）：
  * 1. 存在 status:'running' 思考草稿条目 → 取草稿 text 的最后一个非空行；
  * 2. 无草稿（工具执行中/轮间隙）→ 取最近一条 completed 思考条目的最后一个非空行；
  * 3. 从未有思考条目 → 空串（卡显示占位文案）。
@@ -69,7 +69,7 @@ export function latestThinkingLineOf(view: ExecutorTaskView): string {
   for (let i = entries.length - 1; i >= 0; i -= 1) {
     const entry = entries[i];
     if (entry.kind === 'thinking') {
-      // 末条思考条目即目标：存在 running 草稿时必为末条（R1-1），否则为最近一条 completed（R1-2）
+      // 末条思考条目即目标：存在 running 草稿时必为末条，否则为最近一条 completed
       return lastNonEmptyLine(entry.text);
     }
   }

@@ -95,22 +95,22 @@ export function createExecutorContextCompressionRunner(
   let consecutiveFailures = 0;
 
   async function step(): Promise<void> {
-    // T1 阈值现读——''/非法 → 零行为（规则8；先于一切读取）
+    // 阈值现读——''/非法 → 零行为（规则8；先于一切读取）
     const thresholdLabel = readThreshold();
     const thresholdChars = parseExecutorCompressionThreshold(thresholdLabel);
     if (thresholdChars === null) { return; }
-    // T2 中止预检（压缩调用链不可传 signal，见 D3；中止语义交还既有检查点）
+    // 中止预检（压缩调用链不可传 signal；中止语义交还既有检查点）
     if (signal?.aborted) { return; }
-    // T3 初始形态短路（计数必 0）
+    // 初始形态短路（计数必 0）
     if (messages.length <= 2) { return; }
-    // T4 历史驻留判定（规则1：服务端驻留=Responses stateful → 跳过）
+    // 历史驻留判定（规则1：服务端驻留=Responses stateful → 跳过）
     if (resolveAdapterHistoryResidency(adapter) === 'server') { return; }
-    // T5 统计口径（规则2）+ 超限判定
+    // 统计口径（规则2）+ 超限判定
     const beforeMessageCount = messages.length;
     const beforeChars = countStringChars(messages.slice(2));
     if (beforeChars <= thresholdChars) { return; }
 
-    // T5.5 进行中通知（2026-10-11 单条目“先过程后结果”优化）：门禁全过、T6 压缩调用开始前，
+    // 进行中通知（单条目“先过程后结果”）：门禁全过、压缩调用开始前，
     //    先发 in-progress 载荷（store 创建唯一进行中条目并经 executor:record-signal 实时推送，
     //    前端该条目立即呈现“正在压缩中”）；本压缩事件的终态载荷（completed/failed，即下方
     //    既有三处 onNotice 调用点）由 store 在同一条目上原位收敛，绝不二次追加条目。
@@ -122,7 +122,7 @@ export function createExecutorContextCompressionRunner(
       durationMs: 0,
     });
 
-    // T6 同步压缩（规则3/4：复用主智能体压缩核心；入参全量数组——内部剔除 system，
+    // 同步压缩（规则3/4：复用主智能体压缩核心；入参全量数组——内部剔除 system，
     //    executor 仅 index0 一条 system，与"削掉最开头 system_message"严格等价）
     const startedAt = Date.now();
     let summary = '';
@@ -157,10 +157,10 @@ export function createExecutorContextCompressionRunner(
     }
     consecutiveFailures = 0;
 
-    // T7 中止复查：压缩返回后已中止 → 丢弃结果（保全完整历史供执行日志快照）
+    // 中止复查：压缩返回后已中止 → 丢弃结果（保全完整历史供执行日志快照）
     if (signal?.aborted) { return; }
 
-    // T8 原位重建（规则5；格式参照主智能体三段式注入 main-agent.ts L207-219）
+    // 原位重建（规则5；格式参照主智能体三段式注入 main-agent.ts L207-219）
     const summaryChars = summary.length;
     const rebuiltUserContent = [
       originalUserContent,

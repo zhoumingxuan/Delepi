@@ -1,10 +1,10 @@
 /**
  * 经验库（script-tools）协议层
  *
- * 职责：protocol.yaml 类型定义（MCP Tool 对象 + 本地扩展字段，v2.0 R3）、YAML 读取解析（js-yaml）、协议校验器（4.2/4.3 全规则）、
- * 目录扫描（合法集合 + 超限自动剔除治理，R2；3.5 查重含 name==目录名一致性）。
+ * 职责：protocol.yaml 类型定义（MCP Tool 对象 + 本地扩展字段）、YAML 读取解析（js-yaml）、协议校验器（4.2/4.3 全规则）、
+ * 目录扫描（合法集合 + 超限自动剔除治理；3.5 查重含 name==目录名一致性）。
  *
- * 遵循 dyn-tool-loader.ts L228-230 “只读参照，不 import 不依赖”哲学（D6）：
+ * 遵循 dyn-tool-loader.ts L228-230 “只读参照，不 import 不依赖”哲学：
  * 本文件独立实现扫描/解析/校验逻辑，不 import dyn-tool-loader 任何内容。
  */
 
@@ -49,7 +49,7 @@ export const SCRIPT_TOOL_CODES = {
 // ============================================================
 
 export interface ScriptToolProtocol {
-  /** MCP 兼容工具名（=所在工具目录名；定位键=目录名，v2.0 R3/D2） */
+  /** MCP 兼容工具名（=所在工具目录名；定位键=目录名） */
   name: string;
   /** 中文展示名（title；纯展示字段，不要求等于目录名） */
   title: string;
@@ -61,7 +61,7 @@ export interface ScriptToolProtocol {
   timeoutSeconds: number;
   /** 调用期间进度文案中的工具名（缺省用 title） */
   progressName?: string;
-  /** 适用条件（可选；传入时非空、单行；能力边界完全解耦声明，R6/D5） */
+  /** 适用条件（可选；传入时非空、单行；能力边界完全解耦声明） */
   applicableConditions?: string;
   /** 声明性依赖（仅展示不安装；应已存在于内置 Python 预置依赖或系统环境） */
   pythonDeps?: string[];
@@ -71,7 +71,7 @@ export type ScriptToolProtocolCheck =
   | { ok: true; protocol: ScriptToolProtocol }
   | { ok: false; code: string; error: string };
 
-/** MCP 兼容工具名规范：1-64 位字母/数字/下划线/中划线（生态通行约定，见方案 D2 证据边界） */
+/** MCP 兼容工具名规范：1-64 位字母/数字/下划线/中划线（生态通行约定） */
 const MCP_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
 
 /** timeout_seconds 上限（对齐 dyn-tool-loader DYN_TOOL_TIMEOUT_MAX_SECONDS 语义） */
@@ -162,7 +162,7 @@ export function validateScriptToolProtocol(raw: unknown, dirName: string): Scrip
     timeoutSeconds = Math.floor(doc.timeout_seconds);
   }
 
-  // applicable_conditions：可选；传入时非空、单行（适用条件与工具能力边界一一对应，R6/D5）
+  // applicable_conditions：可选；传入时非空、单行（适用条件与工具能力边界一一对应）
   const applicableConditions = typeof doc.applicable_conditions === 'string' ? doc.applicable_conditions.trim() : undefined;
 
   // python_deps：可选，元素为非空字符串（pip 包名形态；仅声明不安装）
@@ -223,7 +223,7 @@ export type ScriptToolScanEntry =
   | { dirName: string; ok: false; code: string; error: string };
 
 /**
- * R2 容量治理（唯一收口点）：合法工具数超过 MAX_SCRIPT_TOOLS 时，按创建时间最旧优先剔除。
+ * 容量治理（唯一收口点）：合法工具数超过 MAX_SCRIPT_TOOLS 时，按创建时间最旧优先剔除。
  * 确定性：birthtimeMs 升序（不可得按 0=视作最旧优先治理），同值按目录名字典序；
  * 物理删除尽力而为（rm force 幂等，失败仅告警），逻辑排除保底——返回集合恒 ≤ 上限。
  */
@@ -357,7 +357,7 @@ export async function scanScriptToolsDir(): Promise<ScriptToolScanEntry[]> {
     }
   }
 
-  // R2：合法工具数超限时剔除创建时间最旧者（查看协议/调用定位/委派组装/清单块共用本扫描，快照一致）
+  // 合法工具数超限时剔除创建时间最旧者（查看协议/调用定位/委派组装/清单块共用本扫描，快照一致）
   const okEntries = results.filter((entry) => entry.ok);
   if (okEntries.length > MAX_SCRIPT_TOOLS) {
     const evicted = await evictOldestScriptTools(okEntries);

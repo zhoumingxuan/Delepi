@@ -1,5 +1,5 @@
 /**
- * Windows Job Object 根治模块（单一根治方案 B'，方案文档 2026-10-25）。
+ * Windows Job Object 根治模块（单一根治方案 B'）。
  *
  * 职责：非挂起 run_shell / run_with_python 在 spawn 后立即建立 Job Object 创建期内核所有权
  * （JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE），超时/abort 触发点经 TerminateJobObject 内核级终止

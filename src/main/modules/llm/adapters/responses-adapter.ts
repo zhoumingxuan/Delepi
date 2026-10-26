@@ -1,24 +1,24 @@
 /**
  * ResponsesAdapter - 智谱 /api/v1/responses 端点适配器（完整翻译层）
  *
- * P2 翻译封闭原则：在自有缓冲内完成全部翻译；对宿主数组只读；未知字段一律不透传
- * （白名单机制，结构性免疫服务端 400）。协议事实来源：A3 取证 45 条 + A2 实测 14 轮
+ * 翻译封闭原则：在自有缓冲内完成全部翻译；对宿主数组只读；未知字段一律不透传
+ * （白名单机制，结构性免疫服务端 400）。协议事实来源：取证 45 条 + 实测 14 轮
  * （G1-G6 形态固化）。
  *
- * 终结判定双锚定（P8，§三.3.6）：
+ * 终结判定双锚定：
  *  1. 权威锚 = 终结事件全集（response.completed / response.failed / response.incomplete /
  *     独立 error 事件——承载 incomplete_details/usage/error 载荷，不可替代）；
- *  2. 冗余帧锚 = data:[DONE]（A2 实测所有终结路径流末恒发，8/8；到达即停止 SSE 读取）；
+ *  2. 冗余帧锚 = data:[DONE]（实测所有终结路径流末恒发，8/8；到达即停止 SSE 读取）；
  *  3. 严禁依赖连接关闭（EOF）——实测服务器 [DONE] 后不关闭连接（12s socket 超时）；
  *  4. 流耗尽无终结事件兜底 → onFinished{failed, 'protocol-error: stream exhausted...'}；
- *  5. HTTP 200 不作轮次成败判据（A2 实测失败轮 HTTP 仍 200、首个事件即 response.failed）。
+ *  5. HTTP 200 不作轮次成败判据（实测失败轮 HTTP 仍 200、首个事件即 response.failed）。
  *
- * SSE 事件分发（§三.3.4 表，G3/G4/G6 已取证形态固化）+ S1/S2/S3 信号映射（A4 §5.2）：
- *  - S1 权威锚 = reasoning item 的 output_item.done（9/9 到达；reasoning_text.done 仅纠偏不触发）；
- *  - S2/S3 同刻同源 = message item 的 output_item.done → 单回调 end:'message'（R5 重合合一）；
+ * SSE 事件分发（§三.3.4 表，G3/G4/G6 已取证形态固化）+ 信号映射：
+ *  - 权威锚 = reasoning item 的 output_item.done（9/9 到达；reasoning_text.done 仅纠偏不触发）；
+ *  - 同刻同源 = message item 的 output_item.done → 单回调 end:'message'；
  *  - onToolCall 铁律 = 仅 function_call item 的 output_item.done（完整快照）触发，
  *    绝不以 added/delta 中间态触发；
- *  - 纯工具轮无 message item → S3 缺席（G4 实证，A4 3.1 不对称论证）。
+ *  - 纯工具轮无 message item → 缺席（G4 实证，不对称论证）。
  *
  * 自有重试器（§三.3.8）：不依赖 runModelApiWithRetry 的 CC 错误形态判定；重试节律对齐
  * 现状工程惯例（1s，MODEL_API_BAD_REQUEST_RETRY_DELAY_MS）；重试边界调用
@@ -26,7 +26,7 @@
  * 增量态一并复位）；上限 5 次，耗尽抛 ModelApiAbortError（宿主 catch 分类链兼容）。
  *
  * 有状态模式（§三.3.1）：previous_response_id + store=true；内部恒 stateful=true 起步
- * （2026-10-07 内聚整改：宿主侧不再外放接线，判断全部 adapter 内自适应）；instructions 每轮重传
+ * （宿主侧不再外放接线，判断全部 adapter 内自适应）；instructions 每轮重传
  * （官方明文不随 previous_response_id 继承）；首轮响应回显验证——response.completed 的
  * response 对象 store===true 才缓存 lastResponseId 续接，store===false/字段缺失判端点不支持
  * → 本实例内禁用 stateful 后续全量重传（防增量静默丢历史）；服务端指明 id 失效 → 自动回退
@@ -83,19 +83,19 @@ export class ResponsesAdapter extends ProtocolAdapter {
   private toolCallHandler: ((toolCall: AdapterToolCall) => AdapterToolMessage | undefined) | null = null;
   private finishedHandler: ((finished: AdapterFinished) => void) | null = null;
 
-  /** 有状态模式（内部恒 true 起步——2026-10-07 内聚整改后宿主不再传 stateful；端点不支持经首轮 store 回显验证自动禁用） */
+  /** 有状态模式（内部恒 true 起步——宿主不再传 stateful；端点不支持经首轮 store 回显验证自动禁用） */
   private stateful = false;
   /** 有状态：上一轮 response.id 缓存（7 天有效期；失效自动降级；仅 response.store===true 回显后缓存） */
   private lastResponseId: string | null = null;
   /** 有状态：宿主数组已消费长度快照（本轮新 item = messages[lastConsumed:]） */
   private lastConsumedMessageCount = 0;
 
-  /** reasoning item 接受性降级（2026-10-07）：端点 400 校验指纹判『期望 input_text 实得
+  /** reasoning item 接受性降级：端点 400 校验指纹判『期望 input_text 实得
    *  reasoning_text』（vllm /v1/responses input 联合类型不接受任何专用 reasoning item——
    *  占位/真实同型 400 实测）→ 本实例永久禁用 reasoning item 回传（真实+占位都不发）。 */
   private reasoningItemReturnDisabled = false;
 
-  /** must-be-passed-back 复位重发实例级限次 guard（2026-10-07 供给链单点缺陷修复）：
+  /** must-be-passed-back 复位重发实例级限次 guard：
    *  reasoning 剥离态后续工具轮命中 DeepSeek『The `reasoning_text` in the thinking mode
    *  must be passed back to the API』400 时，复位剥离标志恢复 reasoning 回传并重发一次；
    *  guard 置位后本实例不再二次复位重发（第二次命中按原错误失败上抛，防与 vllm 指纹
@@ -104,7 +104,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
 
   /** 只读暴露：历史驻留模式（'server'=stateful 服务端续接 / 'client'=stateless 全量重传）。
    *  仅供宿主侧只读判定（子智能体上下文压缩：仅 'client' 驻留可压缩）。
-   *  只读不改写：不构成 2026-10-07 stateful 内聚整改所禁止的"宿主侧 stateful 接线"（写/配置通道——
+   *  只读不改写：不构成 stateful 内聚整改所禁止的"宿主侧 stateful 接线"（写/配置通道——
    *  init 不接收 stateful 扩展键的既定边界不变，见上方 init 注释）；getter 不参与任何请求体构造。
    *  本类私有扩展成员，不进入基类七成员契约（protocol-adapter.ts 七成员：init/close/sendMessage/
    *  insertMessage/onChunk/onToolCall/onFinished）。未来实现服务端驻留的新适配器应实现同名 getter。 */
@@ -116,7 +116,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
     super();
   }
 
-  /** init 扩展（非静默偏离，方案 §三.3.1）：stateful 内聚整改（2026-10-07）——init 不再
+  /** init 扩展（非静默偏离）：stateful 内聚——init 不再
    *  接收 stateful 扩展键（类型交集同步收敛），内部恒以 stateful=true 起步，端点是否真支持
    *  经首轮 store 回显验证自动判定（不支持自动禁用）；成败化契约（目标一/二）：基类校验/
    *  快照成功后 POST 探查 {baseUrl}/responses——HTTP 404 = 协议不存在 = 初始化失败（智谱
@@ -167,7 +167,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
     this.assertUsable('sendMessage');
     this.terminal = false;
 
-    // 排水：构建协议请求体之前、同步（无 await）排空 insert 队列（§5.4 硬约束）
+    // 排水：构建协议请求体之前、同步（无 await）排空 insert 队列（硬约束）
     this.drainPendingMessages(messages);
 
     // ---- 翻译（宿主数组只读；翻译产物进自有缓冲） ----
@@ -210,7 +210,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
         }
       }
       // 智谱未声明参数一律不发：include / truncation / parallel_tool_calls / moderation /
-      // temperature / reasoning.summary —— 白名单机制（P2）
+      // temperature / reasoning.summary —— 白名单机制
       return body;
     };
 
@@ -303,7 +303,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
           statefulFallbackNeeded = true;
           continue;
         }
-        // reasoning input item 被拒检测（2026-10-07）：端点 400 校验指纹『期望 input_text
+        // reasoning input item 被拒检测：端点 400 校验指纹『期望 input_text
         // 实得 reasoning_text』（vllm/pydantic loc ResponseInputTextParam.type 形态）→ 本
         // 实例永久禁用 reasoning item 回传（真实+占位都不发，后续轮 translateMessages 剥离）
         // 并去除后幂等重发一次（标志置位防重发死循环）；重发仍失败按原错误正常失败。
@@ -318,7 +318,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
           reasoningItemFallbackNeeded = true;
           continue;
         }
-        // must-be-passed-back 复位门（2026-10-07 供给链单点缺陷修复）：剥离态
+        // must-be-passed-back 复位门：剥离态
         // （reasoningItemReturnDisabled 置位后）后续工具轮请求 input 必然缺前置
         // reasoning_text → DeepSeek thinking+tools 强校验 400『The `reasoning_text`
         // in the thinking mode must be passed back to the API』（13 项端点实测矩阵实证
@@ -351,12 +351,12 @@ export class ResponsesAdapter extends ProtocolAdapter {
             throw abortError;
           }
           attempt += 1;
-          // 重试边界：复位协议回调（红线 R7 等价承载；end 信号态随思考增量态一并复位——契约 R7）
+          // 重试边界：复位协议回调（end 信号态随思考增量态一并复位）
           this.hooksRef?.onStreamRetry?.();
           await sleepBeforeRetry(RESPONSES_RETRY_DELAY_MS, opts.signal);
           continue;
         }
-        // 不可重试失败：失败轮恒触发 onFinished（R8）后原样上抛
+        // 不可重试失败：失败轮恒触发 onFinished 后原样上抛
         const message = errorMessage(error);
         const code = errorCode(error);
         this.fireFinished({
@@ -398,7 +398,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
       const finished = this.buildFinished(outcome);
       this.fireFinished(finished);
       if (this.stateful && outcome.kind === 'completed') {
-        // 首轮响应回显验证（通用适配，2026-10-07）：OpenAI 系响应对象固定回显 store 字段
+        // 首轮响应回显验证（通用适配）：OpenAI 系响应对象固定回显 store 字段
         // （官方 Cookbook 实测天然探测点）；response.store===true 判支持并缓存 lastResponseId；
         // store===false 或字段缺失（DeepSeek 官方 The API is stateless / Sub2API CN 上游剥离）
         // 判不支持 → 本实例内禁用 stateful（后续轮全量重传防增量静默丢历史——禁用后 buildBody
@@ -455,7 +455,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
       }
       if (role === 'assistant') {
         const { reasoning, calls, text } = buildAssistantItems(message);
-        // reasoning item 接受性降级剥离（2026-10-07）：本实例已被端点指纹判『拒 reasoning
+        // reasoning item 接受性降级剥离：本实例已被端点指纹判『拒 reasoning
         // input item』后真实+占位一律不发（vllm 占位/真实同型 400 实测；DeepSeek 端不命中
         // 指纹零影响，占位机制照常）
         const reasoningItems = this.reasoningItemReturnDisabled ? [] : reasoning;
@@ -498,7 +498,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
         }
         continue;
       }
-      // 其他历史形态（function role 等）现状链路不产生 → 不生成（A1）
+      // 其他历史形态（function role 等）现状链路不产生 → 不生成
     }
     itemStartByHostIndex[messages.length] = inputItems.length;
     return { inputItems, systemFromMessages, itemStartByHostIndex };
@@ -730,7 +730,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
 }
 
 // ============================================================
-// SSE 分发状态机（独立类：单轮隔离，事件序严格对齐 A2 实测形态）
+// SSE 分发状态机（独立类：单轮隔离，事件序严格对齐实测形态）
 // ============================================================
 
 class ResponsesStreamState {
@@ -755,7 +755,7 @@ class ResponsesStreamState {
     this.currentEvent = '';
     this.currentData = '';
 
-    // [DONE] 流帧终结冗余确认（不承载语义；到达即停止读取——P8 第 2 条）
+    // [DONE] 流帧终结冗余确认（不承载语义；到达即停止读取）
     if (dataRaw === '[DONE]') {
       return true;
     }
@@ -765,7 +765,7 @@ class ResponsesStreamState {
       try {
         event = JSON.parse(dataRaw) as LooseEvent;
       } catch {
-        // data 解析失败（chunked 切裂残留等）：event: 行为权威事件类型恢复源（A2 教训），
+        // data 解析失败（chunked 切裂残留等）：event: 行为权威事件类型恢复源，
         // 无载荷可分发时安全跳过该事件（不中断流）
         return false;
       }
@@ -825,7 +825,7 @@ class ResponsesStreamState {
         const item = event.item ?? {};
         const itemType = typeof item.type === 'string' ? item.type : '';
         if (itemType === 'reasoning') {
-          // ★ S1 权威锚点：reasoning item 的 output_item.done（9/9 到达；恒先于后继 item added）
+          // ★ 权威锚点：reasoning item 的 output_item.done（9/9 到达；恒先于后继 item added）
           if (this.s1OpenReasoning) {
             adapter.emitChunk({
               type: 'reasoning',
@@ -838,8 +838,8 @@ class ResponsesStreamState {
           return false;
         }
         if (itemType === 'message') {
-          // ★ S2/S3 同刻同源：message item done → 单回调 end:'message'（R5 重合合一；
-          //   空 message item 亦发一次——R3 每条实际存在的 message 恰一次）
+          // ★ 同刻同源：message item done → 单回调 end:'message'（重合合一；
+          //   空 message item 亦发一次——每条实际存在的 message 恰一次）
           adapter.emitChunk({
             type: 'content',
             delta: '',
@@ -889,7 +889,7 @@ class ResponsesStreamState {
       case 'response.function_call_arguments.delta':
       case 'response.function_call_arguments.done':
         return false; // 可选增量缓存：完整快照以 output_item.done 为准
-      // ---- 终结事件全集（权威锚，P8 第 1 条） ----
+      // ---- 终结事件全集（权威锚） ----
       case 'response.completed': {
         const response = event.response ?? {};
         this.applyCompletedSnapshot(response);
@@ -1127,10 +1127,10 @@ function translateToolMessage(message: Record<string, unknown>): ResponsesInputI
   return { type: 'function_call_output', call_id: callId, output };
 }
 
-/** reasoning effort 透传（2026-10-07 用户拍板：服务端默认都开 thinking；不转换——vllm 有 xhigh 枚举）：
+/** reasoning effort 透传（服务端默认都开 thinking；不转换——vllm 有 xhigh 枚举）：
  *  空串→undefined 不发 reasoning 参数（服务端默认开 thinking——DeepSeek 官方与 vllm 双端点实测：
  *  不带 reasoning 参数时首个产出 item 均为 reasoning）；任何非空档位原样透传 {effort:level} 零收敛
- *  （vllm pydantic 白名单 {none,minimal,low,medium,high,xhigh,max} 原生含 xhigh/minimal，2026-10-07
+ *  （vllm pydantic 白名单 {none,minimal,low,medium,high,xhigh,max} 原生含 xhigh/minimal
  *  ultra→400 literal_error 一手实测；DeepSeek 官方宽松放行任意字符串并按文档映射 xhigh→high/
  *  minimal→low）；未知字符串同样原样透传，枚举校验交由服务端（400 即既有错误分类路径）。 */
 function buildReasoningParam(level: AdapterThinkingLevel): { effort: Exclude<AdapterThinkingLevel, ''> } | undefined {
@@ -1200,7 +1200,7 @@ function buildAssistantMessage(
   };
 }
 
-/** event: 行缺失时从 data 推断事件类型（A2 实测形态兼容：智谱恒带 event: 行，此为防御） */
+/** event: 行缺失时从 data 推断事件类型（实测形态兼容：智谱恒带 event: 行，此为防御） */
 function inferEventTypeFromData(dataRaw: string): string {
   if (!dataRaw || dataRaw === '[DONE]') {
     return '';
@@ -1251,7 +1251,7 @@ function classifyError(error: unknown): { retryable: boolean } {
 }
 
 /** previous_response_id 失效检测（服务端错误指明：7 天有效期/不存在/store 未开启等）。
- *  'previous_response_not_found'（2026-10-07 补：Sub2API code 形态，与 OpenAI 错误码同形——
+ *  'previous_response_not_found'（Sub2API code 形态，与 OpenAI 错误码同形——
  *  错误串 '[responses] previous_response_not_found: not found'，既有三子串全不命中）；既有三关键词保留 */
 function isPreviousResponseIdInvalidError(error: unknown): boolean {
   const message = errorMessage(error).toLowerCase();
@@ -1274,7 +1274,7 @@ function isStatefulParameterRejectedError(error: unknown): boolean {
     || message.includes('unknown_argument');
 }
 
-/** reasoning input item 被端点拒绝的 400 校验指纹（2026-10-07 vllm 真实端点实测形态）：
+/** reasoning input item 被端点拒绝的 400 校验指纹（vllm 真实端点实测形态）：
  *  仅命中『端点期望 input_text 而实得 reasoning_text』的 item 类型校验错误——
  *  vllm/pydantic 形态（errBody.slice(0,500) 截断窗口内实测齐备）：
  *   loc 'body.input.N.EasyInputMessageParam.content.M.ResponseInputTextParam.type'
@@ -1293,10 +1293,10 @@ function isReasoningItemRejectedError(error: unknown): boolean {
     || (/expected.{0,80}'input_text'/.test(lower) && /got.{0,80}'reasoning_text'/.test(lower));
 }
 
-/** DeepSeek 官方 thinking+tools 强校验指纹（must-be-passed-back，2026-10-07 端点实测原文）：
+/** DeepSeek 官方 thinking+tools 强校验指纹（must-be-passed-back，端点实测原文）：
  *  『The `reasoning_text` in the thinking mode must be passed back to the API
  *  (request_id: <UUID>)』/ type invalid_request_error / code invalid_request_error——
- *  含 reasoning_text + must be passed back 双关键词（B1 全量版/Q4 续接版错误体逐字段同构）。
+ *  含 reasoning_text + must be passed back 双关键词（全量版/续接版错误体逐字段同构）。
  *  与 vllm 三重门指纹（isReasoningItemRejectedError）天然互斥：vllm 形态必含 input_text
  *  （其互斥首门要求 input_text+reasoning_text 双关键词齐备），本指纹形态不含 input_text
  *  且 vllm 形态不含 must be passed back——两指纹无交集，识别互不误伤。 */

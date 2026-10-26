@@ -2,7 +2,7 @@
  * Windows 系统可执行文件绝对路径解析。
  *
  * 背景：在 PATH 极短（例如仅含应用内置 Python 目录）的子进程环境中，系统工具的裸名
- * 无法被 CreateProcess 解析（2026-10-18 实测 FileNotFoundError）。PowerShell 与进程终止
+ * 无法被 CreateProcess 解析（实测 FileNotFoundError）。PowerShell 与进程终止
  * 工具均位于 %SystemRoot% 下的固定位置，直接以绝对路径寻址，不依赖 PATH。
  *
  * 参数契约：两个解析函数均无入参、返回字符串、不抛错、不依赖 electron 的 app 对象。

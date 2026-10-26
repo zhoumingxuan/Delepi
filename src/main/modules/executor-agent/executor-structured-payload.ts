@@ -301,7 +301,7 @@ function getDocumentPathFieldName(deliveryType: ExecutorDeliveryType): string | 
   }
 
   if (deliveryType === DELIVERY_TYPE_RESEARCH_REPORT) {
-    return '研究报告文档路径';
+    return '报告文档路径';
   }
 
   if (deliveryType === DELIVERY_TYPE_TEST_CASE) {
