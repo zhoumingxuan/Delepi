@@ -12,11 +12,17 @@ import {
   OUTPUT_DIR_NAME,
   UPLOADS_DIR_NAME,
 } from '../constants';
+import { UPDATE_DIR_NAME } from '@shared/update-constants';
 
 /** 客户端本地数据根目录（写死，不可配置） */
 export function resolveClientBinDir(): string {
   const isDev = !app.isPackaged;
   return path.join(isDev ? process.cwd() : app.getPath('userData'), BIN_DIR_NAME);
+}
+
+/** 客户端自动更新下载根目录（bin/updates；与其它存储目录同根推导） */
+export function resolveUpdateDir(): string {
+  return path.join(resolveClientBinDir(), UPDATE_DIR_NAME);
 }
 
 /** 对话存储根目录（写死，不可配置） */

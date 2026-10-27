@@ -1,6 +1,6 @@
 ﻿/**
  * 主进程入口
- * 创建 BrowserWindow，初始化数据库、注册 IPC 处理器
+ * 创建 BrowserWindow，初始化数据库、注册 IPC 处理器、挂载客户端自动更新调度
  */
 
 import { app, BrowserWindow, Menu } from 'electron';
@@ -18,6 +18,7 @@ import {
 import { registerIpcHandlers, writeMainLog } from './ipc/ipc-handlers';
 import { configManager } from './modules/config/config-manager';
 import { pythonManager } from './modules/python';
+import { initUpdateManager, disposeUpdateManager } from './modules/update';
 import {
   PRELOAD_PATH_SEGMENT,
   PRELOAD_FILE_NAME,
@@ -520,6 +521,11 @@ app.whenReady().then(async () => {
     writeMainLog('ERROR', 'registerIpcHandlers', '失败', err);
   }
 
+  // 客户端自动更新：启动缓存扫描（判定/清理）+ 30 秒首检调度（异步，不阻塞窗口创建）
+  void initUpdateManager()
+    .then(() => writeMainLog('INFO', 'initUpdateManager', 'OK'))
+    .catch((err) => writeMainLog('ERROR', 'initUpdateManager', '失败', err));
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow();
@@ -528,6 +534,11 @@ app.whenReady().then(async () => {
       }
     }
   });
+});
+
+app.on('before-quit', () => {
+  // 客户端自动更新：清调度定时器 + 中止在途下载（幂等）
+  disposeUpdateManager();
 });
 
 app.on('window-all-closed', () => {

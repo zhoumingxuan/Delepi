@@ -29,13 +29,14 @@ import {
 } from './main-agent-message-content';
 import { contentPartsToText } from '../../utils/chat-content';
 import { formatCurrentDateTime } from '../../utils/helper';
-import { buildMainSystemPrompt, MAIN_TOOLS } from './prompt';
+import { buildMainSystemPrompt, MAIN_TOOLS, MAIN_SEND_EMAIL_TOOL_NAME } from './prompt';
 import { getLatestCompletedContextCompression, runContextCompressionIfNeeded } from './context-compression-task';
 import { generateConversationTitle, truncateConversationTitle } from './title-generation';
 import { runDelegatedTask, computeTaskDurationSeconds } from '../executor-agent/executor-agent';
 import { buildToolResult, stringifyToolResult, type ToolResult } from '../../tools/result';
 import { executeToolCall } from '../../tools/executor-registry';
 import { skillQuery } from '../../tools/skill-query';
+import { executeSendEmailTool } from '../../tools/send-email';
 import { ensureErrorMessage } from '../../utils';
 import type { AssistantRuntimeConfig } from '../executor-agent/assistant-config';
 import { eventBus, type ExecutorAgentEvents } from '../event-bus/event-bus';
@@ -1521,6 +1522,70 @@ export async function runMainAgent(
         return {
           toolCall,
           status: queryResult.success ? ('success' as const) : ('failed' as const),
+        };
+      } else if (toolCall.function.name === MAIN_SEND_EMAIL_TOOL_NAME) {
+        // ★ 阶段3：主智能体 send_email 独立直接工具分支（值守回执唯一发送通道，时序1单轨）。
+        //   位置：query_skill 分支之后、read_file/fs_* 直接工具分支之前（时序5锚点 L1524/L1525）；
+        //   执行层能力拦截（TOOL_DISABLED_WATCH_OFF：watchEnabled=false 或值守未运行）在
+        //   executeSendEmailTool 入口完成（先例 executor-registry.ts:225-232 inspect_media）；
+        //   声明层可见性由 buildMainTools() 按 watchEnabled 条件追加（prompt.ts，阶段3）。
+        //   不进 executeToolCall——EXECUTOR_TOOLS 仅面向执行子智能体（B28：查不到返回
+        //   TOOL_NOT_FOUND）；也不注册进 EXECUTOR_TOOLS（避免暴露给执行子智能体）。
+        //   发送失败返回 success=false（不抛错），供主智能体按工具 description 第 4 条自主重试。
+        let sendEmailResult: ToolResult;
+        try {
+          sendEmailResult = await executeSendEmailTool(toolCall.function.arguments, {
+            conversationId,
+            runDir: resolveConversationDir(conversationId),
+            signal: options.signal,
+          });
+        } catch (error) {
+          sendEmailResult = buildToolResult({
+            success: false,
+            code: 'TOOL_EXECUTION_EXCEPTION',
+            message: ensureErrorMessage(error),
+          });
+        }
+        const sendEmailResultText = stringifyToolResult(sendEmailResult);
+        const sendEmailFinishedAt = new Date().toISOString();
+        // ★ 直接工具分支“四件事”复刻（B26：全部 toolCall 均须有配对消息）——
+        //   ① push role:'tool' 消息（供下一轮模型上下文）；
+        turnMessages.push({
+          role: 'tool',
+          tool_call_id: toolCall.id,
+          content: sendEmailResultText,
+        });
+        //   ② emit MAIN_AGENT_TOOL_RESULT_EVENT（渲染层工具结果通道；isDelegatedExecutor 恒 false，
+        //      通用分支渲染，不进入委派任务卡链路）
+        eventBus.emit(MAIN_AGENT_TOOL_RESULT_EVENT, {
+          conversationId,
+          callId: toolCall.id,
+          name: toolCall.function.name,
+          result: sendEmailResultText,
+          success: sendEmailResult.success,
+        });
+        //   ③ 配对标记（批次末 insertMessages 单事务落库的契约依据）
+        toolSlotPaired[slotIndex] = true;
+        //   ④ pendingToolMessagePayloads / batchResults 收集（批次末统一落库与批次收口）
+        pendingToolMessagePayloads.push({
+          role: 'tool',
+          payload: {
+            toolCallId: toolCall.id,
+            name: toolCall.function.name,
+            arguments: toolCall.function.arguments,
+            result: sendEmailResultText,
+            isError: !sendEmailResult.success,
+            startedAt: toolStartedAt,
+            finishedAt: sendEmailFinishedAt,
+          },
+        });
+        batchResults.push({
+          callId: toolCall.id,
+          status: sendEmailResult.success ? 'success' : 'failed',
+        });
+        return {
+          toolCall,
+          status: sendEmailResult.success ? ('success' as const) : ('failed' as const),
         };
       } else if (
         toolCall.function.name === 'read_file' ||

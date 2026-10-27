@@ -42,6 +42,26 @@ import { ConfigCheckModal } from './ConfigCheckModal';
 import { CleanupConversationsModal } from './CleanupConversationsModal';
 import { useConfigReadiness } from '../hooks/useConfigReadiness';
 
+/**
+ * 值守指令跳转载荷（阶段7 目标5②；preload watch.onCommandNavigate 原样透传）。
+ * 全局 electron.d.ts 未声明 watch 分组（该文件不在阶段7 改动白名单内），
+ * 沿用 ConfigDrawer/OtherSettingsTab 的局部类型 + 断言访问先例。
+ */
+interface WatchCommandNavigationPayloadLite {
+  conversationId: string;
+  conversationTitle: string;
+  commandType: 'send_message' | 'new_conversation';
+  requestId: string;
+  subject: string;
+  receivedAtIso: string;
+  createdNewConversation: boolean;
+}
+
+/** watch 跳转订阅 API 的局部类型 */
+type WatchNavigateApi = {
+  onCommandNavigate?: (listener: (payload: unknown) => void) => () => void;
+};
+
 export function ChatShell() {
   const screens = useMemo(() => ({ lg: true }), []); // 适配原 ai_fr Grid.useBreakpoint 简化为桌面端
   const { token } = theme.useToken();
@@ -130,7 +150,7 @@ export function ChatShell() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [hoveredConversationId, setHoveredConversationId] = useState<string | null>(null);
 
-const [configDrawerActiveTab, setConfigDrawerActiveTab] = useState<'model' | 'python'>('model');
+const [configDrawerActiveTab, setConfigDrawerActiveTab] = useState<'model' | 'python' | 'skills' | 'other'>('model');
 const [showConfigCheckModal, setShowConfigCheckModal] = useState(false);
 const [configCheckMissingItems, setConfigCheckMissingItems] = useState<ConfigMissingItem[]>([]);
 const [cleanupOpen, setCleanupOpen] = useState(false);
@@ -195,6 +215,36 @@ const { check, canCheck } = useConfigReadiness({
   }, [conversationId, setUploadConversationId]);
 
   // ============================================================
+  // 阶段7 目标5②：值守指令解析成功 → 自动切到目标对话 + 用户可见提示
+  // - 主进程只在「解析成功且目标会话确定」时推送（role 过滤 / 主题过滤 /
+  //   发件人拒绝 / 非指令 四类在解析前即返回，永不推送）
+  // - 新建对话指令：目标会话由主进程 createConversation() 新建，随后 conv:updated
+  //   事件会把它补进列表；此处只需切会话，标题首帧回退为「Delepi」后随列表刷新纠正
+  // ============================================================
+  useEffect(() => {
+    const watchApi = (window as unknown as { electronAPI?: { watch?: WatchNavigateApi } })
+      .electronAPI?.watch;
+    if (!watchApi?.onCommandNavigate) {
+      return;
+    }
+    const unsubscribe = watchApi.onCommandNavigate((raw) => {
+      const payload = raw as WatchCommandNavigationPayloadLite | null;
+      if (!payload?.conversationId) {
+        return;
+      }
+      switchConversation(payload.conversationId);
+      const title = payload.conversationTitle || '新对话';
+      messageApi.success(
+        payload.createdNewConversation
+          ? `值守指令已新建对话「${title}」并开始执行（${payload.requestId}）`
+          : `值守指令已接收：已切换到对话「${title}」（${payload.requestId}）`,
+        6,
+      );
+    });
+    return unsubscribe;
+  }, [messageApi, switchConversation]);
+
+  // ============================================================
   // P5 适配：落盘窗口中的文件数取自 useFileUpload.savingCount
   // 避免出现「useChat 的 uploadingCount 始终为 0 + useFileUpload 直通落盘中」的不一致
   // ============================================================
@@ -239,12 +289,12 @@ const { check, canCheck } = useConfigReadiness({
     setSettingsOpen(false);
   }, [configConfigured]);
   const handleConfigDrawerTabChange = useCallback(
-    (tab: string) => setConfigDrawerActiveTab(tab as 'model' | 'python'),
+    (tab: string) => setConfigDrawerActiveTab(tab as 'model' | 'python' | 'skills' | 'other'),
     [],
   );
   const handleCloseConfigCheckModal = useCallback(() => setShowConfigCheckModal(false), []);
   const handleGoToConfig = useCallback((tab: string) => {
-    setConfigDrawerActiveTab(tab as 'model' | 'python');
+    setConfigDrawerActiveTab(tab as 'model' | 'python' | 'skills' | 'other');
     setSettingsOpen(true);
   }, []);
 
@@ -621,6 +671,7 @@ const { check, canCheck } = useConfigReadiness({
         onClose={handleCloseConfigDrawer}
         config={config}
         configLoading={configLoading}
+        conversationId={conversationId}
         onSave={saveConfig}
         onSaveAll={saveAllConfig}
         onReload={reloadConfig}

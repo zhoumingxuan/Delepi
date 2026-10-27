@@ -4,6 +4,7 @@
  */
 
 import type { AppSettings } from './types/config';
+import { UPDATE_BASE_URL_SOURCE_DEFAULT } from './update-constants';
 
 /** 默认对话标题（fallback） */
 export const DEFAULT_CONVERSATION_TITLE = '新对话';
@@ -40,6 +41,26 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   customSkillTags: [],
   useBuiltinPython: true,
   customPythonPath: '',
+
+  // 值守模式：键白名单硬要求同上（必须与 AppSettings 同步，否则 reload 静默丢弃）
+  watchEnabled: false,
+  watchMailboxAddress: '',
+  watchMailboxAuthCode: '',
+  watchPollIntervalMinutes: 2,
+  watchReceiptRecipient: '',
+
+  // 邮箱服务商（阶段7 目标3）：键白名单硬要求同上，必须与 AppSettings 逐键同步
+  mailProviderType: 'qq',
+  mailCustomImapHost: '',
+  mailCustomImapPort: 993,
+  mailCustomImapEncryption: 'ssl',
+  mailCustomSmtpHost: '',
+  mailCustomSmtpPort: 465,
+  mailCustomSmtpEncryption: 'ssl',
+
+  // 客户端自动更新：键白名单硬要求同上（必须与 AppSettings 逐键同步，否则 reload 静默丢弃）
+  updateAutoCheckEnabled: true,
+  updateBaseUrl: UPDATE_BASE_URL_SOURCE_DEFAULT,
 
 };
 

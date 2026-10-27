@@ -32,26 +32,42 @@ export function formatElapsedTime(totalSeconds: number): string {
 
 // ============================================================
 // ★ P1 模块级共享 ticker（单定时器，引用计数生命周期）：
-//   N 个 loading 态工具卡从 N 个每秒 setInterval 合并为 1 个共享 ticker，
+//   N 个 loading 态工具卡从 N 个每秒定时器合并为 1 个共享 ticker，
 //   每秒同步广播一次（React 18+ 自动批处理为单次 render pass）；
 //   全部订阅者退订后自动停表（空闲期零开销）。
 // ============================================================
 let tickerSecond = 0;                       // 秒计数（getSnapshot 幂等源：同秒内恒等返回）
 const tickListeners = new Set<() => void>();
 let tickerTimer: number | null = null;
+let tickerStopped = false;
 
+/** 递归 setTimeout：每秒 tick 一次（全工程禁用周期定时器 API） */
+function startTickerLoop(): void {
+  if (tickerTimer !== null || tickerStopped) {
+    return;
+  }
+  tickerTimer = window.setTimeout(() => {
+    tickerTimer = null;
+    tickerSecond += 1;
+    tickListeners.forEach((listener) => listener());   // 同步通知 → React 18+ 自动批处理为单次 render pass
+    if (!tickerStopped && tickListeners.size > 0) {
+      startTickerLoop();
+    }
+  }, SECOND_MS);
+}
 function ensureTicker(): void {
-  if (tickerTimer === null) {
-    tickerTimer = window.setInterval(() => {
-      tickerSecond += 1;
-      tickListeners.forEach((listener) => listener());   // 同步通知 → React 18+ 自动批处理为单次 render pass
-    }, SECOND_MS);
+  if (tickListeners.size > 0) {
+    tickerStopped = false;
+    startTickerLoop();
   }
 }
 function releaseTickerIfIdle(): void {
-  if (tickListeners.size === 0 && tickerTimer !== null) {
-    window.clearInterval(tickerTimer);
-    tickerTimer = null;
+  if (tickListeners.size === 0) {
+    tickerStopped = true;
+    if (tickerTimer !== null) {
+      window.clearTimeout(tickerTimer);
+      tickerTimer = null;
+    }
   }
 }
 function subscribeTick(listener: () => void): () => void {
@@ -144,7 +160,7 @@ export function useElapsedSeconds(options: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.startedAt, options.finishedAt]);
 
-  // tick 每秒 +1 触发重渲染并重算（等价原 setInterval 每秒 setElapsedSeconds(getElapsedSeconds())）；
+  // tick 每秒 +1 触发重渲染并重算（等价原每秒 setElapsedSeconds(getElapsedSeconds())）；
   // 非 active 时 tick 恒 0 → 不触发重渲染 → 显示冻结值（≡ 现状 clearInterval 冻结语义）
   void tick;
   const current = options.active ? getElapsedSeconds() : inactiveSeconds;

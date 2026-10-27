@@ -11,16 +11,43 @@ import {
   listSkillTagsWithConditions,
 } from '../skill-system/skill-registry';
 import { COMMON_WORKFLOW_PROMPT } from './workflow-prompt';
+import { configManager } from '../config/config-manager';
 
 type ToolSchema = Record<string, unknown>;
 
-const SYSTEM_PROMPT_BODY = `
+/** 主智能体 send_email 工具名（阶段3：值守开启时按 watchEnabled 条件进入工具清单，v3 §8.1） */
+export const MAIN_SEND_EMAIL_TOOL_NAME = 'send_email';
+
+//值守模式提示词
+function buildLivePrompt(): string {
+  return configManager.getSettings().watchEnabled ?`
+# 值守模式规则（**内部规则**）
+\`\`\`
+1.**此模式凭借外部开关控制；为避免对上下文造成干扰，因此严格禁止将此模式的【当前状态表述】写入思考过程或最终回复中**
+2.此模式开启时，每次【最新用户输入】实际通过远程操控输入；
+3.此模式开启时，务必将每次完成【最新用户意图】的【最终回复内容】以及成果（如：方案、报告、图片、文件链接等），用\`${MAIN_SEND_EMAIL_TOOL_NAME}\`工具发送一封邮件到【用户邮箱】。
+\`\`\`
+`:
+`
+# 专业模式规则（**内部规则**）
+\`\`\`
+1. 此模式开启时，忽略一切可能存在的【值守模式】信息。
+2. 必须依据【最新用户意图】涉及的【专业领域】，进行【最专业】的决策、回复以及编排任务。
+\`\`\`
+`;
+}
+
+function buildSystemPromptBody(): string {
+  return `
 # 基本信息
 \`\`\`
 - 当前对话实际的日期和时间：${formatCurrentDateTime()}
 - 【当前对话实际的日期和时间】仅供参考，不保证完全准确。
 - 严格禁止把【当前对话实际的日期和时间】当作内部记忆、先验知识、输入材料、工具结果或外部事实的时间。
+${configManager.getSettings().watchEnabled?'- 当前模式：【值守模式】':'- 当前模式：【专业模式】'}
 \`\`\`
+
+${buildLivePrompt()}
 
 # 角色定义
 \`\`\`
@@ -51,8 +78,10 @@ const SYSTEM_PROMPT_BODY = `
 
 ${COMMON_WORKFLOW_PROMPT}
 `;
+}
 
 export const MAIN_DELEGATE_TOOL_NAME = 'delegate_executor';
+
 
 export { EXECUTOR_DELIVERY_TYPES, TASK_TAGS, TASK_TYPE_VALUES };
 
@@ -361,9 +390,72 @@ function buildMainFsStatTool() {
   };
 }
 
+/**
+ * 主智能体 send_email 工具 description（工具提示词，v3 §8.1 定稿全文 8 条 + 开头段按时序1反转改写）。
+ * 发件规范唯一承载处（零处理原则：任何发件/回执引导只允许存在于这里，严禁进入对话消息本体）。
+ * 反转点（阶段3回执单轨）：原文“值守链路对每条指令的处理结果回执由系统自动发送，无需你主动
+ * 发送‘处理结果通知’类邮件”改为“主智能体负责在处理完成后经 send_email 发送回执——正文只写
+ * 最终回复、四类交付物以附件带回”；第 2 条融合交付物路径来源引导（委派结果结构化字段
+ * local_files / image_files 主源，can_openfile_url / image_urls 备用源）。
+ */
+function buildMainSendEmailDescription(): string {
+  return (
+    `
+     向指定收件人发送一封邮件工具。
+     # 约束
+     -1. 若收件人不填则为【用户邮箱】。
+     -2. body 必须是纯 HTML 正文，正文中不得出现任何脚本（script / on* 事件 / javascript:）。
+    `
+  );
+}
+
+/** 主智能体 send_email 工具参数 Schema（v3 §8.2 JSON Schema 原样） */
+function buildMainSendEmailToolParameters(): ToolSchema {
+  return {
+    type: 'object',
+    properties: {
+      to: {
+        type: 'string',
+        description: '可选。收件人邮箱地址；若不填，则为【用户邮箱】',
+      },
+      subject: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 200,
+        description: '必填,精确且简单的描述邮件主题',
+      },
+      body: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 8192,
+        description: '必填。邮件正文；只写最终回复或对收件人有价值的最终内容，不得包含工具调用明细、思考过程或内部日志。',
+      },
+      attachments: {
+        type: 'array',
+        items: { type: 'string' },
+        description: '可选。附件数组，元素为本地文件绝对路径或 http(s) 远程 URL（URL 自动下载后附加）。',
+      },
+    },
+    required: ['subject', 'body'],
+    additionalProperties: false,
+  };
+}
+
+/** 主智能体工具声明：send_email（仅值守开启时进入清单；执行体 src/main/tools/send-email.ts） */
+function buildMainSendEmailTool() {
+  return {
+    type: 'function' as const,
+    function: {
+      name: MAIN_SEND_EMAIL_TOOL_NAME,
+      description: buildMainSendEmailDescription(),
+      parameters: buildMainSendEmailToolParameters(),
+    },
+  };
+}
+
 /** 主智能体工具声明构建函数（query_skill enum 每次构建经 listSkillTags 实时取值，保证运行时含启用自定义标签） */
 export function buildMainTools() {
-  return [
+  const tools = [
     {
       type: 'function' as const,
       function: {
@@ -378,6 +470,10 @@ export function buildMainTools() {
     buildMainFsListTool(),
     buildMainFsStatTool(),
   ];
+  // 阶段3（v3 §8.5）：仅值守开启时 send_email 进入主智能体工具清单；watch:start/stop
+  // 联动 refreshMainTools()（阶段2已接线）经 MAIN_TOOLS live-binding 即时生效。
+  tools.push(buildMainSendEmailTool());
+  return tools;
 }
 
 /**
@@ -406,5 +502,6 @@ ${JSON.stringify(skillEntries)}
 \`\`\`
 `
     : '';
-  return `${SYSTEM_PROMPT_BODY}${skillsSection}`;
+  const systemPromptBody = buildSystemPromptBody();
+  return `${systemPromptBody}${skillsSection}`;
 }

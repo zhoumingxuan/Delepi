@@ -49,17 +49,32 @@ import {
 import type { AppSettings, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { DEFAULT_APP_SETTINGS } from '@shared/constants';
 import { PythonEnvTab } from './PythonEnvTab';
+import { OtherSettingsTab } from './OtherSettingsTab';
+
+/** 会话级方案绑定只读视图（阶段7：config:profiles-list 带 conversationId 时返回） */
+interface ConversationProfileView {
+  conversationId: string;
+  boundProfileId: string;
+  boundProfileName: string;
+  boundProfileValid: boolean;
+  activeProfileId: string;
+  activeProfileName: string;
+}
 
 /** 配置方案列表/切换结果（主进程 config:profiles-* 通道返回） */
 interface ProfileListResult {
   profiles: ModelProfile[];
   activeProfileId: string;
+  /** 阶段7：仅带 conversationId 时返回（该会话的绑定视图） */
+  conversationProfile?: ConversationProfileView | null;
 }
 
 /** 方案切换结果 */
 interface ProfileSwitchResult {
   activeProfileId: string;
   profileName: string;
+  /** 阶段7：切换时带了 conversationId 才有值（该会话被绑定到新方案） */
+  conversationProfileId?: string;
 }
 
 /** 方案导出结果：成功含落盘完整路径；canceled=true 为用户取消（渲染层静默不反馈） */
@@ -85,10 +100,10 @@ type ProfileImportResult =
  * preload 已暴露下列六个方法，此处以局部类型断言安全对接（运行时经 contextBridge 正常可达）。
  */
 type ProfilesConfigApi = {
-  listProfiles: () => Promise<ProfileListResult>;
+  listProfiles: (params?: { conversationId?: string }) => Promise<ProfileListResult>;
   saveProfile: (params: { name: string; blank?: boolean }) => Promise<ProfileListResult>;
   deleteProfile: (params: { id: string }) => Promise<ProfileListResult>;
-  switchProfile: (params: { id: string }) => Promise<ProfileSwitchResult>;
+  switchProfile: (params: { id: string; conversationId?: string }) => Promise<ProfileSwitchResult>;
   exportProfile: (params: { profileId: string }) => Promise<ProfileExportResult>;
   importProfile: (params: { filePath: string }) => Promise<ProfileImportResult>;
 };
@@ -254,6 +269,12 @@ interface ConfigDrawerProps {
   onClose: () => void;
   config: AppSettings;
   configLoading: boolean;
+  /**
+   * 当前打开/活跃的对话 id（阶段7 目标1：会话级模型方案绑定）
+   * - 有值时：列出该会话的绑定；切换方案把它绑定到新方案（其他会话不受影响）
+   * - 无值时（列表态）：切换=纯全局切换（新建会话首次运行时懒绑定的默认方案）
+   */
+  conversationId?: string | null;
   onSave: (key: keyof AppSettings, value: unknown) => Promise<void> | void;
   onSaveAll: (updates: Partial<AppSettings>) => Promise<void> | void;
   onReload: () => Promise<void> | void;
@@ -268,6 +289,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   onClose,
   config,
   configLoading,
+  conversationId,
   onSave,
   // onSaveAll 保留接口兼容性但不再使用（按钮已移除）
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -352,10 +374,25 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   );
   const [profiles, setProfiles] = useState<ModelProfile[]>([]);
   const [activeProfileId, setActiveProfileId] = useState('');
+  /** 阶段7：当前对话的方案绑定视图（无对话上下文时为 null） */
+  const [conversationProfile, setConversationProfile] = useState<ConversationProfileView | null>(null);
   const [profileCreateModalOpen, setProfileCreateModalOpen] = useState(false);
   const [profileCreateNameInput, setProfileCreateNameInput] = useState('');
   const [profileActionLoading, setProfileActionLoading] = useState(false);
   const profilesApiMissingRef = useRef(false);
+
+  /**
+   * 方案下拉框的「显示值」派生（仅用于展示，不改变 activeProfileId 在导出/删除/回填等用途上的语义）：
+   * - 当前对话的绑定视图与 conversationId 一致且绑定有效 → 显示该会话绑定的方案；
+   * - 未绑定 / 绑定方案已删除 / 视图尚未对应当前对话 / 未打开对话 → 显示全局激活方案。
+   * 所有字段均取自主进程 listProfiles({ conversationId }) 返回的 conversationProfile，渲染层不推导绑定关系。
+   */
+  const displayProfileId =
+    conversationId &&
+    conversationProfile?.conversationId === conversationId &&
+    conversationProfile?.boundProfileValid
+      ? conversationProfile.boundProfileId
+      : activeProfileId;
 
   const loadProfiles = useCallback(async () => {
     if (!profilesApi) {
@@ -365,15 +402,19 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       return;
     }
     try {
-      const result = await profilesApi.listProfiles();
+      // 阶段7：带 conversationId → 主进程额外返回该会话的绑定视图（只读，不写库）
+      const result = await profilesApi.listProfiles(
+        conversationId ? { conversationId } : undefined,
+      );
       setProfiles(result?.profiles ?? []);
       setActiveProfileId(result?.activeProfileId ?? '');
+      setConversationProfile(result?.conversationProfile ?? null);
     } catch {
       antdMessage.error('加载配置方案失败');
     }
-  }, [profilesApi, antdMessage]);
+  }, [profilesApi, antdMessage, conversationId]);
 
-  // 抽屉打开时拉取一次方案列表（activeProfileId 以主进程为权威）
+  // 抽屉打开时拉取一次方案列表（activeProfileId 以主进程为权威；对话切换后重新拉取绑定视图）
   useEffect(() => {
     if (open) {
       void loadProfiles();
@@ -413,7 +454,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       const profile = profiles.find((item) => item.id === id);
       setProfileActionLoading(true);
       try {
-        const result = await profilesApi.switchProfile({ id });
+        // 阶段7：带 conversationId → 主进程把该会话绑定到新方案（不再只写全局 14 键）
+        const result = await profilesApi.switchProfile(
+          conversationId ? { id, conversationId } : { id },
+        );
         setActiveProfileId(result?.activeProfileId ?? id);
         if (profile) {
           const { id: _profileId, name: _profileName, ...profileValues } = profile;
@@ -425,8 +469,13 @@ export const ConfigDrawer = memo(function ConfigDrawer({
           );
           form.setFieldsValue(clean);
         }
-        antdMessage.success(`已切换到方案「${result?.profileName ?? profile?.name ?? ''}」`);
+        antdMessage.success(
+          conversationId
+            ? `已切换到方案「${result?.profileName ?? profile?.name ?? ''}」，并绑定到当前对话`
+            : `已切换到方案「${result?.profileName ?? profile?.name ?? ''}」`,
+        );
         await onReload();
+        await loadProfiles();
       } catch (err) {
         antdMessage.error(err instanceof Error ? err.message : '切换方案失败，可重试；已填写的配置不会丢失');
         await loadProfiles();
@@ -434,7 +483,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         setProfileActionLoading(false);
       }
     },
-    [profilesApi, profiles, form, antdMessage, onReload, loadProfiles],
+    [profilesApi, profiles, form, antdMessage, onReload, loadProfiles, conversationId],
   );
 
   // 新建方案名重名实时校验：弹窗内即时提示 + 提交时 handler 内同步拦截，双保险防 profiles-save 同名覆盖
@@ -985,7 +1034,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                             ? "暂无保存的方案：点「＋」新建空白方案"
                             : "选择方案一键切换"
                         }
-                        value={activeProfileId || undefined}
+                        value={displayProfileId || undefined}
                         onChange={handleSwitchProfile}
                         loading={profileActionLoading}
                         disabled={configLoading}
@@ -995,6 +1044,24 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         }))}
                       />
                     </Flex>
+                    {/* 阶段7 目标1：会话级方案绑定可视化（有对话=该对话的绑定；无对话=全局默认） */}
+                    {conversationId ? (
+                      <Typography.Paragraph
+                        type="secondary"
+                        style={{ fontSize: 12, margin: '8px 0 0' }}
+                      >
+                        {conversationProfile?.boundProfileValid
+                          ? `当前对话已绑定方案「${conversationProfile.boundProfileName}」：本对话运行时固定使用该方案，切换方案只影响本对话。`
+                          : `当前对话尚未绑定方案：下次运行时会自动绑定到当前激活方案「${conversationProfile?.activeProfileName ?? '（无）'}」。`}
+                      </Typography.Paragraph>
+                    ) : (
+                      <Typography.Paragraph
+                        type="secondary"
+                        style={{ fontSize: 12, margin: '8px 0 0' }}
+                      >
+                        未打开对话：此处切换只改变全局默认方案；已绑定方案的对话运行时仍用各自绑定，不受影响。
+                      </Typography.Paragraph>
+                    )}
                   </div>
 
                   <Form
@@ -1730,6 +1797,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                   </div>
                 </>
               ),
+            },
+            {
+              key: "other",
+              label: "其他设置",
+              children: <OtherSettingsTab />,
             },
           ]}
         />

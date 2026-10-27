@@ -1,5 +1,9 @@
 appId: com.delepi.app
 productName: Delepi
+# 客户端自动更新 L3 构建期注入（不声明 publish，避免生成第二套 latest.yml 版本真相）
+extraMetadata:
+  delepiUpdate:
+    baseUrl: https://update.ai-cnlab.com
 directories:
   output: release-linux
   buildResources: resources

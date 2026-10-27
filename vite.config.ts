@@ -3,6 +3,11 @@ import electron from 'vite-plugin-electron'
 import path from 'path'
 
 export default defineConfig({
+  // 客户端自动更新 L2 构建期覆盖：未设置时为空串 → 解析链回落 L3（yml extraMetadata）/ L4（源码常量）
+  define: {
+    __DELEPI_UPDATE_BASE_URL_OVERRIDE__: JSON.stringify(process.env.DELEPI_UPDATE_BASE_URL ?? ''),
+    __DELEPI_UPDATE_ACCESS_KEY_OVERRIDE__: JSON.stringify(process.env.DELEPI_UPDATE_ACCESS_KEY ?? ''),
+  },
   plugins: [
     electron([
       {

@@ -4,7 +4,9 @@
  * 依据《Delepi 预置 Python 环境包技术方案》第2.2节构建流程图、第2.3节核心实现、
  * 第5章预装依赖清单、第8.3节 .beez-preset 标记文件、第11.1节构建验收标准实现。
  *
- * 构建流程（8步）：
+ * 构建流程（2026-10-26 改造：先校验复用，未命中再全量重建，重建后再次校验）：
+ *   0. 前置验证现有产物（目录 / python --version / .beez-preset / 指纹 / 包覆盖 / 单进程批量 import）
+ *      通过则直接复用并跳过整个构建流程；--verify-only 只校验；--force 跳过复用判定
  *   1. 检查缓存（scripts/cache/python-3.14.6-embed-amd64.zip）
  *   2. 解压到临时构建目录 scripts/.build/python-3.14.6/
  *   3. 配置 _pth 文件（取消注释 import site、添加 Lib/site-packages）
@@ -13,8 +15,10 @@
  *   6. 清理（__pycache__/、pip 缓存、get-pip.py）
  *   7. 验证（python --version / pip --version / import 各预装包）
  *   8. 移动到最终位置 resources/python/python-3.14.6/ 并生成 .beez-preset
+ *   9. 重建后再次校验最终 outputDir（失败则非零退出码）
  */
 
+import { createHash } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'node:fs';
 import { copyFile, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { get } from 'node:https';
@@ -27,7 +31,7 @@ const PYTHON_VERSION = '3.14.6';
 const PYTHON_SHORT = '3.14';
 const EMBED_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-embed-amd64.zip`;
 // mac/linux 变体运行时来源：python-build-standalone（PBS）便携发行版（python.org 无 macOS/Linux 免安装发行版）。
-// tag 固定 20260804：更新的 release tag 已无 cpython-3.14.6 资产。
+// tag 固定 20260804：更新的 release tag 已无 cpython-3.14.6 资产（2026-08-22 盘点实测）。
 const PBS_TAG = '20260804';
 // triple 运行时解析：mac 按宿主 process.arch（arm64→aarch64-apple-darwin，否则 x86_64-apple-darwin）；linux 固定 x86_64-unknown-linux-gnu
 const PBS_MAC_TRIPLE = process.arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
@@ -43,10 +47,10 @@ const PRESET_MARKER_FILE = '.beez-preset';
 const GET_PIP_URL = 'https://bootstrap.pypa.io/get-pip.py';
 const PIP_INDEX_URL = process.env.DELEPI_PIP_INDEX_URL || 'https://mirrors.cloud.tencent.com/pypi/simple/';
 const DOWNLOAD_TIMEOUT_MS = 120_000;
-const EXEC_TIMEOUT_MS = 1800_000;  // 预装依赖大包下载在慢速源下超过 600s 会被杀；换源后仍留充足余量
+const EXEC_TIMEOUT_MS = 1800_000;  // 2026-09-04 fix: 预装依赖大包下载在慢速源下超过 600s 会被杀；换源后仍留充足余量
 
 // ================================================================
-// 构建变体（Win10 差异化打包；mac/Linux 差异化打包）
+// 构建变体（Win10 差异化打包，2026-08-22 新增；mac/Linux 差异化打包，2026-08-22 新增）
 // 无参数 = default 变体：路径与命令与历史版本完全一致；
 // 传入 --win10 / win10 / --preset=win10 = win10 变体：
 //   独立输出目录 resources/python-win10、独立缓存 scripts/cache/win10、
@@ -69,7 +73,7 @@ interface BuildVariant {
   buildDirName: string;
   /** requirements 包清单文件；null = 使用 PRESET_PACKAGES 常量（主线行为） */
   requirementsFile: string | null;
-  /** pip 是否禁用本地缓存（win10：规避用户级 wheels 缓存权限问题，实测 Errno13） */
+  /** pip 是否禁用本地缓存（win10：规避用户级 wheels 缓存权限问题，2026-08-22 实测 Errno13） */
   pipNoCacheDir: boolean;
   /** 运行时来源：embed = python.org Windows embeddable zip；pbs = python-build-standalone 便携 tarball（mac/linux） */
   runtime: 'embed' | 'pbs';
@@ -129,6 +133,16 @@ const VARIANT_KEY: 'default' | 'win10' | 'mac' | 'linux' = VARIANT_ARG
   : 'default';
 const VARIANT = VARIANTS[VARIANT_KEY];
 
+// 复用/校验命令行开关（2026-10-26 新增）：
+//   --verify-only：只校验现有产物，绝不执行构建；通过退出 0，不通过退出 1
+//   --force      ：跳过复用判定，强制全量重建；重建后仍执行一次校验
+const CLI_ARGS = process.argv.slice(2);
+const VERIFY_ONLY = CLI_ARGS.includes('--verify-only');
+const FORCE_REBUILD = CLI_ARGS.includes('--force');
+
+/** 构建后端固定版本（pip 安装与复用指纹计算共用，避免两处版本漂移） */
+const BUILD_BACKEND_SPECS: readonly string[] = ['setuptools==84.0.0', 'wheel==0.48.0'];
+
 // 预装依赖清单（对应6类功能需求，方案文档第5章）
 const PRESET_PACKAGES: Record<string, string> = {
   'PyYAML': '>=3.0.0',
@@ -159,14 +173,14 @@ const PRESET_PACKAGES: Record<string, string> = {
   'pandas': '>=1.5',
   // 报表导出（Excel写出）
   'xlsxwriter': '>=3.0',
-  // ---- HTML/XML/浏览器 ----
+  // ---- HTML/XML/浏览器（2026-08-20 新增）----
   'beautifulsoup4': '>=4.12.0',
   'html5lib':       '>=1.1',
   'xmltodict':      '>=0.13.0',
   'defusedxml':     '>=0.7.1',
   'playwright':     '>=1.40.0',
   'pygetwindow':    '>=0.0.9',
-  // ---- 数据库驱动与常用工具 ----
+  // ---- 数据库驱动与常用工具（2026-08-20 新增）----
   'pymysql':                '>=1.2.0',
   'mysql-connector-python': '>=26.7.0',
   'pyodbc':                 '>=5.3.0',
@@ -196,7 +210,7 @@ const IMPORT_NAMES: Record<string, string> = {
   'SQLAlchemy': 'sqlalchemy',
 };
 
-/** win10 增量包的 pip 包名 → import 模块名映射（追加生效；预演实测 wheel 自带 pywin32.pth，import win32api 可用） */
+/** win10 增量包的 pip 包名 → import 模块名映射（追加生效；2026-08-22 预演实测 wheel 自带 pywin32.pth，import win32api 可用） */
 const WIN10_IMPORT_NAMES: Record<string, string> = {
   pywin32: 'win32api',
 };
@@ -494,6 +508,240 @@ async function verify(buildPythonDir: string, pythonExe: string, presetPackages:
   }
 }
 
+
+// ================================================================
+// 前置验证与复用（2026-10-26 新增）
+// 目标：现有 outputDir 完好时跳过整个构建流程；任一校验项无法确证即判定不可复用。
+// 原则：宁重建不误用——marker 缺失/解析失败/字段缺失/指纹不符/包覆盖不全/导入失败均回退全量重建。
+// ================================================================
+
+/** 预置环境校验结果 */
+interface PresetVerificationResult {
+  ok: boolean;
+  /** 中文失败原因列表（ok=false 时非空） */
+  failures: string[];
+  /** 标记文件中的 buildDate（仅用于复用命中日志展示） */
+  buildDate?: string;
+}
+
+/** 当前变体 python 可执行文件相对路径：embed=python.exe；pbs=bin/python3.14 */
+function pythonExeRelativePath(): string {
+  return VARIANT.runtime === 'embed' ? 'python.exe' : path.join('bin', `python${PYTHON_SHORT}`);
+}
+
+/** pip 包名 → import 模块名（含 win10 增量映射） */
+function resolveImportName(pkgName: string): string {
+  return IMPORT_NAMES[pkgName] ?? WIN10_IMPORT_NAMES[pkgName] ?? pkgName;
+}
+
+/** 包名规范化（PEP 503：忽略大小写，[-_.] 视为等价），用于 marker.packages 覆盖判断 */
+function canonicalizePackageName(name: string): string {
+  return name.toLowerCase().replace(/[-_.]+/g, '-');
+}
+
+/**
+ * 计算复用指纹：当前变体 + Python 版本 + 包清单内容（包名+版本约束，按包名排序）+ 构建后端固定版本。
+ * 包清单只影响指纹，不改变既有 marker 字段语义。
+ */
+function computePresetFingerprint(presetPackages: Record<string, string>): string {
+  const packageSpecs = Object.keys(presetPackages)
+    .sort()
+    .map((name) => `${name}${presetPackages[name]}`);
+  const payload = JSON.stringify({
+    variant: VARIANT_KEY,
+    pythonVersion: PYTHON_VERSION,
+    packages: packageSpecs,
+    buildBackend: BUILD_BACKEND_SPECS,
+  });
+  return createHash('sha256').update(payload, 'utf-8').digest('hex');
+}
+
+/** 判断路径是否为目录 */
+async function isDirectory(targetPath: string): Promise<boolean> {
+  try {
+    return (await stat(targetPath)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 一次性批量 import 清单内全部模块（单次 python 子进程，JSON 汇总失败项；-B 禁止写 .pyc）。
+ * 返回中文失败原因列表；空数组表示全部导入成功。
+ */
+async function batchImportCheck(pythonExe: string, cwd: string, presetPackages: Record<string, string>): Promise<string[]> {
+  const items = Object.keys(presetPackages).map((pkgName) => ({
+    package: pkgName,
+    module: resolveImportName(pkgName),
+  }));
+  const script = [
+    'import importlib',
+    'import json',
+    'import sys',
+    'items = json.loads(sys.argv[1])',
+    'failures = []',
+    'for item in items:',
+    '    try:',
+    '        importlib.import_module(item["module"])',
+    '    except BaseException as exc:',
+    '        failures.append({"package": item["package"], "module": item["module"], "error": type(exc).__name__ + ": " + str(exc)})',
+    'print("__BEEZ_IMPORT_RESULT__" + json.dumps({"total": len(items), "failures": failures}))',
+  ].join('\n');
+
+  const result = await runCommand(pythonExe, ['-B', '-c', script, JSON.stringify(items)], cwd);
+  const resultMarker = '__BEEZ_IMPORT_RESULT__';
+  const resultLine = result.stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith(resultMarker))
+    .pop();
+  if (!resultLine) {
+    throw new Error(`批量导入校验未返回结果（stdout 为空或格式不符）: ${result.stdout.trim() || '(空)'}`);
+  }
+
+  let parsed: { total?: number; failures?: Array<{ package?: string; module?: string; error?: string }> } = {};
+  try {
+    const rawParsed: unknown = JSON.parse(resultLine.slice(resultMarker.length));
+    if (typeof rawParsed !== 'object' || rawParsed === null || Array.isArray(rawParsed)) {
+      throw new Error('结果不是 JSON 对象');
+    }
+    parsed = rawParsed as typeof parsed;
+  } catch (err) {
+    throw new Error(`批量导入校验结果 JSON 解析失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (parsed.total !== items.length) {
+    return [`批量导入校验结果数量不符: 期望 ${items.length}, 实际 ${String(parsed.total ?? '(缺失)')}`];
+  }
+  const importFailures = Array.isArray(parsed.failures) ? parsed.failures : [];
+  if (importFailures.length > 0) {
+    return importFailures.map((item) =>
+      `模块导入失败: ${item.package ?? '(unknown)'} (import ${item.module ?? '(unknown)'}): ${item.error ?? '未知错误'}`,
+    );
+  }
+  return [];
+}
+
+/**
+ * 校验指定 outputDir 是否可复用（同时用于构建前置验证与重建后最终校验）。
+ * 校验项：目录存在 → python 可执行文件存在 → --version 为 3.14.6 → marker 存在且可解析
+ *        → pythonVersion/variant 匹配 → fingerprint 匹配 → packages 覆盖清单 → 单进程批量 import。
+ */
+async function verifyPresetEnvironment(
+  outputDir: string,
+  presetPackages: Record<string, string>,
+): Promise<PresetVerificationResult> {
+  const failures: string[] = [];
+
+  // 1) 输出目录必须存在
+  if (!(await isDirectory(outputDir))) {
+    return { ok: false, failures: [`输出目录不存在或不是目录: ${outputDir}`] };
+  }
+
+  // 2) python 可执行文件必须存在
+  const pythonExe = path.join(outputDir, pythonExeRelativePath());
+  if (!existsSync(pythonExe)) {
+    return { ok: false, failures: [`Python 可执行文件缺失: ${pythonExe}`] };
+  }
+
+  // 3) python --version 必须严格为 3.14.6
+  try {
+    const versionResult = await runCommand(pythonExe, ['-B', '--version'], outputDir);
+    const versionOutput = (versionResult.stdout || versionResult.stderr || '').trim();
+    const versionMatch = versionOutput.match(/^Python\s+(\S+)$/i);
+    if (!versionMatch || versionMatch[1] !== PYTHON_VERSION) {
+      failures.push(`Python 版本不匹配: 期望 ${PYTHON_VERSION}, 实际 ${versionOutput || '(无输出)'}`);
+    }
+  } catch (err) {
+    failures.push(`Python 版本检查失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (failures.length > 0) {
+    return { ok: false, failures };
+  }
+
+  // 4) .beez-preset 必须存在且可解析为 JSON 对象
+  const markerPath = path.join(outputDir, PRESET_MARKER_FILE);
+  if (!existsSync(markerPath)) {
+    return { ok: false, failures: [`标记文件缺失: ${markerPath}（旧产物或未完成构建，不可复用）`] };
+  }
+  let rawMarker: unknown = undefined;
+  try {
+    rawMarker = JSON.parse(await readFile(markerPath, 'utf-8'));
+  } catch (err) {
+    return { ok: false, failures: [`标记文件 JSON 解析失败: ${markerPath}: ${err instanceof Error ? err.message : String(err)}`] };
+  }
+  if (typeof rawMarker !== 'object' || rawMarker === null || Array.isArray(rawMarker)) {
+    return { ok: false, failures: [`标记文件内容不是 JSON 对象: ${markerPath}`] };
+  }
+  const marker = rawMarker as Record<string, unknown>;
+
+  // 5) pythonVersion / variant 必须与当前变体一致（default 变体历史 marker 无 variant 字段，缺失视为 default）
+  if (marker.pythonVersion !== PYTHON_VERSION) {
+    failures.push(`标记文件 pythonVersion 不匹配: 期望 ${PYTHON_VERSION}, 实际 ${String(marker.pythonVersion ?? '(缺失)')}`);
+  }
+  if (VARIANT_KEY === 'default') {
+    if (marker.variant !== undefined && marker.variant !== 'default') {
+      failures.push(`标记文件 variant 不匹配: 期望 default（或缺省）, 实际 ${String(marker.variant)}`);
+    }
+  } else if (marker.variant !== VARIANT_KEY) {
+    failures.push(`标记文件 variant 不匹配: 期望 ${VARIANT_KEY}, 实际 ${String(marker.variant ?? '(缺失)')}`);
+  }
+
+  // 6) 指纹必须与「当前变体 + Python 版本 + 包清单内容 + 构建后端固定版本」完全一致
+  const expectedFingerprint = computePresetFingerprint(presetPackages);
+  if (typeof marker.fingerprint !== 'string' || marker.fingerprint.length === 0) {
+    failures.push('标记文件缺少 fingerprint 字段（旧版标记不可复用，需全量重建一次）');
+  } else if (marker.fingerprint !== expectedFingerprint) {
+    failures.push(`标记文件 fingerprint 不匹配: 期望 ${expectedFingerprint}, 实际 ${marker.fingerprint}`);
+  }
+
+  // 7) marker.packages 必须覆盖当前清单内全部包（包名按 PEP 503 规范化，值必须为非空字符串）
+  const markerPackages = marker.packages;
+  if (typeof markerPackages !== 'object' || markerPackages === null || Array.isArray(markerPackages)) {
+    failures.push('标记文件 packages 字段缺失或格式错误');
+  } else {
+    const installed = new Map<string, unknown>();
+    for (const [name, version] of Object.entries(markerPackages as Record<string, unknown>)) {
+      installed.set(canonicalizePackageName(name), version);
+    }
+    const missing = Object.keys(presetPackages).filter((name) => {
+      const version = installed.get(canonicalizePackageName(name));
+      return typeof version !== 'string' || version.length === 0;
+    });
+    if (missing.length > 0) {
+      failures.push(`标记文件 packages 未覆盖清单内 ${missing.length} 个包: ${missing.join(', ')}`);
+    }
+  }
+
+  if (failures.length > 0) {
+    return { ok: false, failures };
+  }
+
+  // 8) 一次性批量 import 清单内全部模块（单次 python 子进程，不逐包起进程）
+  try {
+    const importFailures = await batchImportCheck(pythonExe, outputDir, presetPackages);
+    failures.push(...importFailures);
+  } catch (err) {
+    failures.push(`批量导入校验执行失败: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  if (failures.length > 0) {
+    return { ok: false, failures };
+  }
+  return {
+    ok: true,
+    failures: [],
+    buildDate: typeof marker.buildDate === 'string' ? marker.buildDate : undefined,
+  };
+}
+
+/** 打印校验失败原因（统一中文输出，供前置验证与 --verify-only 使用） */
+function logVerificationFailures(failures: string[]): void {
+  for (const failure of failures) {
+    logError(`  - ${failure}`);
+  }
+}
+
 /** 生成 .beez-preset 标记文件（记录构建信息和包版本清单） */
 async function writePresetMarker(outputDir: string, pythonExe: string, presetPackages: Record<string, string>): Promise<void> {
   // 通过 pip list --format=json 获取实际安装版本
@@ -518,6 +766,8 @@ async function writePresetMarker(outputDir: string, pythonExe: string, presetPac
     // 变体附加标识：win10/mac/linux 写入 variant 字段（default 变体保持历史字段结构不变）
     ...(VARIANT_KEY === 'default' ? {} : { variant: VARIANT_KEY }),
     packages: installedMap,
+    // 复用指纹：新增字段，不改变既有字段语义；仅用于判断当前 outputDir 是否可复用
+    fingerprint: computePresetFingerprint(presetPackages),
   };
 
   const markerPath = path.join(outputDir, PRESET_MARKER_FILE);
@@ -541,6 +791,45 @@ async function main() {
   }
   if (VARIANT_KEY === 'mac' || VARIANT_KEY === 'linux') {
     log(`${VARIANT_KEY === 'mac' ? 'Mac' : 'Linux'} 差异化变体（PBS 运行时）: requirements-preset-${VARIANT_KEY}.txt / resources/python-${VARIANT_KEY} / 独立缓存`);
+  }
+
+  // 包清单解析提前到构建前：前置验证、指纹计算、依赖安装三处共用同一份清单
+  const presetPackages: Record<string, string> = VARIANT.requirementsFile
+    ? await parseRequirements(VARIANT.requirementsFile)
+    : PRESET_PACKAGES;
+  if (VARIANT.requirementsFile) {
+    log(`包清单来源: ${VARIANT.requirementsFile}（${Object.keys(presetPackages).length} 个包）`);
+  }
+
+  // ---- Step 0: 前置验证（--verify-only 只校验；默认命中则直接复用；--force 跳过复用判定）----
+  if (VERIFY_ONLY) {
+    if (FORCE_REBUILD) {
+      log('--verify-only 与 --force 同时指定：仅执行校验，忽略 --force');
+    }
+    log(`仅验证模式（--verify-only）：只校验、绝不构建，输出目录: ${VARIANT.outputDir}`);
+    const verifyOnlyResult = await verifyPresetEnvironment(VARIANT.outputDir, presetPackages);
+    if (verifyOnlyResult.ok) {
+      log('前置验证通过（--verify-only），现有预置环境可复用（未执行任何构建动作）');
+      return;
+    }
+    logError('前置验证未通过（--verify-only）：');
+    logVerificationFailures(verifyOnlyResult.failures);
+    process.exitCode = 1;
+    return;
+  }
+
+  if (FORCE_REBUILD) {
+    log('--force 已指定：跳过复用判定，强制全量重建（重建后仍会再次校验）');
+  } else {
+    log(`前置验证现有预置环境: ${VARIANT.outputDir}`);
+    const reuseResult = await verifyPresetEnvironment(VARIANT.outputDir, presetPackages);
+    if (reuseResult.ok) {
+      log(`前置验证通过，跳过 Python 环境构建（复用现有产物${reuseResult.buildDate ? `，buildDate: ${reuseResult.buildDate}` : ''}）`);
+      log(`输出目录: ${VARIANT.outputDir}`);
+      return;
+    }
+    logError('前置验证未通过，将回退全量重建。具体原因:');
+    logVerificationFailures(reuseResult.failures);
   }
 
   // ---- Step 1: 检查缓存，必要时下载发行包（embed=python.org embeddable zip；pbs=python-build-standalone tarball）----
@@ -621,19 +910,13 @@ async function main() {
     ? path.join(buildPythonDir, 'Lib', 'site-packages')
     : path.join(buildPythonDir, 'lib', `python${PYTHON_SHORT}`, 'site-packages');
 
-  // 变体包清单：default = PRESET_PACKAGES 常量（历史行为不变）；win10/mac/linux = requirements 清单文件
-  const presetPackages: Record<string, string> = VARIANT.requirementsFile
-    ? await parseRequirements(VARIANT.requirementsFile)
-    : PRESET_PACKAGES;
-  if (VARIANT.requirementsFile) {
-    log(`包清单来源: ${VARIANT.requirementsFile}（${Object.keys(presetPackages).length} 个包）`);
-  }
+  // 包清单已在 main() 开头解析（前置验证 / 指纹计算 / 依赖安装共用同一份清单），此处不再重复解析
 
   // 预装构建后端（setuptools/wheel）：embeddable Python 的 _pth 忽略 PYTHONPATH，
   // pip 默认构建隔离注入 sitecustomize 失效，需关闭隔离并由宿主 site-packages 提供 setuptools.build_meta
   await runCommand(
     pythonExe,
-    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', PIP_INDEX_URL, 'setuptools==84.0.0', 'wheel==0.48.0', '--target', sitePackagesDir],
+    ['-m', 'pip', 'install', '--disable-pip-version-check', ...(VARIANT.pipNoCacheDir ? ['--no-cache-dir'] : []), '-i', PIP_INDEX_URL, ...BUILD_BACKEND_SPECS, '--target', sitePackagesDir],
     buildPythonDir,
   );
   const pkgSpecs: string[] = [];
@@ -667,6 +950,16 @@ async function main() {
   // 生成 .beez-preset 标记文件
   log('生成 .beez-preset 标记文件...');
   await writePresetMarker(VARIANT.outputDir, path.join(VARIANT.outputDir, pythonExeRel), presetPackages);
+
+  // ---- Step 9: 重建后再次校验最终产物（对最终 outputDir 校验，而不是中间构建目录）----
+  log(`重建后再次校验最终产物: ${VARIANT.outputDir}`);
+  const finalVerifyResult = await verifyPresetEnvironment(VARIANT.outputDir, presetPackages);
+  if (!finalVerifyResult.ok) {
+    logError('重建后校验未通过，具体原因:');
+    logVerificationFailures(finalVerifyResult.failures);
+    throw new Error('重建后校验未通过（最终产物不满足复用条件）');
+  }
+  log('重建后校验通过：最终产物满足复用条件');
 
   log('构建完成 ✔');
   log(`输出目录: ${VARIANT.outputDir}`);

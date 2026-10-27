@@ -6,9 +6,15 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG, IPC_WATCH, IPC_UPDATE } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 import type { ConversationCleanupOptions } from '@shared/types/conversation-cleanup';
+import type {
+  UpdateCheckParams,
+  UpdateDownloadParams,
+  UpdateInstallParams,
+  UpdateStateSnapshot,
+} from '@shared/types/update';
 
 const electronAPI = {
   chat: {
@@ -42,14 +48,23 @@ const electronAPI = {
     get: () => ipcRenderer.invoke(IPC_CONFIG.GET),
     save: (params: unknown) => ipcRenderer.invoke(IPC_CONFIG.SAVE, params),
     reload: () => ipcRenderer.invoke(IPC_CONFIG.RELOAD),
-    /** 列出全部模型档案与当前激活档案 id */
-    listProfiles: () => ipcRenderer.invoke(IPC_CONFIG.PROFILES_LIST),
+    /**
+     * 列出全部模型档案与当前激活档案 id
+     * 阶段7：可选 { conversationId } → 额外返回该会话的绑定视图 conversationProfile
+     * （{boundProfileId, boundProfileName, boundProfileValid, activeProfileId, activeProfileName}）
+     */
+    listProfiles: (params?: { conversationId?: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_LIST, params),
     /** 另存为模型档案：主进程把当前生效配置（九键+开关/档位）快照为新档案，同名覆盖；blank=true 时创建空白方案（9 文本键空串+开关/档位取默认值） */
     saveProfile: (params: { name: string; blank?: boolean }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SAVE, params),
     /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状 */
     deleteProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_DELETE, params),
-    /** 切换模型档案：主进程批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId */
-    switchProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SWITCH, params),
+    /**
+     * 切换模型档案：主进程批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId。
+     * 阶段7：带 conversationId 时把该会话绑定到新方案（返回 conversationProfileId），
+     * 其他会话的绑定不受影响（会话级隔离）。
+     */
+    switchProfile: (params: { id: string; conversationId?: string }) =>
+      ipcRenderer.invoke(IPC_CONFIG.PROFILES_SWITCH, params),
     /** 导出模型档案到 JSON 文件：main 直调另存为对话框后 ModelProfile 原样序列化落盘（密钥明文，不脱敏） */
     exportProfile: (params: { profileId: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_EXPORT, params),
     /** 从 JSON 文件导入模型档案：白名单容错提取+补位，新 uuid 追加为新档案，不自动激活 */
@@ -173,6 +188,39 @@ const electronAPI = {
     showOpenDialog: (options: unknown) =>
       ipcRenderer.invoke(IPC_DIALOG.SHOW_OPEN, options),
   },
+  watch: {
+    /**
+     * 开启值守（渲染→主，invoke）
+     * 主进程执行：本地校验 → IMAP/SMTP 真实自检 → 水位初始化 → 写回 watchEnabled=true → 启动递归轮询
+     * @returns { ok, status, code?, message? }（自检失败回落关闭并携带稳定错误码）
+     */
+    start: () => ipcRenderer.invoke(IPC_WATCH.START),
+    /**
+     * 关闭值守（渲染→主，invoke）：清定时器、写回 watchEnabled=false（幂等）
+     * @returns { ok, status }
+     */
+    stop: () => ipcRenderer.invoke(IPC_WATCH.STOP),
+    /**
+     * 查询值守运行状态（渲染→主，invoke）
+     * @returns { status: 'closed'|'starting'|'running'|'suspended', enabled, lastError, watermark(恒为 null), cursor, nextPollAt, processedCount }
+     */
+    status: () => ipcRenderer.invoke(IPC_WATCH.STATUS),
+    /**
+     * 订阅「值守指令已接受，请切到目标会话」事件（主→渲染，阶段7 目标5②）
+     * 载荷 WatchCommandNavigationPayload：{ conversationId, conversationTitle, commandType,
+     * requestId, subject, receivedAtIso, createdNewConversation }
+     * 仅 send_message / new_conversation 指令会推送；role 过滤/主题过滤/发件人拒绝/非指令四类永不推送
+     * @param listener 回调函数，参数为载荷
+     * @returns 取消监听的函数
+     */
+    onCommandNavigate: (listener: (payload: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) => listener(args[0]);
+      ipcRenderer.on(IPC_WATCH.COMMAND_NAVIGATE, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_WATCH.COMMAND_NAVIGATE, handler);
+      };
+    },
+  },
   log: {
     /**
      * 渲染端日志转发（渲染→主，invoke）：主进程 writeMainLog 写入 userData/logs/main.log
@@ -185,6 +233,31 @@ const electronAPI = {
       message: string;
       err?: { message: string; stack?: string };
     }) => ipcRenderer.invoke(IPC_LOG.RENDERER, params),
+  },
+  update: {
+    /**
+     * 客户端自动更新（通道字面量：update:check / update:download / update:cancel /
+     * update:install / update:get-state / update:state-changed）
+     */
+    /** 请求一次检查（手动/自动/恢复；渲染→主，invoke） */
+    check: (params?: UpdateCheckParams) => ipcRenderer.invoke(IPC_UPDATE.CHECK, params),
+    /** 请求下载指定版本（渲染→主，invoke；下载在后台进行，不阻塞界面） */
+    download: (params?: UpdateDownloadParams) => ipcRenderer.invoke(IPC_UPDATE.DOWNLOAD, params),
+    /** 取消当前下载（渲染→主，invoke） */
+    cancel: () => ipcRenderer.invoke(IPC_UPDATE.CANCEL),
+    /** 调起安装器（渲染→主，invoke） */
+    install: (params?: UpdateInstallParams) => ipcRenderer.invoke(IPC_UPDATE.INSTALL, params),
+    /** 拉取当前快照（渲染→主，invoke；先取快照再订阅，避免首帧丢中间态） */
+    getState: () => ipcRenderer.invoke(IPC_UPDATE.GET_STATE),
+    /** 订阅状态变化（主→渲染）；返回取消订阅函数（与 watch.onCommandNavigate 同构） */
+    onStateChanged: (listener: (snapshot: UpdateStateSnapshot) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, snapshot: UpdateStateSnapshot) =>
+        listener(snapshot);
+      ipcRenderer.on(IPC_UPDATE.STATE_CHANGED, handler);
+      return () => {
+        ipcRenderer.removeListener(IPC_UPDATE.STATE_CHANGED, handler);
+      };
+    },
   },
 
   /**

@@ -1,0 +1,4 @@
+# Delepi 自动更新服务端依赖：只允许 FastAPI 与 Uvicorn（及其必需传递依赖）
+# 禁止引入数据库驱动、ORM、Redis、Celery、requests、aiofiles 等非必需库
+fastapi==0.115.6
+uvicorn==0.32.1

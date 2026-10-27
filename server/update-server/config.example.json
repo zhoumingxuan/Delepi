@@ -1,0 +1,11 @@
+{
+  "accessKeys": [
+    "delepi_update_K7mQ3vTz9LpW4aB2cD"
+  ],
+  "packageDir": "./packages",
+  "platformPackageDirs": {
+    "win10": "./packages"
+  },
+  "manifestPath": "./data/manifest.json",
+  "httpReadTimeoutSeconds": 10
+}

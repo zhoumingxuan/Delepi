@@ -1,6 +1,6 @@
 {
   "name": "delepi",
-  "version": "0.8.0",
+  "version": "0.8.2",
   "description": "Delepi - 智能协作、准确交付",
   "author": "start at zhoumingxuan 657427356@qq.com",
   "main": "dist/main/index.js",
@@ -13,11 +13,15 @@
     "postinstall": "node scripts/postinstall.cjs && electron-builder install-app-deps",
     "pack": "node -e \"require('fs').rmSync('release',{recursive:true,force:true})\" && npm run build && electron-builder",
     "build:preset-python": "npx tsx scripts/build-preset-python.ts",
+    "verify:preset-python": "npx tsx scripts/build-preset-python.ts --verify-only",
     "build:preset-python-win10": "npx tsx scripts/build-preset-python.ts --win10",
+    "verify:preset-python-win10": "npx tsx scripts/build-preset-python.ts --win10 --verify-only",
     "pack:win10": "node -e \"require('fs').rmSync('release-win10',{recursive:true,force:true})\" && npm run build && npm run build:preset-python-win10 && npx electron-builder --config electron-builder-win10.yml",
     "build:preset-python-mac": "npx tsx scripts/build-preset-python.ts --mac",
+    "verify:preset-python-mac": "npx tsx scripts/build-preset-python.ts --mac --verify-only",
     "pack:mac": "node -e \"require('fs').rmSync('release-mac',{recursive:true,force:true})\" && npm run build && npm run build:preset-python-mac && npx electron-builder --config electron-builder-mac.yml",
     "build:preset-python-linux": "npx tsx scripts/build-preset-python.ts --linux",
+    "verify:preset-python-linux": "npx tsx scripts/build-preset-python.ts --linux --verify-only",
     "pack:linux": "node -e \"require('fs').rmSync('release-linux',{recursive:true,force:true})\" && npm run build && npm run build:preset-python-linux && npx electron-builder --config electron-builder-linux.yml",
     "prepack": "npm run build:preset-python"
   },

@@ -238,6 +238,50 @@ export const IPC_DIALOG = {
   SHOW_OPEN: 'dialog:show-open',
 } as const;
 
+// --- 值守模式 IPC 通道（阶段1：服务骨架，零网络；preload 暴露随阶段2开放） ---
+export const IPC_WATCH = {
+  /**
+   * 开启值守（渲染→主，invoke）
+   * 阶段1：开关在界面置灰，主进程侧为 stub（本地归一化 → 凭据自检 stub → 恒回落关闭）
+   * 阶段2：前置校验 + IMAP/SMTP 真实自检 + 水位初始化 + 启动轮询
+   */
+  START: 'watch:start',
+  /**
+   * 关闭值守（渲染→主，invoke）
+   * 写回 watchEnabled=false；阶段2补齐清定时器/终止在途信号/刷新工具清单
+   */
+  STOP: 'watch:stop',
+  /**
+   * 查询值守运行状态（渲染→主，invoke）
+   * 返回 { status: 'closed'|'starting'|'running'|'suspended', enabled }；阶段1 status 恒 closed
+   */
+  STATUS: 'watch:status',
+  /**
+   * 指令邮件解析成功后通知渲染层切换会话（主→渲染，send）。
+   * 载荷 WatchCommandNavigationPayload：{ conversationId, conversationTitle, commandType,
+   * requestId, subject, receivedAtIso }。
+   * 仅 send_message / new_conversation 两类指令会推送；role 过滤 / 主题过滤 / 发件人拒绝 /
+   * 非指令四类邮件在解析前即被拦截，永不推送（watch-service 单点判定）。
+   */
+  COMMAND_NAVIGATE: 'watch:command-navigate',
+} as const;
+
+// --- 客户端自动更新 IPC 通道（v1：检查/下载/取消/安装/快照 + 状态推送） ---
+export const IPC_UPDATE = {
+  /** 请求一次检查（手动/自动/恢复；渲染→主，invoke） */
+  CHECK: 'update:check',
+  /** 请求下载指定版本（渲染→主，invoke） */
+  DOWNLOAD: 'update:download',
+  /** 取消当前下载（渲染→主，invoke） */
+  CANCEL: 'update:cancel',
+  /** 调起安装器（渲染→主，invoke；Windows 启动后退出应用） */
+  INSTALL: 'update:install',
+  /** 拉取当前快照（渲染→主，invoke；首帧对齐用） */
+  GET_STATE: 'update:get-state',
+  /** 状态变化推送（主→渲染，send） */
+  STATE_CHANGED: 'update:state-changed',
+} as const;
+
 /** 所有 IPC 通道的联合类型 */
 export type IpcChannel =
   | (typeof IPC_CHAT)[keyof typeof IPC_CHAT]
@@ -249,5 +293,7 @@ export type IpcChannel =
   | (typeof IPC_SKILLS)[keyof typeof IPC_SKILLS]
   | (typeof IPC_TOOLS)[keyof typeof IPC_TOOLS]
   | (typeof IPC_LOG)[keyof typeof IPC_LOG]
-  | (typeof IPC_DIALOG)[keyof typeof IPC_DIALOG];
+  | (typeof IPC_DIALOG)[keyof typeof IPC_DIALOG]
+  | (typeof IPC_WATCH)[keyof typeof IPC_WATCH]
+  | (typeof IPC_UPDATE)[keyof typeof IPC_UPDATE];
 

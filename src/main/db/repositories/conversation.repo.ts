@@ -114,6 +114,50 @@ export function getConversationById(conversationId: string): ConversationRecord 
   return row ? mapConversationRow(row) : null;
 }
 
+// ============================================================
+// 阶段7 目标1：会话级模型方案绑定（conversations.model_profile_id）
+//
+// 设计说明：
+// - 列由 sqlite-adapter 的 DDL 与就地补建共同保证存在；本文件只读写，不建表；
+// - 绑定写入 **不更新 updated_at**（绑定是会话属性，不应把会话顶到列表顶部）；
+// - 对外的 ConversationRecord 结构保持五字段不变（IPC 载荷契约零破坏），
+//   绑定信息经下面三个专用访问器读取。
+// ============================================================
+
+/** 读取会话绑定的模型方案 id（未绑定/会话不存在 → 空串） */
+export function getConversationModelProfileId(conversationId: string): string {
+  const row = getDb()
+    .prepare('SELECT model_profile_id FROM conversations WHERE id = ?')
+    .get(conversationId) as { model_profile_id?: string } | undefined;
+  const value = row?.model_profile_id;
+  return typeof value === 'string' ? value : '';
+}
+
+/**
+ * 写入会话绑定的模型方案 id（'' = 解绑）。
+ * @returns 是否命中并更新了会话行（false = 会话不存在）
+ */
+export function setConversationModelProfileId(conversationId: string, profileId: string): boolean {
+  const result = getDb()
+    .prepare('UPDATE conversations SET model_profile_id = ? WHERE id = ?')
+    .run(String(profileId ?? ''), conversationId);
+  return result.changes > 0;
+}
+
+/**
+ * 清除所有指向指定方案的会话绑定（方案被删除时调用：避免悬空绑定长期残留）。
+ * @returns 受影响的会话行数
+ */
+export function clearConversationModelProfileBindings(profileId: string): number {
+  if (!profileId) {
+    return 0;
+  }
+  const result = getDb()
+    .prepare("UPDATE conversations SET model_profile_id = '' WHERE model_profile_id = ?")
+    .run(profileId);
+  return result.changes;
+}
+
 export function deleteConversation(conversationId: string): void {
   const db = getDb();
   db.prepare('DELETE FROM messages WHERE conversation_id = ?').run(conversationId);

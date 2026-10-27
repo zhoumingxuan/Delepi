@@ -12,7 +12,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { mkdirSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG, IPC_WATCH, IPC_UPDATE } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 import type {
   ChatSendFileInput,
@@ -34,6 +34,11 @@ import type {
 } from '../types/ipc';
 import type { AppSettings } from '../types/config';
 import type { ConfigGetResult, ModelProfile, CustomSkillTag } from '@shared/types/config';
+import type {
+  UpdateCheckParams,
+  UpdateDownloadParams,
+  UpdateInstallParams,
+} from '@shared/types/update';
 import { eventBus } from '../modules/event-bus/event-bus';
 import { getRunningAssistantMessage } from '../modules/main-agent/running-assistant-message-map';
 import {
@@ -63,6 +68,13 @@ import {
 } from '../modules/skill-system/skill-registry';
 import { truncateConversationTitle } from '../modules/main-agent/title-generation';
 import { configManager } from '../modules/config/config-manager';
+import { updateManager } from '../modules/update/update-manager';
+import {
+  bindConversationToProfile,
+  inspectConversationModelProfile,
+  resolveConversationModelConfig,
+  type ConversationModelProfileView,
+} from '../modules/config/conversation-model-profile';
 import {
   loadDynamicTools,
   reloadDynamicTools,
@@ -71,10 +83,22 @@ import {
   type DynToolInfo,
 } from '../tools/dyn-tool-loader';
 import { pythonManager, type SystemPythonInfo } from '../modules/python';
+
+import {
+  getWatchStatus,
+  setWatchEnabledChangeNotifier,
+  startWatch,
+  startWatchService,
+  stopWatch,
+  type WatchStartResult,
+  type WatchStatusResult,
+  type WatchStopResult,
+} from '../modules/watch/watch-service';
 import {
   createConversation as createConversationRecord,
   deleteConversation as deleteConversationRecord,
   ensureConversation,
+  clearConversationModelProfileBindings,
   getConversationById,
   listConversations,
   listRendererMessages,
@@ -321,6 +345,8 @@ async function persistUploadedFiles(
  * 注册所有 IPC 处理器
  */
 let eventBusCleanups: (() => void)[] = [];
+/** 自动更新 IPC 注册的清理函数（mac activate 二次注册时先精确清理上一轮订阅） */
+let updateIpcDispose: (() => void) | null = null;
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // P1-02: 精确清理上次注册的 EventBus 监听器
@@ -370,8 +396,15 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     //   注意：begin 与 try 之间禁止再插入任何可抛出的语句（此处仅 null 判定，
     //   防止新的闸门旁路泄漏）。
     try {
-      // 校验主模型 API Key 非空
-      const mainModelApiKey = configManager.getSettings().mainModelApiKey;
+      // 【阶段7 目标1】本次 run 的模型配置快照：会话绑定方案优先；未绑定则懒绑定当前激活方案；
+      // 无任何方案时回落全局 14 键（等价阶段6 行为）。快照语义 → 运行中切换方案不影响本次 run。
+      const modelResolution = resolveConversationModelConfig(conversationId);
+      for (const warning of modelResolution.warnings) {
+        writeMainLog('WARN', 'chat.model-profile', `conversationId=${conversationId} ${warning}`);
+      }
+      const runSettings = modelResolution.settings;
+      // 校验主模型 API Key 非空（按本次 run 生效配置判定：绑定方案可能自带可用 key）
+      const mainModelApiKey = runSettings.mainModelApiKey;
       if (!mainModelApiKey || mainModelApiKey.trim() === '') {
         throw new Error('主模型 API Key 未配置，请在设置中配置 API Key');
       }
@@ -391,30 +424,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         conversationId,
         userMessage: params.message,
         modelConfig: {
-          baseUrl: configManager.getSettings().mainModelBaseUrl,
-          apiKey: configManager.getSettings().mainModelApiKey,
-          model: configManager.getSettings().mainModelName,
+          baseUrl: runSettings.mainModelBaseUrl,
+          apiKey: runSettings.mainModelApiKey,
+          model: runSettings.mainModelName,
         },
         assistantConfig: {
           mainModel: {
-            baseUrl: configManager.getSettings().mainModelBaseUrl,
-            apiKey: configManager.getSettings().mainModelApiKey,
-            model: configManager.getSettings().mainModelName,
+            baseUrl: runSettings.mainModelBaseUrl,
+            apiKey: runSettings.mainModelApiKey,
+            model: runSettings.mainModelName,
           },
           executorModel: {
-            baseUrl: configManager.getSettings().executorModelBaseUrl,
-            apiKey: configManager.getSettings().executorModelApiKey,
-            model: configManager.getSettings().executorModelName,
+            baseUrl: runSettings.executorModelBaseUrl,
+            apiKey: runSettings.executorModelApiKey,
+            model: runSettings.executorModelName,
           },
         },
         visionModelConfig: {
-          baseUrl: configManager.getSettings().visionLlmBaseUrl,
-          apiKey: configManager.getSettings().visionLlmApiKey,
-          model: configManager.getSettings().visionLlmModel,
+          baseUrl: runSettings.visionLlmBaseUrl,
+          apiKey: runSettings.visionLlmApiKey,
+          model: runSettings.visionLlmModel,
         },
         // 视觉识别总开关联动：visionEnabled=false 时主智能体多模态强制关闭（multimodalEnabled = visionEnabled && mainModelMultimodal）
-        mainAgentMultimodalEnabled: configManager.getSettings().visionEnabled
-          && configManager.getSettings().mainModelMultimodal,
+        mainAgentMultimodalEnabled: runSettings.visionEnabled && runSettings.mainModelMultimodal,
         assistantMessageId: params.assistantMessageId,
         uploadedFiles,
         signal: abortController.signal,
@@ -673,6 +705,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC_CONFIG.SAVE, async (_event, params: ConfigSaveParams): Promise<void> => {
+    // 【值守开关守卫（v3 §4.4）】watchEnabled 是"用户意图+运行态"双载体，仅允许
+    // watch:start / watch:stop / 自动恢复回落三个服务侧出口写回；config:save 直写该键
+    // 会造成"开关与轮询状态不一致"的绕过态，一律拒绝。
+    if (params.key === 'watchEnabled') {
+      throw new Error(
+        'ERR_WATCH_ENABLED_DIRECT_WRITE_FORBIDDEN：watchEnabled 不允许经 config:save 直接写入；请经 watch:start / watch:stop 调整值守开关',
+      );
+    }
     // 【F2·守卫前置】在本次写入（saveSetting/setSetting）之前记录该键的运行时旧值，
     // 供链路C 做「方案现值 === 写入前运行时旧值」一致性比较；
     // 禁止改用写入后的新值参与比较（否则守卫恒真失效）。
@@ -686,6 +726,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         params.key as keyof AppSettings,
         params.value as AppSettings[keyof AppSettings],
       );
+    }
+
+    // 客户端自动更新：开关即时生效 / 地址变更重置状态（仅两个更新配置键，其它键零影响）
+    if (params.key === 'updateAutoCheckEnabled' || params.key === 'updateBaseUrl') {
+      updateManager.notifyConfigChanged(params.key);
     }
 
     // 【链路C】当前加载了方案（activeProfileId 存在）时，模型配置修改后同步更新该方案在
@@ -733,11 +778,26 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 模型档案处理器（多槽位 + 一键切换 + 兼容未来新模型：档案值始终自由文本快照）
   // ================================================================
 
-  type ProfileListResult = { profiles: ModelProfile[]; activeProfileId: string };
+  /**
+   * 方案列表结果（阶段7：新增 conversationProfile 只读视图）
+   * - conversationProfile 仅在调用方带 conversationId 时返回（配置抽屉展示「当前对话使用方案」）
+   */
+  type ProfileListResult = {
+    profiles: ModelProfile[];
+    activeProfileId: string;
+    conversationProfile?: ConversationModelProfileView | null;
+  };
+  type ProfileListParams = { conversationId?: string } | undefined;
   type ProfileSaveParams = { name: string; blank?: boolean };
   type ProfileDeleteParams = { id: string };
-  type ProfileSwitchParams = { id: string };
-  type ProfileSwitchResult = { activeProfileId: string; profileName: string };
+  /** 切换参数：conversationId 存在时只把该会话绑定到新方案（不再只写全局 14 键） */
+  type ProfileSwitchParams = { id: string; conversationId?: string };
+  type ProfileSwitchResult = {
+    activeProfileId: string;
+    profileName: string;
+    /** 切换后该会话的绑定方案 id（未传 conversationId 时为 ''） */
+    conversationProfileId: string;
+  };
 
   /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + mainThinkingLevel + mainModelProtocol + executorThinkingLevel + executorModelProtocol + executorContextCompressionThreshold；visionEnabled 总开关不入档） */
   const PROFILE_CONFIG_KEYS = [
@@ -758,9 +818,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     'visionLlmModel',
   ] as const;
 
-  ipcMain.handle(IPC_CONFIG.PROFILES_LIST, async (): Promise<ProfileListResult> => {
+  ipcMain.handle(IPC_CONFIG.PROFILES_LIST, async (_event, params?: ProfileListParams): Promise<ProfileListResult> => {
     const settings = configManager.getSettings();
-    return { profiles: settings.modelProfiles, activeProfileId: settings.activeProfileId };
+    const conversationId = typeof params?.conversationId === 'string' ? params.conversationId.trim() : '';
+    const conversationProfile = conversationId && getConversationById(conversationId)
+      ? inspectConversationModelProfile(conversationId)
+      : null;
+    return {
+      profiles: settings.modelProfiles,
+      activeProfileId: settings.activeProfileId,
+      conversationProfile,
+    };
   });
 
   ipcMain.handle(IPC_CONFIG.PROFILES_SAVE, async (_event, params: ProfileSaveParams): Promise<ProfileListResult> => {
@@ -869,6 +937,16 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
     saveSetting('modelProfiles', profiles);
     configManager.setSetting('modelProfiles', profiles);
+    // 【阶段7 目标1】删除方案后清空所有指向它的会话绑定（悬空绑定自愈的主动侧；
+    // 运行期 resolver 仍有第二道兜底：绑定失效即清空并回落激活方案）
+    const clearedBindings = clearConversationModelProfileBindings(params.id);
+    if (clearedBindings > 0) {
+      writeMainLog(
+        'WARN',
+        'config.profile',
+        `方案 ${params.id} 已删除：清空 ${clearedBindings} 个会话的模型方案绑定`,
+      );
+    }
     return { profiles, activeProfileId };
   });
 
@@ -910,7 +988,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
     saveSetting('activeProfileId', profile.id);
     configManager.setSetting('activeProfileId', profile.id);
-    return { activeProfileId: profile.id, profileName: profile.name };
+
+    // 【阶段7 目标1】切换不再只写全局 14 键：带 conversationId 时把该会话绑定到新方案，
+    // 其他会话保持各自绑定（不再被全局切换污染）。conversationId 缺省=纯全局切换（旧行为兼容）。
+    const targetConversationId = typeof params?.conversationId === 'string' ? params.conversationId.trim() : '';
+    let conversationProfileId = '';
+    if (targetConversationId) {
+      if (getConversationById(targetConversationId)) {
+        bindConversationToProfile(targetConversationId, profile.id);
+        conversationProfileId = profile.id;
+        writeMainLog(
+          'INFO',
+          'config.profile',
+          `方案切换已绑定会话：conversationId=${targetConversationId} profileId=${profile.id} profileName=${profile.name}`,
+        );
+      } else {
+        writeMainLog(
+          'WARN',
+          'config.profile',
+          `方案切换：conversationId=${targetConversationId} 不存在，仅完成全局切换（未写会话绑定）`,
+        );
+      }
+    }
+    return { activeProfileId: profile.id, profileName: profile.name, conversationProfileId };
   });
 
   // ---- 方案导出/导入（文件 IO）：导出=ModelProfile 原样序列化落盘（密钥明文）；导入=白名单容错提取+补位，新档案追加不激活 ----
@@ -1791,6 +1891,37 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     await pythonManager.downloadBuiltinPython();
   });
 
+  // ================================================================
+  // 值守模式处理器（阶段2：真实自检 + IMAP 轮询 + list_conversations 查询闭环）
+  // ================================================================
+
+  ipcMain.handle(IPC_WATCH.STATUS, async (): Promise<WatchStatusResult> => {
+    // 状态反馈数据源：status / enabled / lastError / 水位 / 下次轮询时间 / 已处理数
+    return getWatchStatus();
+  });
+
+  ipcMain.handle(IPC_WATCH.START, async (): Promise<WatchStartResult> => {
+    // 真实自检（IMAP+SMTP）→ 水位初始化 → 写回 watchEnabled=true → 启动递归轮询
+    const result = await startWatch();
+    // v3 §4.4：无论成败统一刷新主智能体工具清单（阶段3 send_email 工具可见性随此联动）
+    refreshMainTools();
+    return result;
+  });
+
+  ipcMain.handle(IPC_WATCH.STOP, async (): Promise<WatchStopResult> => {
+    // 幂等关闭：清定时器、写回 watchEnabled=false、复位状态
+    const result = await stopWatch();
+    refreshMainTools();
+    return result;
+  });
+
+  // 值守服务启动入口（app ready 后随 registerIpcHandlers 调用，幂等）：
+  // 读 watchEnabled——false 保持关闭零副作用；true 走真实自检（IMAP/SMTP）：
+  // 通过则自动恢复运行（INFO watch.resume），失败回落关闭并写 ERROR 日志（watch.resume）。
+  // watchEnabled 的服务侧写回经此 notifier 同步刷新主智能体工具清单（v3 §4.4）。
+  setWatchEnabledChangeNotifier(() => refreshMainTools());
+  startWatchService();
+
   // 文件选择对话框
   ipcMain.handle(IPC_DIALOG.SHOW_OPEN, async (_event, options: Electron.OpenDialogOptions) => {
     const win = BrowserWindow.getAllWindows()[0];
@@ -1800,5 +1931,51 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return dialog.showOpenDialog(win, options);
   });
 
-console.log('[IPC] All handlers registered.');
+  // ================================================================
+  // 客户端自动更新处理器（v1：检查 / 下载 / 取消 / 安装 / 快照 + 状态推送）
+  // 通道字面量：update:check / update:download / update:cancel / update:install / update:get-state / update:state-changed
+  // 先 removeHandler 再 handle：mac activate 且窗口为 0 时 registerIpcHandlers 会二次调用，
+  // ipcMain.handle 对同一通道重复注册会抛 "second handler"，因此必须幂等注册。
+  // ================================================================
+  if (updateIpcDispose) {
+    updateIpcDispose();
+    updateIpcDispose = null;
+  }
+  const updateChannels = [
+    IPC_UPDATE.CHECK,
+    IPC_UPDATE.DOWNLOAD,
+    IPC_UPDATE.CANCEL,
+    IPC_UPDATE.INSTALL,
+    IPC_UPDATE.GET_STATE,
+  ] as const;
+  for (const channel of updateChannels) {
+    ipcMain.removeHandler(channel);
+  }
+
+  ipcMain.handle(IPC_UPDATE.CHECK, async (_event, params?: UpdateCheckParams) =>
+    updateManager.check(params));
+  ipcMain.handle(IPC_UPDATE.DOWNLOAD, async (_event, params?: UpdateDownloadParams) =>
+    updateManager.download(params));
+  ipcMain.handle(IPC_UPDATE.CANCEL, async () => updateManager.cancel());
+  ipcMain.handle(IPC_UPDATE.INSTALL, async (_event, params?: UpdateInstallParams) =>
+    updateManager.install(params));
+  ipcMain.handle(IPC_UPDATE.GET_STATE, async () => updateManager.getSnapshot());
+
+  const unsubscribeUpdateState = updateManager.subscribe((snapshot) => {
+    try {
+      if (!mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC_UPDATE.STATE_CHANGED, snapshot);
+      }
+    } catch {
+      // 窗口销毁瞬间 send 可能抛错，静默忽略（下次注册会重新订阅）
+    }
+  });
+  updateIpcDispose = () => {
+    for (const channel of updateChannels) {
+      ipcMain.removeHandler(channel);
+    }
+    unsubscribeUpdateState();
+  };
+
+  console.log('[IPC] All handlers registered.');
 }

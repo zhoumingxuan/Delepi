@@ -11,6 +11,7 @@ import { ConfigProvider, App as AntApp, theme } from 'antd';
 import type { ThemeConfig } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { ChatShell } from './components/ChatShell';
+import { UpdatePrompt } from './components/UpdatePrompt';
 
 /**
  * 单主题 baseToken（沿用 operation_strategy.md 第 4.3 节）
@@ -58,6 +59,8 @@ export default function App() {
     >
       <AntApp>
         <ChatShell />
+        {/* 客户端自动更新：全局更新弹框（窗口重建后由主进程快照重新驱动） */}
+        <UpdatePrompt />
       </AntApp>
     </ConfigProvider>
   );

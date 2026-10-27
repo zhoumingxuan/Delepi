@@ -313,20 +313,30 @@ export function useExecutorTaskRecords(options: {
     });
 
     // 5s 心跳：活跃会话存在 running 任务时逐任务增量对账（长时无信号/hung 兜底）
-    const heartbeatTimer = window.setInterval(() => {
+    // 递归 setTimeout（全工程禁用周期定时器 API）；卸载时置 stopped 并清定时器
+    let heartbeatStopped = false;
+    let heartbeatTimer: number | null = null;
+    const runHeartbeat = () => {
+      if (heartbeatStopped) return;
       const activeId = conversationIdRef.current;
-      if (!activeId) return;
-      const views = taskViewsRef.current;
-      const hasRunning = Object.values(views).some(
-        (view) => view.conversationId === activeId && view.status === 'running' && view.hasRecords,
-      );
-      if (!hasRunning) return;
-      for (const [delegateCallId, view] of Object.entries(views)) {
-        if (view.conversationId === activeId && view.status === 'running' && view.hasRecords) {
-          runFetch(activeId, delegateCallId, view.latestSeq);
+      if (activeId) {
+        const views = taskViewsRef.current;
+        const hasRunning = Object.values(views).some(
+          (view) => view.conversationId === activeId && view.status === 'running' && view.hasRecords,
+        );
+        if (hasRunning) {
+          for (const [delegateCallId, view] of Object.entries(views)) {
+            if (view.conversationId === activeId && view.status === 'running' && view.hasRecords) {
+              runFetch(activeId, delegateCallId, view.latestSeq);
+            }
+          }
         }
       }
-    }, HEARTBEAT_INTERVAL_MS);
+      if (!heartbeatStopped) {
+        heartbeatTimer = window.setTimeout(runHeartbeat, HEARTBEAT_INTERVAL_MS);
+      }
+    };
+    heartbeatTimer = window.setTimeout(runHeartbeat, HEARTBEAT_INTERVAL_MS);
 
     // 窗口 blur→focus 重对账：存在 running 任务时逐任务增量拉一次
     const handleFocus = () => {
@@ -349,7 +359,11 @@ export function useExecutorTaskRecords(options: {
       unsubSignal();
       unsubDone();
       unsubAborted();
-      window.clearInterval(heartbeatTimer);
+      heartbeatStopped = true;
+      if (heartbeatTimer !== null) {
+        window.clearTimeout(heartbeatTimer);
+        heartbeatTimer = null;
+      }
       window.removeEventListener('focus', handleFocus);
       for (const state of queryStatesRef.current.values()) {
         if (state.timer !== null) {

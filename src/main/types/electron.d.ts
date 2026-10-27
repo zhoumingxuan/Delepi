@@ -31,6 +31,25 @@ export interface ElectronAPI {
     save: (params: import('./ipc').ConfigSaveParams) => Promise<void>;
     reload: () => Promise<void>;
   };
+  update: {
+    /** 请求一次检查（手动/自动/恢复；渲染→主，invoke） */
+    check: (params?: import('@shared/types/update').UpdateCheckParams) =>
+      Promise<import('@shared/types/update').UpdateCheckResult>;
+    /** 请求下载指定版本（渲染→主，invoke；后台下载不阻塞界面） */
+    download: (params?: import('@shared/types/update').UpdateDownloadParams) =>
+      Promise<import('@shared/types/update').UpdateDownloadResult>;
+    /** 取消当前下载（渲染→主，invoke） */
+    cancel: () => Promise<import('@shared/types/update').UpdateCancelResult>;
+    /** 调起安装器（渲染→主，invoke） */
+    install: (params?: import('@shared/types/update').UpdateInstallParams) =>
+      Promise<import('@shared/types/update').UpdateInstallResult>;
+    /** 拉取当前快照（渲染→主，invoke；先取快照再订阅） */
+    getState: () => Promise<import('@shared/types/update').UpdateStateSnapshot>;
+    /** 订阅状态变化（主→渲染）；返回取消订阅函数 */
+    onStateChanged: (
+      listener: (snapshot: import('@shared/types/update').UpdateStateSnapshot) => void,
+    ) => () => void;
+  };
   file: {
     open: (target: string) => Promise<void>;
     /**
