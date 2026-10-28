@@ -9,7 +9,10 @@
  * 5. 无 auth/user/login/server 代码
  */
 
-import { rm } from 'node:fs/promises';
+import {
+  readFile,
+  rm,
+} from 'node:fs/promises';
 import path from 'node:path';
 
 import type OpenAI from 'openai';
@@ -22,7 +25,11 @@ import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
 import { buildExecutorSystemPrompt } from './executor-system-prompt';
 import { createExecutorContextCompressionRunner } from './executor-context-compression';
-import { SCRIPTS_TOOLS_DIR } from '../../constants';
+import {
+  SCRIPTS_TOOLS_DIR,
+  type TaskTagName,
+  getAllTaskTags,
+} from '../../constants';
 import {
   parseExecutorStructuredPayload,
 } from './executor-structured-payload';
@@ -31,9 +38,16 @@ import type {
 } from './executor-structured-payload';
 import type { AssistantRuntimeConfig } from './assistant-config';
 import {
-  buildSkillInventory,
-  type SkillInventoryEntry,
-} from '../skill-system/skill-registry';
+  EXECUTOR_WORKFLOW_TEMPLATES,
+  TASK_TAG_WORKFLOW_TEMPLATE_ID,
+  getCustomSkillTemplatePath,
+  getEnabledCustomSkillTags,
+  readBuiltinTemplateContent,
+  readCustomSkillTemplateContent,
+  type ExecutorWorkflowTemplate,
+} from './executor-workflow-templates';
+import type { CustomSkillTag } from '@shared/types/config';
+
 import {
   executeToolCall,
   getExecutorOpenAITools,
@@ -57,6 +71,7 @@ import {
 } from '../../utils/index';
 import { formatCurrentDateTime } from '../../utils/helper';
 import {
+  EXECUTOR_WORKER_SKILLS_DIR,
   resolveExecutorToolProgressDisplayName,
   EXECUTOR_DELIVERY_TYPE_SET,
   DELIVERY_TYPE_IMAGE,
@@ -105,6 +120,7 @@ type DelegateExecutorInput = {
   constraints?: unknown;
   delivery_type?: unknown;
   delivery_spec?: unknown;
+  skills?: unknown;
   context?: unknown;
 };
 
@@ -120,6 +136,7 @@ type ParsedDelegateExecutorInput = {
   taskConstraints: string[];
   contextData: string;
   expectedDelivery: ExpectedDelivery;
+  skillTags: TaskTagName[];
 };
 
 type ParsedDelegateExecutorInputResult = {
@@ -150,6 +167,29 @@ function extractAssistantReasoning(
   const reasoning = payload.reasoning_content ?? payload.reasoning;
 
   return typeof reasoning === 'string' ? reasoning : '';
+}
+
+function normalizeTaskTags(value: unknown): TaskTagName[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  // 方向2 A2-2 第二关：放行集合改「执行者侧归属集合（内置执行者 9 项 ∪ 归属 executor 的启用自定义）」（单一定义源 getAllTaskTags）。
+  // 内置执行者标签行为不变（内置执行者 9 项包含于归属集合），归属 executor 的启用自定义标签放行，未知标签仍丢弃，去重逻辑保持。
+  const allowedTagSet = new Set<string>(getAllTaskTags('executor', configManager.getSettings().customSkillTags));
+  const tags: TaskTagName[] = [];
+
+  for (const item of value) {
+    const tag = normalizeString(item);
+
+    if (!allowedTagSet.has(tag) || tags.includes(tag)) {
+      continue;
+    }
+
+    tags.push(tag);
+  }
+
+  return tags;
 }
 
 function normalizeExpectedDeliveryType(value: unknown): ExecutorDeliveryType | '' {
@@ -247,6 +287,49 @@ function collectDelegateExecutorInputIssues(parsed: DelegateExecutorInput): stri
     issues.push('context 缺失（未提供），期望为非空字符串');
   }
 
+  if (!Array.isArray(parsed.skills)) {
+    issues.push(
+      !normalizeString(parsed.skills)
+        ? 'skills 缺失（未提供），期望为数组（元素需为允许的技能标签）'
+        : `skills 当前值 ${formatParamCurrentValue(parsed.skills)} 不是数组，期望为数组（元素需为允许的技能标签）`
+    );
+  }
+
+  // skills 元素级校验：放行集合与主智能体侧 schema enum 同源（执行者侧归属集合（内置执行者 9 项 ∪ 归属 executor 的启用自定义），单一定义源 getAllTaskTags）。
+  // 非字符串 / 空字符串 / 不在允许范围逐元素报错，文案精确指向失败元素并原样输出该元素值。
+  if (Array.isArray(parsed.skills)) {
+    const skillsAllowedTags = getAllTaskTags('executor', configManager.getSettings().customSkillTags);
+    const skillsAllowedTagSet = new Set<string>(skillsAllowedTags);
+    const skillsAllowedValues = `[${skillsAllowedTags.join('、')}]`;
+
+    for (let index = 0; index < parsed.skills.length; index += 1) {
+      const skillTag = parsed.skills[index];
+      const position = index + 1;
+
+      if (typeof skillTag !== 'string') {
+        issues.push(
+          `skills 第 ${position} 项当前值 ${formatParamCurrentValue(skillTag)} 不是字符串，期望为允许的技能标签`
+        );
+        continue;
+      }
+
+      const tag = skillTag.trim();
+
+      if (!tag) {
+        issues.push(
+          `skills 第 ${position} 项当前值 ${formatParamCurrentValue(skillTag)} 不是非空字符串，期望为允许的技能标签`
+        );
+        continue;
+      }
+
+      if (!skillsAllowedTagSet.has(tag)) {
+        issues.push(
+          `skills 第 ${position} 项当前值 ${formatParamCurrentValue(skillTag)} 不在允许范围 ${skillsAllowedValues}`
+        );
+      }
+    }
+  }
+
   return issues;
 }
 
@@ -301,6 +384,7 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
   const taskTarget = normalizeString(parsed.task_target);
   const taskConstraints = collectTaskConstraintDescriptions(parsed.constraints);
   const expectedDelivery = collectExpectedDelivery(parsed);
+  const skillTags = normalizeTaskTags(parsed.skills);
 
   if (issues.length || !expectedDelivery) {
     return {
@@ -316,6 +400,7 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
       taskTarget,
       taskConstraints,
       expectedDelivery,
+      skillTags,
       contextData,
     },
     issues: [],
@@ -415,6 +500,7 @@ ${completedTasksSection ? `\n\n${completedTasksSection}` : ''}
 
 function buildExecutorPlainTextPrompt(options: {
   taskInput: ParsedDelegateExecutorInput;
+  workflowTemplates: string[];
   completedTasks?: CompletedTaskInfo[];
   currentUploadedFiles?: DelegatedUploadedFile[];
   finalOutputDir?: string;
@@ -429,6 +515,12 @@ function buildExecutorPlainTextPrompt(options: {
       options.runDir,
     ),
   ];
+
+  for (const workflowTemplate of options.workflowTemplates) {
+    if (workflowTemplate.trim()) {
+      sections.push(workflowTemplate);
+    }
+  }
 
   return sections.join('\n\n');
 }
@@ -455,19 +547,6 @@ function buildScriptToolsInventoryBlock(entries: ScriptToolScanEntry[]): string 
   ${JSON.stringify(lines)}
   \`\`\`
   `;
-}
-
-/** 技能清单数据块（执行子智能体；每组仅【技能标签+适用条件】两元素，禁止添加其他内容） */
-function buildSkillsInventoryBlock(entries: SkillInventoryEntry[]): string {
-  if (!entries.length) {
-    return '';
-  }
-  return `
-# 技能清单（**可用query_skill工具查询技能详细内容**）
-\`\`\`json
-${JSON.stringify(entries)}
-\`\`\`
-`;
 }
 
 async function removeTemporaryPaths(temporaryPaths: string[]): Promise<void> {
@@ -750,6 +829,132 @@ function buildExecutorToolProgressText(options: {
   }
 
   return `${toolDisplayName}工具完成，继续处理...`;
+}
+
+// 单任务模板数上限=3（基线原由 constants 导出 MAX_WORKFLOW_TEMPLATE_COUNT=3，该导出已随 ce14996 技能体系改造删除，还原工作方式预注入时按基线值本地固化）
+const MAX_WORKFLOW_TEMPLATE_COUNT = 3;
+
+/** 工作流模板选取结果（内置/自定义双源；内置映射锁定优先，自定义仅绑自定义模板） */
+type WorkflowTemplateSelection = {
+  source: 'builtin' | 'custom';
+  /** 内置：相对 skills 目录的 fileName；自定义：模板目录 slug */
+  locator: string;
+  title: string;
+};
+
+function selectWorkflowTemplates(taskTags: TaskTagName[]): WorkflowTemplateSelection[] {
+  const selections: WorkflowTemplateSelection[] = [];
+  // 方向2 A2-2 第三关：映射查找接入自定义来源（启用的自定义标签元数据按 name 索引）
+  const customEnabledByName = new Map<string, CustomSkillTag>(
+    getEnabledCustomSkillTags()
+      .filter((item) => item.owner !== 'main')
+      .map((item) => [item.name, item]),
+  );
+
+  for (const tag of taskTags) {
+    // 内置标签 → 内置模板映射锁定（Record<TaskTag,...> 类型级锁定 + 运行时优先，不可被自定义覆盖）
+    const templateId = TASK_TAG_WORKFLOW_TEMPLATE_ID[tag as keyof typeof TASK_TAG_WORKFLOW_TEMPLATE_ID];
+    if (templateId) {
+      const template = EXECUTOR_WORKFLOW_TEMPLATES[templateId];
+      if (template && !selections.some((s) => s.source === 'builtin' && s.locator === template.fileName)) {
+        selections.push({ source: 'builtin', locator: template.fileName, title: template.title });
+      }
+      continue;
+    }
+
+    // 自定义标签 → 自定义模板（仅能绑定自定义模板；停用标签不入选）
+    const custom = customEnabledByName.get(tag);
+    if (custom && !selections.some((s) => s.source === 'custom' && s.locator === custom.slug)) {
+      selections.push({ source: 'custom', locator: custom.slug, title: custom.title });
+    }
+  }
+
+  // 单任务模板数上限维持 MAX_WORKFLOW_TEMPLATE_COUNT=3（内置+自定义合并计数）
+  return selections.slice(0, MAX_WORKFLOW_TEMPLATE_COUNT);
+}
+
+/** 模板内容注入包装（内置/自定义同构格式） */
+function wrapWorkflowTemplateContent(title: string, content: string): string {
+  return `
+##【${title}】工作方式（**若当前任务需要执行此工作方式，则必须精确符合其每一项要求**）
+\`\`\`
+${content}
+\`\`\`
+`;
+}
+
+async function readWorkflowTemplateContent(fileName: string): Promise<string> {
+  // 内置模板读取：userData 覆写优先（builtin-skill-overrides/<fileName>），无覆写回退内置目录；
+  // 包装与失败语义（console.warn+空串）保持现状
+  const templatePath = path.join(EXECUTOR_WORKER_SKILLS_DIR, fileName);
+  try {
+    const content = (await readBuiltinTemplateContent(fileName)).trim();
+    const template = Object.values(EXECUTOR_WORKFLOW_TEMPLATES).find((t) => t.fileName === fileName);
+    const title = template?.title ?? '';
+    return wrapWorkflowTemplateContent(title, content);
+  } catch (error) {
+    const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
+      ? (error as NodeJS.ErrnoException).code
+      : 'unknown';
+    console.warn(
+      `[executor-agent] 读取工作流模板内容失败，将返回空串: templatePath=${templatePath}, errorCode=${errCode}`,
+    );
+    return '';
+  }
+}
+
+/**
+ * 读取自定义模板（方向2 A2-4 感知改善：读取失败不再静默空串——console.warn + 告警上浮；
+ * 内置模板维持现状 warn 行为不变）。
+ */
+async function readCustomWorkflowTemplateContent(
+  selection: WorkflowTemplateSelection,
+): Promise<{ content: string; warning: string | null }> {
+  const templatePath = getCustomSkillTemplatePath(selection.locator);
+  try {
+    const content = await readCustomSkillTemplateContent(selection.locator);
+    if (!content) {
+      const warning = `自定义技能模板内容为空，该技能工作方式未注入: ${selection.title}(${templatePath})`;
+      console.warn(`[executor-agent] ${warning}`);
+      return { content: '', warning };
+    }
+    return { content: wrapWorkflowTemplateContent(selection.title, content), warning: null };
+  } catch (error) {
+    const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
+      ? (error as NodeJS.ErrnoException).code
+      : 'unknown';
+    const warning = `读取自定义技能模板失败，该技能工作方式未注入: ${selection.title}(${templatePath}), errorCode=${errCode}`;
+    console.warn(`[executor-agent] ${warning}`);
+    return { content: '', warning };
+  }
+}
+
+async function readWorkflowTemplates(
+  taskTags: TaskTagName[],
+): Promise<{ contents: string[]; warnings: string[] }> {
+  const selections = selectWorkflowTemplates(taskTags);
+  const contents: string[] = [];
+  const warnings: string[] = [];
+
+  for (const selection of selections) {
+    if (selection.source === 'builtin') {
+      const content = await readWorkflowTemplateContent(selection.locator);
+      if (content.trim()) {
+        contents.push(content);
+      }
+      continue;
+    }
+
+    const custom = await readCustomWorkflowTemplateContent(selection);
+    if (custom.content.trim()) {
+      contents.push(custom.content);
+    }
+    if (custom.warning) {
+      warnings.push(custom.warning);
+    }
+  }
+
+  return { contents, warnings };
 }
 
 type NormalizedExecutorToolCall = OpenAI.Chat.ChatCompletionMessageFunctionToolCall;
@@ -1128,13 +1333,14 @@ export async function runDelegatedTask(
     (tool) => !(tool.function.name === 'use_script_tool' && !hasValidScriptTools),
   );
 
-  // 技能清单注入（技能体系主子分离：清单取代工作方式预注入；执行者经 query_skill 按需获取技能内容）
-  // 清单块尾拼在系统提示词（与主智能体 buildMainSystemPrompt 同形态）
-  const skillsInventory = buildSkillsInventoryBlock(await buildSkillInventory('executor'));
+  // 读取工作流模板（内置+自定义双源；自定义读取失败收集告警，最终附到委派结果 data）
+  const { contents: workflowTemplates, warnings: workflowTemplateWarnings } =
+    await readWorkflowTemplates(parsedInput.skillTags);
 
-  // 构建消息（任务 intro 直接作为首条用户消息；经验库清单块仍尾拼用户消息最后）
+  // 构建消息（v2.0 R5：清单块尾拼在 buildExecutorPlainTextPrompt 产物之后，保证位于用户提示词最后面）
   const plainExecutorPrompt = buildExecutorPlainTextPrompt({
     taskInput: parsedInput,
+    workflowTemplates,
     completedTasks: options.completedTasks,
     currentUploadedFiles: options.currentUploadedFiles,
     finalOutputDir: options.finalOutputDir,
@@ -1151,7 +1357,6 @@ export async function runDelegatedTask(
         // 经验库根目录绝对路径注入（8.1 章节文案 {SCRIPTS_TOOLS_DIR} 占位消费点）
         scriptsToolsDirText: SCRIPTS_TOOLS_DIR,
         currentPid: process.pid,
-        skillsInventoryText: skillsInventory,   // ▲ 清单块尾拼在系统提示词
       }),
     },
     {
@@ -1446,6 +1651,11 @@ export async function runDelegatedTask(
           startAt: taskStartedAt,
         });
       }
+    }
+
+    // 方向2 A2-4：自定义模板读取失败告警附到委派结果 data（仅存在告警时出现该字段）
+    if (workflowTemplateWarnings.length > 0) {
+      resultData = { ...(resultData ?? {}), workflowTemplateWarnings };
     }
 
     const finalResult = buildToolResult({

@@ -3,6 +3,7 @@ import {
   EXECUTOR_DELIVERY_TYPES,
   TASK_TAGS,
   TASK_TYPE_VALUES,
+  getAllTaskTags,
 } from '../../constants';
 import { skillQuery } from '../../tools/skill-query';
 import {
@@ -125,6 +126,19 @@ function buildDelegateToolParameters(): ToolSchema {
             '单条原子【任务规则和约束】，必须写清【约束对象、规则对象以及严谨的判定条件】',
         },
       },
+      skills: {
+        type: 'array',
+        description: `
+        执行此任务时，适配的【执行者】技能标签集合，最多选择3个，至少选择1个；
+        **注意：此处选择的是【执行者】技能，必须符合声明的技能标签枚举；并且绝不能是你自己的【编排者】技能**
+        `,
+        minItems: 1,
+        maxItems: 3,
+        items: {
+          type: 'string',       
+          enum: getAllTaskTags('executor', configManager.getSettings().customSkillTags),
+        },
+      },
       context: {
         type: 'string',
         minLength: 1,
@@ -141,6 +155,7 @@ function buildDelegateToolParameters(): ToolSchema {
       'delivery_spec',
       'task_target',
       'constraints',
+      'skills',
       'context',
     ],
     additionalProperties: false,
@@ -232,6 +247,7 @@ function buildFsStatDescription(): string {
 function buildMainSkillQueryDescription(): string {
   return `
     - 【最高优先级】
+    - 工具作用；查询你作为【编排者】可使用的技能内容
     - 按【技能标签】返回该技能的完整内容。
     - 查询的技能标签必须在【技能清单】内，清单外标签会查询失败。
   `;

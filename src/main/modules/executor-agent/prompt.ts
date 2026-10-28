@@ -7,12 +7,6 @@ import { fsList } from '@/main/tools/fs-list';
 import { fsStat } from '@/main/tools/fs-stat';
 import { fsAppendText } from '@/main/tools/fs-append-text';
 import { scriptTool } from '@/main/tools/script-tool';
-import { skillQuery } from '@/main/tools/skill-query';
-import type { ToolRuntimeContext } from '@/main/tools/runtime-context';
-import {
-    buildSkillQueryParameters,
-    listSkillTags,
-} from '../skill-system/skill-registry';
 
 function getShellLabel(): string {
     if (process.platform === 'win32') return 'Windows PowerShell';
@@ -172,14 +166,6 @@ export function buildScriptToolParameters(): Record<string, unknown> {
     };
 }
 
-function buildSkillQueryDescription(): string {
-    return `
-    - 【最高优先级】
-    - 按【技能标签】返回该技能的完整内容。
-    - 查询的技能标签必须在【技能清单】内，清单外标签会查询失败。
-    `;
-}
-
 /**
  * 内置执行者工具集（编译期注册源；S5-1 方向5：内容锁定不动，动态工具不在此登记）。
  * 动态工具运行时注册入口：executor-registry.registerExecutorTool（dyn-tool-loader 扫描 userData/dyn-tools 后写入），
@@ -274,16 +260,6 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: fsStat,
-    },
-    query_skill: {
-        config: {
-            name: 'query_skill',
-            displayName: '技能内容查询',
-            buildDescription: buildSkillQueryDescription(),
-        },
-        // enum=执行子智能体技能集（listSkillTags 同步零 IO，与 系统提示 技能清单同源；执行体侧按 buildSkillInventory 实时校验）
-        parameters: buildSkillQueryParameters(listSkillTags('executor')),
-        execute: (input: unknown, context: ToolRuntimeContext) => skillQuery(input, context, 'executor'),
     },
     read_file: {
         config: {

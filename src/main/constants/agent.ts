@@ -220,22 +220,34 @@ export const EXECUTOR_DELIVERY_TYPES = [
 export type ExecutorDeliveryType = (typeof EXECUTOR_DELIVERY_TYPES)[number];
 
 
-/** 内置任务标签集合（O(1) 查找；只读锁定=内置13项，用于自定义重名校验；放行集合统一走 getAllTaskTags 合并层） */
+/** 内置任务标签集合（O(1) 查找；只读锁定=内置13项，用于自定义重名校验；TASK_TAG_SET 保持内置 13 项全集用于跨侧重名校验，放行集合按 owner 分组取值） */
 export const TASK_TAG_SET: ReadonlySet<string> = new Set<string>(BUILTIN_TASK_TAGS);
 
 /**
- * 合并层取值函数：内置∪启用自定义技能标签（放行链三关统一数据源）。
- * 内置优先且内置名占用不可被自定义覆盖；停用（enabled=false）标签不进入放行链；自动去重。
+ * 合并层取值函数（必须声明归属）：按 owner 分组的内置集合 ∪ 归属匹配的启用自定义技能标签（放行链三关统一数据源）。
+ * owner='main' 取 BUILTIN_MAIN_TASK_TAGS（4 项），否则取 BUILTIN_EXECUTOR_TASK_TAGS（9 项），以此作为返回值起始内容。
+ * 自定义条目归属：owner 字段严格等于 'main' 时归 main，其余一切情形（缺失/非字符串/'executor'/非法值）一律归 executor；
+ * 条目归属与入参 owner 不相等则跳过。内置优先且内置名占用不可被自定义覆盖；停用（enabled=false）标签不进入放行链；自动去重。
+ * TASK_TAG_SET 保持内置 13 项全集用于跨侧重名校验，放行集合按 owner 分组取值。
  * customSkillTags 形参按结构最小约定收窄（避免常量层依赖 config 模块）。
  */
 export function getAllTaskTags(
-  customSkillTags?: ReadonlyArray<{ name?: unknown; enabled?: unknown }>,
+  owner: SkillOwnerScope,
+  customSkillTags?: ReadonlyArray<{ name?: unknown; enabled?: unknown; owner?: unknown }>,
 ): string[] {
-  const merged: string[] = [...BUILTIN_TASK_TAGS];
+  const merged: string[] = [
+    ...(owner === 'main' ? BUILTIN_MAIN_TASK_TAGS : BUILTIN_EXECUTOR_TASK_TAGS),
+  ];
   if (!Array.isArray(customSkillTags)) {
     return merged;
   }
   for (const item of customSkillTags) {
+    // 归属判定：条目 owner 严格等于 'main' 时归 main，其余一切情形（缺失/非字符串/'executor'/非法值）一律归 executor。
+    const itemOwner: SkillOwnerScope =
+      (item as { owner?: unknown }).owner === 'main' ? 'main' : 'executor';
+    if (itemOwner !== owner) {
+      continue;
+    }
     const name = item && typeof (item as { name?: unknown }).name === 'string'
       ? (item as { name: string }).name.trim()
       : '';
