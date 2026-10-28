@@ -6,8 +6,8 @@
  * - 任何日志、界面文案、报告都不得出现完整授权码，只允许 **** + 末 4 位指纹。
  */
 
-/** 默认更新地址（27 字符，无尾斜杠；与服务端契约的 baseUrl 逐字一致） */
-export const UPDATE_BASE_URL_SOURCE_DEFAULT = 'https://update.ai-cnlab.com';
+/** 默认更新地址（23 字符，无尾斜杠；与服务端契约的 baseUrl 逐字一致） */
+export const UPDATE_BASE_URL_SOURCE_DEFAULT = 'http://10.1.52.167:8033';
 
 /**
  * 历史默认地址（0.8.0 及更早版本的构建期默认值，43 字符，无尾斜杠）。
@@ -15,6 +15,13 @@ export const UPDATE_BASE_URL_SOURCE_DEFAULT = 'https://update.ai-cnlab.com';
  * 否则旧值会被误判为用户自定义地址而继续请求旧域名。
  */
 export const UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT = 'https://download.ai-cnlab.com/delepi/update';
+
+/**
+ * 历史默认地址（0.8.1-0.8.3 构建期默认值，27 字符，无尾斜杠）。
+ * 默认地址已于 2026-10-29 改为 http://10.1.52.167:8033；用户设置层若已持久化过本旧默认地址，
+ * 解析时必须与「空串」同等视为「用户未自定义」，否则旧值会被误判为用户自定义地址而钉死旧域名。
+ */
+export const UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT_V2 = 'https://update.ai-cnlab.com';
 
 /** 开发占位默认授权码（32 字符 base64url 无填充；可被 L2 环境变量 / L3 yml 覆盖） */
 export const UPDATE_ACCESS_KEY_SOURCE_DEFAULT = 'delepi_update_K7mQ3vTz9LpW4aB2cD';

@@ -22,13 +22,21 @@
  * - 回执发送：Node SMTP（smtp-client.sendSmtpMail，HTML 正文 + 可选附件 Buffer），
  *   重试序列 [0s, 2s, 5s, 15s]，auth 阶段立即放弃，X-Delepi-Role: agent 恒加，
  *   In-Reply-To/References = 指令邮件实际 Message-ID，X-Delepi-Command-Id 回带
- * - 单轨回执：send_message 的任务回执只由主智能体经 send_email 发出；服务端仅在
- *   「注入前协议层失败」（编号不存在/会话不存在/会话运行中/主模型未配置）直发失败回执
+ * - 单轨回执（BUG2 修复后语义）：send_message 的任务回执优先由主智能体经 send_email 发出；
+ *   服务端直发仅两类：①「注入前协议层失败」（编号不存在/会话不存在/会话运行中/主模型未配置）
+ *   ②执行期失败兜底（ERR_WATCH_EXEC_ABORTED/ERR_WATCH_EXEC_FAILED 且模型未发出回执时，
+ *   receiptSentByAgent 防重发；模型已发过则不重复直发）
  * - 三类指令（阶段7 目标4）：list_conversations（查询）/ send_message（向已有对话发消息，需编号或
  *   UUID）/ new_conversation（只带 --message 时新建对话并在其中执行）
  * - 指令邮件一律不落库（用户第 7 条）：本模块不 import 任何仓储，不使用任何数据库表
  * - 轮询调度：递归 setTimeout + inFlight 互斥（主进程禁 setInterval），间隔每轮重读；
  *   连接失败指数退避 min(间隔×2^n, 600s)，连续失败 ≥5 次回落关闭
+ * - 注入异步化（BUG1 修复）：send_message/new_conversation 注入改 fire-and-forget——
+ *   不阻塞轮询循环与同批后续邮件处理；run 终态经回调登记（读清指令上下文、登记结果、
+ *   触发兜底回执判定）；list_conversations 保持同轮同步快速直发（现状语义）
+ * - 出站回复关联（BUG3 修复）：send_email 出站邮件经 outbound-mail-map 登记
+ *   （Message-ID → conversationId，不依赖指令上下文）；processWatchMail 在非指令判定前，
+ *   In-Reply-To 命中映射的回复邮件提取用户手写正文后注入原对话（等同在当前对话输入）
  */
 
 import { app, BrowserWindow } from 'electron';
@@ -61,6 +69,7 @@ import {
 } from './mail-bridge';
 import {
   detectCommandMarkers,
+  generateRequestId,
   parseWatchCommand,
   type ListConversationsCommand,
   type NewConversationCommand,
@@ -73,6 +82,10 @@ import {
   setConversationIndexMapBaseDirProvider,
   type ConversationIndexMapItem,
 } from './conversation-index-map';
+import {
+  resolveOutboundConversationByMessageId,
+  setOutboundMailMapBaseDirProvider,
+} from './outbound-mail-map';
 import {
   buildCommandNavigationPayload,
   type WatchCommandNavigationPayload,
@@ -89,6 +102,9 @@ import { maskAuthCode, sendSmtpMail, type SmtpAttachmentInput, type SmtpHeaderIn
 
 /** 编号映射模块不 import electron：userData 基目录在模块加载时注入（与 mail-bridge 的 baseDir 注入先例一致） */
 setConversationIndexMapBaseDirProvider(() => getBridgeBaseDir());
+
+/** 出站邮件映射模块同策略（BUG3）：不 import electron，userData 基目录同样在模块加载时注入 */
+setOutboundMailMapBaseDirProvider(() => getBridgeBaseDir());
 
 /** 值守服务运行状态（closed=关闭 starting=自检中 running=运行中 suspended=异常暂停） */
 export type WatchRuntimeStatus = 'closed' | 'starting' | 'running' | 'suspended';
@@ -557,6 +573,10 @@ function failureSubjectSuffix(code: string): string {
       return '会话运行中';
     case 'ERR_WATCH_MAIN_MODEL_NOT_CONFIGURED':
       return '主模型未配置';
+    case 'ERR_WATCH_EXEC_ABORTED':
+      return '执行超时中止';
+    case 'ERR_WATCH_EXEC_FAILED':
+      return '执行异常';
     default:
       return '内部错误';
   }
@@ -945,7 +965,8 @@ async function runPollOnce(): Promise<PollOnceOutcome> {
 
 interface MailHandlingResult {
   /** role_filtered / subject_filtered / sender_rejected / non_command / duplicate_mail /
-   *  duplicate_request / parse_failed / executed / execution_failed / receipt_failed */
+   *  duplicate_request / parse_failed / executing / executed / execution_failed / receipt_failed
+   *  （executing=BUG1 注入已受理、run 异步执行中；终态由 fire-and-forget 回调另行登记） */
   status: string;
   requestId: string;
   level: 'INFO' | 'WARN' | 'ERROR';
@@ -1019,14 +1040,37 @@ async function processWatchMail(
     return { status: 'role_filtered', requestId: '', level: 'WARN', detail: `X-Delepi-Role=${mail.delepiRole}` };
   }
 
-  // ② 回执环特征二：主题前缀
+  // ② 回执环特征二：主题前缀（BUG2 并列候选修复：客户端回复未改写主题、主题仍以回执前缀开头时，
+  //    原实现会静默拦截——增加二次判定：正文命中指令标记、或 In-Reply-To 命中出站邮件映射
+  //    （BUG3 回复关联），且 From 非空且≠值守邮箱自身的邮件放行至后续处理；值守邮箱自身的
+  //    出站回执仍被拦截（防自环；①的 X-Delepi-Role 头为第一道保险））
   if (mail.subject.startsWith(RECEIPT_SUBJECT_PREFIX)) {
-    return { status: 'subject_filtered', requestId: '', level: 'WARN', detail: '主题前缀 [Delepi回执]' };
+    const selfMailbox = (settings.watchMailboxAddress || '').trim().toLowerCase();
+    const fromSelf = Boolean(mail.fromAddress) && mail.fromAddress.trim().toLowerCase() === selfMailbox;
+    const outboundHit = mail.inReplyTo ? resolveOutboundConversationByMessageId(mail.inReplyTo) : null;
+    if (fromSelf || (!detectCommandMarkers(mail.bodyText) && !outboundHit)) {
+      return { status: 'subject_filtered', requestId: '', level: 'WARN', detail: '主题前缀 [Delepi回执]' };
+    }
+    writeWatchLog(
+      'INFO',
+      'watch.poll',
+      `uid=${mail.uid} 主题命中回执前缀但正文含指令标记/命中出站映射且非值守邮箱自身，放行至后续处理（BUG2 二次判定）`,
+    );
   }
 
   // ③ From 头缺失防御：为空或解析失败即跳过（不可判定来源）
   if (!mail.fromAddress) {
     return { status: 'sender_rejected', requestId: '', level: 'WARN', detail: 'From 头为空或解析失败' };
+  }
+
+  // ③.5 出站回复关联（BUG3 修复）：In-Reply-To 命中出站邮件映射 → 提取用户手写正文注入
+  //     原对话（等同在当前对话输入该消息）；未命中映射则继续 ④ 指令判定（非指令正文
+  //     维持 non_command 静默忽略，防误注入）
+  if (mail.inReplyTo) {
+    const outboundHit = resolveOutboundConversationByMessageId(mail.inReplyTo);
+    if (outboundHit) {
+      return executeReplyMappedInjection(mail, settings, counters, messageId, outboundHit.conversationId);
+    }
   }
 
   // ④ 指令 / 非指令区分：非指令静默忽略，且不发送任何回执（与旧行为的关键差异）
@@ -1222,13 +1266,9 @@ function emitCommandNavigation(payload: WatchCommandNavigationPayload): void {
 }
 
 /**
- * 注入消息并收敛 run 终态（send_message 与 new_conversation 共用；单轨语义集中在此）：
- * - 先写指令上下文（供 send_email 执行体补 In-Reply-To/Command-Id 并观测主智能体是否回执）
- * - 消息原文零加工注入（sendUserMessageIntoConversation）
- * - 注入前失败（会话运行中 / 主模型未配置）→ 协议层失败直发失败回执（主轨未被唤醒）
- * - 执行期失败 → 服务端零直发，仅记 ERROR（单轨原则不变）
+ * 注入执行参数（injectAndClassifyRun 与 BUG3 出站映射命中分支共用）
  */
-async function injectAndClassifyRun(params: {
+interface InjectRunParams {
   conversationId: string;
   requestId: string;
   message: string;
@@ -1239,7 +1279,17 @@ async function injectAndClassifyRun(params: {
   uid: number;
   startedAtIso: string;
   logContext: string;
-}): Promise<MailHandlingResult> {
+  /** 邮件主题（终态内存记录与日志用） */
+  subject: string;
+}
+
+/**
+ * fire-and-forget 注入执行体（BUG1 修复）：写指令上下文后不 await 注入终态立即返回——
+ * 不阻塞轮询循环与同批后续邮件处理；run 终态经 finalizeInjectRunOutcome 回调登记
+ * （读清指令上下文、登记结果、触发兜底回执判定）；.catch 全覆盖（含进程退出前在途链路），
+ * 保证不产生未处理 Promise 拒绝。
+ */
+function launchInjectRunInBackground(params: InjectRunParams): void {
   setWatchCommandContext(params.conversationId, {
     requestId: params.requestId,
     commandMessageId: params.messageId,
@@ -1247,7 +1297,32 @@ async function injectAndClassifyRun(params: {
     receiptRecipient: params.settings.watchReceiptRecipient || params.settings.watchMailboxAddress,
   });
 
-  const sendOutcome = await sendUserMessageIntoConversation(params.conversationId, params.message);
+  void sendUserMessageIntoConversation(params.conversationId, params.message)
+    .then((sendOutcome) => finalizeInjectRunOutcome(params, sendOutcome))
+    .catch((err: unknown) => {
+      // 防御性兜底：sendUserMessageIntoConversation 与 finalize 均已内部收敛，此处仍全覆盖
+      writeWatchLog(
+        'ERROR',
+        'watch.command',
+        `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 注入链路未捕获异常（防御兜底，已读清指令上下文）`,
+        err,
+      );
+      clearWatchCommandContext(params.conversationId);
+    });
+}
+
+/**
+ * 注入 run 终态回调（BUG1/BUG2）：读清指令上下文、登记终态结果、兜底回执判定。
+ * - 成功：登记 executed（receiptChannel 观测语义保留）
+ * - 注入前协议层失败（会话运行中/主模型未配置）：直发失败回执（原语义移至异步回调）
+ * - 执行期失败（ERR_WATCH_EXEC_ABORTED 含 30 分钟硬超时 / ERR_WATCH_EXEC_FAILED，BUG2 修复）：
+ *   模型未发出回执（receiptSentByAgent !== true）→ 服务端兜底直发失败回执（主题保持
+ *   [Delepi回执] 前缀防环、内容含失败码）；模型已发过回执则不重复直发（防重发）
+ */
+async function finalizeInjectRunOutcome(
+  params: InjectRunParams,
+  sendOutcome: Awaited<ReturnType<typeof sendUserMessageIntoConversation>>,
+): Promise<void> {
   const commandContextAfterRun = getWatchCommandContext(params.conversationId);
   clearWatchCommandContext(params.conversationId);
 
@@ -1257,16 +1332,18 @@ async function injectAndClassifyRun(params: {
       'INFO',
       'watch.command',
       `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 注入执行成功 `
-        + `receiptChannel=${agentReceiptSent ? 'agent_send_email' : 'none（模型未回执，无服务端兜底）'} `
+        + `receiptChannel=${agentReceiptSent ? 'agent_send_email' : 'none（模型未回执，成功路径无服务端兜底）'} `
         + `contentChars=${sendOutcome.content.length} durationMs=${sendOutcome.durationMs} inReplyTo=${params.messageId}`,
     );
-    return {
+    pushMemoryRecord({
+      atIso: new Date().toISOString(),
+      uid: params.uid,
+      messageId: params.messageId,
       status: 'executed',
       requestId: params.requestId,
-      level: 'INFO',
-      detail: `${params.commandLabel} 注入成功 content=${sendOutcome.content.length}字符 `
-        + `agentReceipt=${agentReceiptSent ? 'sent' : 'none'}`,
-    };
+      subject: params.subject,
+    });
+    return;
   }
 
   if (
@@ -1285,26 +1362,209 @@ async function injectAndClassifyRun(params: {
       inReplyTo: params.messageId,
       uid: params.uid,
     });
-    return {
+    writeWatchLog(
+      'ERROR',
+      'watch.command',
+      `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 注入前失败（${sendOutcome.code}${receipt.ok ? '；已发送失败回执' : '；失败回执发送失败'}）`,
+      sendOutcome.message,
+    );
+    pushMemoryRecord({
+      atIso: new Date().toISOString(),
+      uid: params.uid,
+      messageId: params.messageId,
       status: 'execution_failed',
       requestId: params.requestId,
-      level: 'ERROR',
-      detail: `${sendOutcome.code}${receipt.ok ? '；已发送失败回执' : '；失败回执发送失败'}`,
-    };
+      subject: params.subject,
+    });
+    return;
   }
 
-  // 执行期失败（run 已启动：异常/中止/30 分钟硬超时）：单轨原则下服务端零直发，仅记日志
-  writeWatchLog(
-    'ERROR',
-    'watch.command',
-    `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 执行期失败（${sendOutcome.code}，服务端零回执直发）`,
-    sendOutcome.message,
-  );
-  return {
+  // 执行期失败（run 已启动：异常/中止/30 分钟硬超时）——BUG2 修复：兜底回执判定
+  const agentReceiptSent = commandContextAfterRun?.receiptSentByAgent === true;
+  if (agentReceiptSent) {
+    // 模型已发过回执：不重复直发，仅记日志（防重发）
+    writeWatchLog(
+      'ERROR',
+      'watch.command',
+      `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 执行期失败（${sendOutcome.code}）但主智能体已发出回执（receiptSentByAgent=true），服务端不重复直发`,
+      sendOutcome.message,
+    );
+  } else {
+    // 模型未发出回执：服务端兜底直发失败回执（主题保持 [Delepi回执] 前缀防环、内容含失败码）
+    const receipt = await sendFailureReceipt({
+      settings: params.settings,
+      requestId: params.requestId,
+      commandLabel: params.commandLabel,
+      code: sendOutcome.code,
+      message: `${sendOutcome.message}（主智能体未发出回执，本回执由值守服务兜底直发）`,
+      advice: '指令消息已注入目标对话，但本轮执行未完成（含 30 分钟硬超时中止可能）；可在客户端查看对话进度，或换用新的请求号重发。',
+      startedAtIso: params.startedAtIso,
+      inReplyTo: params.messageId,
+      uid: params.uid,
+    });
+    writeWatchLog(
+      'ERROR',
+      'watch.command',
+      `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 执行期失败（${sendOutcome.code}，模型未回执）→ 服务端兜底直发失败回执${receipt.ok ? '成功' : '失败'}`,
+      sendOutcome.message,
+    );
+  }
+  pushMemoryRecord({
+    atIso: new Date().toISOString(),
+    uid: params.uid,
+    messageId: params.messageId,
     status: 'execution_failed',
     requestId: params.requestId,
-    level: 'ERROR',
-    detail: `执行期失败 ${sendOutcome.code}（单轨：服务端不直发任务回执）`,
+    subject: params.subject,
+  });
+}
+
+/**
+ * 注入消息并立即返回受理结果（send_message 与 new_conversation 共用；单轨语义集中在此）。
+ * BUG1 修复：不 await 注入终态（fire-and-forget），轮询循环与同批后续邮件处理不被阻塞；
+ * run 终态由 finalizeInjectRunOutcome 异步登记；list_conversations 不走本函数（保持同轮
+ * 同步快速直发，现状语义）。
+ */
+async function injectAndClassifyRun(params: InjectRunParams): Promise<MailHandlingResult> {
+  launchInjectRunInBackground(params);
+  return {
+    status: 'executing',
+    requestId: params.requestId,
+    level: 'INFO',
+    detail: `${params.commandLabel} 注入已受理（fire-and-forget，run 终态后异步登记）`,
+  };
+}
+
+/** BUG3：主流客户端引用块标记（分隔行 / 「在xxx写道：」 / Outlook 头块）——保守匹配，
+ * 宁可少剥离不可误删用户正文；行首「>」引用前缀在 extractHandwrittenReplyBody 内逐行判定 */
+const REPLY_QUOTE_SEPARATOR_RE = /^\s*-{2,}\s*(原始邮件|回复邮件|转发邮件|Original Message|Forwarded message|Forwarded Message)\s*-{2,}\s*$/i;
+const REPLY_QUOTE_ATTRIBUTION_RE = /^.{0,120}?(写道|wrote)\s*[:：]\s*$/i;
+const REPLY_OUTLOOK_HEADER_RE = /^\s*(发件人|From)\s*[:：]/i;
+
+/**
+ * BUG3：从回复邮件正文提取用户手写内容（保守策略）。
+ * 顺序：① 剥离引用块（首个引用标记行之前的全部内容；无引用标记则全文）；
+ * ② 剥离后的手写部分可解析出 --message 指令（parseWatchCommand 成功且类型带 message）
+ * → 取指令消息值（用户按指令格式回复）；否则返回剥离后的手写全文。
+ * 剥离后为空（用户纯引用无手写内容）返回空串，由调用方静默跳过。
+ */
+function extractHandwrittenReplyBody(bodyText: string): string {
+  const body = typeof bodyText === 'string' ? bodyText : '';
+  if (!body.trim()) {
+    return '';
+  }
+
+  // ① 剥离引用块：首个引用标记行（分隔行/署名行/Outlook 头块/行首 > 前缀）之前的内容
+  let handwritten = body.trim();
+  const lines = body.split(/\r\n|\n|\r/);
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? '';
+    if (
+      REPLY_QUOTE_SEPARATOR_RE.test(line)
+      || REPLY_QUOTE_ATTRIBUTION_RE.test(line)
+      || REPLY_OUTLOOK_HEADER_RE.test(line)
+      || /^\s*>/.test(line)
+    ) {
+      handwritten = lines.slice(0, i).join('\n').trim();
+      break;
+    }
+  }
+
+  // ② 手写部分含 --message 指令 → 取指令消息值（引用块中的示例行已在 ① 被剥离，不干扰）
+  const parse = parseWatchCommand(handwritten);
+  if (parse.ok && (parse.command.type === 'new_conversation' || parse.command.type === 'send_message')) {
+    return parse.command.message;
+  }
+  return handwritten;
+}
+
+/**
+ * BUG3：出站映射命中的回复邮件 → 注入原对话（等同在当前对话输入该消息）。
+ * - 正文含 --message 指令时取其值；否则剥离引用取全文；空正文静默跳过（不注入不回执）
+ * - 目标会话已删除：静默跳过（本分支无指令请求语义，不产生回执噪音）
+ * - 写指令上下文（requestId 自动生成）：后续 run 中模型调用 send_email 可回带
+ *   In-Reply-To=本回复邮件 Message-ID（邮件线程闭环；新出站邮件同样登记映射，用户再回复仍可命中）
+ * - 注入走 fire-and-forget（与 BUG1 注入类指令同策略，不阻塞轮询循环）
+ */
+async function executeReplyMappedInjection(
+  mail: FetchedWatchMail,
+  settings: NormalizedWatchSettings,
+  counters: PollCounters,
+  messageId: string,
+  conversationId: string,
+): Promise<MailHandlingResult> {
+  // 邮件级去重（与 ⑤ 同集合：同封回复邮件重复取回不重复注入）
+  if (processedMessageIds.has(messageId)) {
+    return { status: 'duplicate_mail', requestId: '', level: 'WARN', detail: 'messageId 已处理（出站映射分支）' };
+  }
+  rememberProcessedId(processedMessageIds, messageId, PROCESSED_MESSAGE_IDS_LIMIT);
+
+  // 目标会话存在校验（映射登记后对话可能已被删除——静默跳过，无指令请求语义不发回执）
+  const targetConversation = getConversationById(conversationId);
+  if (!targetConversation) {
+    counters.noncommand += 1;
+    writeWatchLog(
+      'WARN',
+      'watch.command',
+      `uid=${mail.uid} 出站映射命中但目标对话已删除 conversationId=${conversationId}，静默跳过（不注入不回执）`,
+    );
+    return { status: 'non_command', requestId: '', level: 'WARN', detail: '出站映射命中但目标对话已删除，静默跳过' };
+  }
+
+  // 提取用户手写正文：正文含 --message 指令时取其值；否则剥离引用取全文
+  const message = extractHandwrittenReplyBody(mail.bodyText);
+  if (!message) {
+    counters.noncommand += 1;
+    writeWatchLog(
+      'WARN',
+      'watch.command',
+      `uid=${mail.uid} 出站映射命中但剥离引用后正文为空（用户纯引用无手写内容），静默跳过（不注入）`,
+    );
+    return { status: 'non_command', requestId: '', level: 'INFO', detail: '出站映射命中但正文为空，静默跳过' };
+  }
+
+  const startedAtIso = new Date().toISOString();
+  const requestId = generateRequestId();
+  writeWatchLog(
+    'INFO',
+    'watch.command',
+    `uid=${mail.uid} requestId=${requestId} command=reply_mapped 解析成功 conversationId=${conversationId} `
+      + `messageChars=${message.length}（等同在当前对话输入该消息，零加工注入）`,
+  );
+
+  // 推送跳转事件（前端切到原对话；commandType 复用 send_message 语义=向已有对话发消息）
+  emitCommandNavigation(buildCommandNavigationPayload({
+    conversationId,
+    conversationTitle: targetConversation.title,
+    commandType: 'send_message',
+    requestId,
+    subject: mail.subject,
+    receivedAtIso: startedAtIso,
+  }));
+
+  counters.accepted += 1;
+  counters.executed += 1;
+  processedCount += 1;
+
+  launchInjectRunInBackground({
+    conversationId,
+    requestId,
+    message,
+    commandLabel: 'reply_mapped（回复智能体邮件→注入原对话）',
+    settings,
+    messageId,
+    fromAddress: mail.fromAddress,
+    uid: mail.uid,
+    startedAtIso,
+    logContext: 'command=reply_mapped',
+    subject: mail.subject,
+  });
+
+  return {
+    status: 'executing',
+    requestId,
+    level: 'INFO',
+    detail: `出站映射命中，注入原对话 message=${message.length}字符（fire-and-forget，run 终态后异步登记）`,
   };
 }
 
@@ -1405,6 +1665,7 @@ async function executeSendCommand(
     uid,
     startedAtIso,
     logContext: 'command=send_message',
+    subject,
   });
 }
 
@@ -1449,6 +1710,7 @@ async function executeNewConversationCommand(
     uid,
     startedAtIso,
     logContext: 'command=new_conversation',
+    subject,
   });
 }
 

@@ -342,8 +342,11 @@ function parseCliParams(scan: ScanResult): WatchParseResult {
       warnings.push(`未知参数已忽略：--${param.rawKey}`);
       continue;
     }
+    // D1 修复：重复参数取「第一次出现的值」——用户回复回执邮件时手写指令行位于引用原文
+    // （含回执 HTML 示例指令行）之前，先出现者即用户真实意图；后出现的示例行不得覆盖取值
     if (byKey.has(param.key)) {
-      warnings.push(`参数重复，取最后一次出现的值：--${param.rawKey}`);
+      warnings.push(`参数重复，取第一次出现的值：--${param.rawKey}`);
+      continue;
     }
     byKey.set(param.key, param);
   }

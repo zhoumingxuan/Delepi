@@ -18,6 +18,9 @@
  *   X-Delepi-Role: agent 恒加；X-Delepi-Command-Id 有上下文时回带。
  * - 失败按 stage 分类透传（validate/download/connect/auth/send/timeout），错误文本脱敏；
  *   发送成功后调用 markWatchCommandReceiptSent 标记回执已发出。
+ * - BUG3 登记侧：发送成功后登记出站邮件映射（Message-ID → conversationId → 收件人，
+ *   outbound-mail-map，内存 + 文件缓存）——**不依赖值守指令上下文**，本地对话发起的
+ *   run 同样登记，供收信侧把「用户直接回复本邮件」关联回原对话；登记失败不影响发送结果。
  */
 
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
@@ -31,6 +34,7 @@ import {
   type SmtpHeaderInput,
 } from '../modules/mail/smtp-client';
 import { WATCH_SMTP_ENDPOINT } from '../modules/watch/mail-bridge';
+import { registerOutboundMail } from '../modules/watch/outbound-mail-map';
 import {
   getWatchCommandContext,
   isWatchRuntimeRunning,
@@ -704,6 +708,17 @@ export async function executeSendEmailTool(
         outcome.declaredMessageId,
         outcome.attachmentCount,
       );
+    }
+    // BUG3 登记侧：出站邮件映射（不依赖指令上下文——本地对话发起的 run 同样登记），
+    // 供收信侧把「用户直接回复本邮件」关联回原对话；登记失败不影响发送结果（内部已收敛）
+    if (conversationId && outcome.declaredMessageId) {
+      registerOutboundMail({
+        messageId: outcome.declaredMessageId,
+        conversationId,
+        sentTo: resolvedTo,
+        subject,
+        sentAtIso: new Date().toISOString(),
+      });
     }
     return buildToolResult({
       success: true,

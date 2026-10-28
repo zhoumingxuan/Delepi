@@ -288,7 +288,10 @@ export function buildSkillQueryParameters(allowedTags: string[]): Record<string,
       skill_tag: {
         type: 'string',
         enum: allowedTags,
-        description: '必填。要查询的技能标签，必须从【技能清单】中按【适用条件】匹配后选择。',
+        description: `
+        必填。要查询的【编排者】技能标签，必须从【技能清单】中按【适用条件】匹配后选择。
+        **注意：此处只能填【编排者】技能标签，不能填【执行者】技能标签**
+        `,
       },
     },
     required: ['skill_tag'],

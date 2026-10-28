@@ -9,6 +9,7 @@ import {
   UPDATE_ACCESS_KEY_SOURCE_DEFAULT,
   UPDATE_BASE_URL_SOURCE_DEFAULT,
   UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT,
+  UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT_V2,
 } from '@shared/update-constants';
 
 export type UpdateValueSource = 'env' | 'yml' | 'source';
@@ -89,7 +90,8 @@ export function resolveEffectiveUpdateBaseUrl(
   }
   if (
     settings === UPDATE_BASE_URL_SOURCE_DEFAULT ||
-    settings === UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT
+    settings === UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT ||
+    settings === UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT_V2
   ) {
     return defaultBaseUrl;
   }
