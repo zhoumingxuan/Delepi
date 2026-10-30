@@ -225,6 +225,17 @@ async function completeImageInspection(options: {
   };
 }
 
+/** 全局实时回落源：仅诊断直调等无 run 快照场景使用（run 链路一律走
+ * context.visionModelConfig 快照，经 main-agent → runDelegatedTask toolContext 透传） */
+function readVisionModelConfigFromGlobal(): ModelConfig {
+  const settings = configManager.getSettings();
+  return {
+    baseUrl: settings.visionLlmBaseUrl,
+    apiKey: settings.visionLlmApiKey,
+    model: settings.visionLlmModel,
+  };
+}
+
 export async function InspectMedia(
   input: unknown,
   context: ToolRuntimeContext,
@@ -312,12 +323,12 @@ export async function InspectMedia(
   }
 
   try {
-    const settings = configManager.getSettings();
-    const visionModelConfig: ModelConfig = {
-      baseUrl: settings.visionLlmBaseUrl,
-      apiKey: settings.visionLlmApiKey,
-      model: settings.visionLlmModel,
-    };
+    // 视觉模型三键优先读本次 run 快照（context.visionModelConfig）——run 期不直读全局
+    // （值守后台 run 最长 30 分钟，运行中修改配置不漂移本次 run 行为）；
+    // 快照缺失（诊断直调等无 run 上下文场景）回落全局实时值。浅拷贝防工具体误改 run 快照。
+    const visionModelConfig: ModelConfig = context.visionModelConfig
+      ? { ...context.visionModelConfig }
+      : readVisionModelConfigFromGlobal();
 
     const completion = await completeImageInspection({
       messages: visionMessages,

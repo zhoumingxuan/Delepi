@@ -2,8 +2,9 @@
  * watch-service — 值守模式服务（阶段7：Node 收信桥 + provider 端点 + 三类指令 + 跳转联动 + 重启续期）
  *
  * 职责：
- * - 凭据自检：mailSelfTest（IMAP 登录 + EXAMINE INBOX + SMTP 登录）不变；失败回落关闭
- *   （写回 watchEnabled=false + ERROR 日志）。阶段7 起收信桥为纯 Node 实现（imap-client），
+ * - 凭据自检：mailSelfTest（IMAP 登录 + EXAMINE INBOX + SMTP 登录）不变；失败回落关闭仅复位
+ *   运行态与 lastError（watchEnabled 唯一语义=用户意图，回落不写回该键，跨重启保留）。
+ *   阶段7 起收信桥为纯 Node 实现（imap-client），
  *   端点由 mail-provider 按「邮箱类型」解析后注入，收信/发信共用同一份端点
  * - 时间增量（用户第 8 条）：不再使用数据库 UID 水位，改为纯内存时间游标 sinceTimeMs。
  *   开启/恢复时 sinceTimeMs = 启动时刻（首开不处理历史积压）；每轮以
@@ -32,8 +33,8 @@
  * - 轮询调度：递归 setTimeout + inFlight 互斥（主进程禁 setInterval），间隔每轮重读；
  *   连接失败指数退避 min(间隔×2^n, 600s)，连续失败 ≥5 次回落关闭
  * - 注入异步化（BUG1 修复）：send_message/new_conversation 注入改 fire-and-forget——
- *   不阻塞轮询循环与同批后续邮件处理；run 终态经回调登记（读清指令上下文、登记结果、
- *   触发兜底回执判定）；list_conversations 保持同轮同步快速直发（现状语义）
+ *   不阻塞轮询循环与同批后续邮件处理；run 终态经回调登记（读 run 实例私有的指令上下文、
+ *   登记结果、触发兜底回执判定）；list_conversations 保持同轮同步快速直发（现状语义）
  * - 出站回复关联（BUG3 修复）：send_email 出站邮件经 outbound-mail-map 登记
  *   （Message-ID → conversationId，不依赖指令上下文）；processWatchMail 在非指令判定前，
  *   In-Reply-To 命中映射的回复邮件提取用户手写正文后注入原对话（等同在当前对话输入）
@@ -91,12 +92,7 @@ import {
   type WatchCommandNavigationPayload,
 } from './watch-navigation';
 import { sendUserMessageIntoConversation } from '../chat/conversation-send-service';
-import {
-  clearWatchCommandContext,
-  getWatchCommandContext,
-  setWatchCommandContext,
-  setWatchRuntimeRunning,
-} from './watch-runtime-flag';
+import { setWatchRuntimeRunning, type WatchCommandContext } from './watch-runtime-flag';
 import { normalizeWatchSettings, type NormalizedWatchSettings } from './watch-settings';
 import { maskAuthCode, sendSmtpMail, type SmtpAttachmentInput, type SmtpHeaderInput } from '../mail/smtp-client';
 
@@ -257,13 +253,17 @@ function formatLocalDateTimeFromMs(ms: number): string {
 // ---------------------------------------------------------------------------
 
 let runtimeStatus: WatchRuntimeStatus = 'closed';
+/** start 事务世代号：stopWatch / stopWatchService / 新一次 performStart 均递增；
+ * 在途 start 事务在 await 恢复点校验世代，不匹配即作废——终态写入权由世代仲裁，互斥由状态机结构保证 */
+let startGeneration = 0;
 let recoveryStarted = false;
 let pollTimerHandle: ReturnType<typeof setTimeout> | null = null;
 let pollInFlight = false;
 let consecutiveFailures = 0;
 let lastError: WatchLastError | null = null;
 let nextPollAt: number | null = null;
-let enabledChangeNotifier: ((enabled: boolean) => void) | null = null;
+/** 值守运行态变更通知：驱动 MAIN_TOOLS 等运行态投影刷新；由 ipc-handlers 注册 refreshMainTools */
+let runtimeStateChangeNotifier: (() => void) | null = null;
 
 /** 时间游标（毫秒）：0 表示尚未建立基线 */
 let sinceTimeMs = 0;
@@ -302,23 +302,34 @@ function readNormalizedWatchSettings(): NormalizedWatchSettings {
   return normalizeWatchSettings(configManager.getSettings());
 }
 
-/** watchEnabled 写回（settings 表 + configManager 运行时两步，对齐 config:save 先例）并通知刷新 */
+/**
+ * watchEnabled 写回（settings 表 + configManager 运行时两步，对齐 config:save 先例）。
+ * 唯一语义=用户意图，仅两个用户动作出口调用：performStart 自检通过（true）与 stopWatch（false）；
+ * 运行态回落（makeStartFailure / fallbackCloseRuntime）不触碰本键。
+ * 本函数为纯意图写，不触发运行态通知——通知（notifyRuntimeStateChange）由各终态转移点在
+ * 运行态标志（runtimeStatus / setWatchRuntimeRunning）落位之后统一触发，保证投影刷新
+ * （MAIN_TOOLS 等）读到的是已定局的运行态，消除"通知先于标志落位"的陈旧投影窗口。
+ */
 function persistWatchEnabled(enabled: boolean): void {
   saveSetting('watchEnabled', enabled);
   configManager.setSetting('watchEnabled', enabled);
+}
+
+/** 运行态变更通知（每次终态转移统一触发；驱动工具清单等投影刷新） */
+function notifyRuntimeStateChange(): void {
   try {
-    enabledChangeNotifier?.(enabled);
+    runtimeStateChangeNotifier?.();
   } catch (err) {
-    writeWatchLog('WARN', 'watch.state', 'watchEnabled 变更通知回调执行失败', err);
+    writeWatchLog('WARN', 'watch.state', '值守运行态变更通知回调执行失败', err);
   }
 }
 
 /**
- * 注入 watchEnabled 变更通知（ipc-handlers 注册时传入 refreshMainTools）。
+ * 注入值守运行态变更通知（ipc-handlers 注册时传入 refreshMainTools）。
  * watch-service 不直接依赖 main-agent/prompt，避免反向耦合。
  */
-export function setWatchEnabledChangeNotifier(notifier: ((enabled: boolean) => void) | null): void {
-  enabledChangeNotifier = notifier;
+export function setWatchRuntimeStateChangeNotifier(notifier: (() => void) | null): void {
+  runtimeStateChangeNotifier = notifier;
 }
 
 /**
@@ -587,7 +598,6 @@ function failureSubjectSuffix(code: string): string {
 // ---------------------------------------------------------------------------
 
 interface ReceiptSendParams {
-  settings: NormalizedWatchSettings;
   to: string;
   subject: string;
   html: string;
@@ -600,8 +610,11 @@ interface ReceiptSendParams {
 type ReceiptSendOutcome = { ok: true; declaredMessageId: string } | { ok: false; detail: string };
 
 async function sendWatchReceiptWithRetry(params: ReceiptSendParams): Promise<ReceiptSendOutcome> {
-  const mailbox = params.settings.watchMailboxAddress;
-  const authCode = params.settings.watchMailboxAuthCode;
+  // 回执发送凭据与端点在函数入口同一同步段成对读取，重试全程使用同一份；
+  // 收件人缺省回落发送时刻值守邮箱（显式收件人由调用方解析传入）。
+  const sendTimeSettings = readNormalizedWatchSettings();
+  const mailbox = sendTimeSettings.watchMailboxAddress;
+  const authCode = sendTimeSettings.watchMailboxAuthCode;
   const to = params.to || mailbox;
   const endpoints = resolveCurrentMailEndpoints();
   let lastDetail = '';
@@ -684,7 +697,6 @@ async function sendFailureReceipt(params: {
   });
   const subjectPrefix = params.requestId ? `${params.requestId} ` : '';
   const outcome = await sendWatchReceiptWithRetry({
-    settings: params.settings,
     to: params.settings.watchReceiptRecipient || params.settings.watchMailboxAddress,
     subject: `${RECEIPT_SUBJECT_PREFIX} ${subjectPrefix}失败｜${failureSubjectSuffix(params.code)}`,
     html,
@@ -712,12 +724,17 @@ async function sendFailureReceipt(params: {
 // 开启流程（watch:start 与自动恢复共用）
 // ---------------------------------------------------------------------------
 
+/**
+ * 开启失败回落：仅复位运行态与 lastError（不写 watchEnabled——用户"意图=开"跨重启保留，
+ * 下次启动 startWatchService 仍会自动恢复重试）。
+ * 调用方保证世代有效（await 之后的调用点均已做世代校验）。
+ */
 function makeStartFailure(stage: string, code: string, message: string, detail?: string): WatchStartResult {
   runtimeStatus = 'closed';
   setWatchRuntimeRunning(false);
-  persistWatchEnabled(false);
   lastError = { code, message, at: new Date().toISOString() };
-  writeWatchLog('ERROR', stage, `值守开启失败已回落关闭：${code} ${message}${detail ? ` :: ${detail}` : ''}`);
+  notifyRuntimeStateChange();
+  writeWatchLog('ERROR', stage, `值守开启失败已回落关闭（watchEnabled 用户意图保留）：${code} ${message}${detail ? ` :: ${detail}` : ''}`);
   return { ok: false, status: 'closed', code, message };
 }
 
@@ -726,6 +743,10 @@ async function performStart(fromResume: boolean): Promise<WatchStartResult> {
   if (runtimeStatus !== 'closed') {
     return { ok: false, status: runtimeStatus, code: 'ERR_WATCH_ALREADY_ACTIVE', message: '值守服务已在运行中' };
   }
+  // start 事务世代化：入口捕获本事务世代；stopWatch / stopWatchService / 新一次 performStart
+  // 均递增世代，使自检在途（最长 45s）期间被关闭（或被新开启取代）的 start 事务在 await 恢复点
+  // 失去全部终态写入权——后到者使先到者作废，互斥由状态机结构保证。
+  const generation = ++startGeneration;
 
   const settings = readNormalizedWatchSettings();
 
@@ -756,6 +777,18 @@ async function performStart(fromResume: boolean): Promise<WatchStartResult> {
     { mailbox: settings.watchMailboxAddress, authCode: settings.watchMailboxAuthCode },
     { endpoints },
   );
+  // await 恢复点世代校验：自检在途期间若发生 stop（watch:stop / 退出清理）或新的 start，
+  // startGeneration 已被递增，本事务作废：不写任何状态（服务不复活、watchEnabled 不被覆盖）。
+  // 此处至终态写入之间为同步段（无 await），不存在新的交错窗口；置 starting 之前的前置校验
+  // 失败路径全程同步段，同样无交错可能（其 makeStartFailure 调用无需世代校验）。
+  if (generation !== startGeneration || runtimeStatus !== 'starting') {
+    writeWatchLog(
+      'INFO',
+      stage,
+      `开启事务已作废（自检在途期间值守被关闭或被新开启取代）：generation=${generation}/${startGeneration} runtimeStatus=${runtimeStatus}，放弃全部终态写入`,
+    );
+    return { ok: false, status: runtimeStatus, code: 'ERR_WATCH_START_CANCELLED', message: '开启请求已被关闭操作取消（自检在途期间值守被关闭），服务未进入运行态' };
+  }
   if (!selfTest.ok) {
     return makeStartFailure(stage, selfTest.code, selfTest.message, selfTest.detail);
   }
@@ -768,13 +801,17 @@ async function performStart(fromResume: boolean): Promise<WatchStartResult> {
   sinceTimeMs = baselineTimeMs;
   updateCursorView(settings.watchMailboxAddress, sinceTimeMs);
 
-  // ---- 写回 true + 通知刷新（开启即生效）----
+  // ---- 写回 true（世代已在上方校验通过，本同步段写入权确定）----
   persistWatchEnabled(true);
 
   runtimeStatus = 'running';
   setWatchRuntimeRunning(true); // send_email 执行层拦截数据源（watch-runtime-flag）
   consecutiveFailures = 0;
   lastError = null;
+  // 运行态标志落位后统一通知（声明层装配判定源=isWatchRuntimeRunning）：refreshMainTools
+  // 此刻读到 true，send_email 进入 MAIN_TOOLS——自动恢复路径（startWatchService，无 IPC 后置刷新）
+  // 同样即时生效；watch:start 路径 ipc 后置 refreshMainTools 与此幂等冗余（无害）。
+  notifyRuntimeStateChange();
   writeWatchLog(
     'INFO',
     stage,
@@ -875,7 +912,12 @@ function handlePollFailure(counters: PollCounters, failure: MailBridgeFailure): 
   return { ok: false, ...counters, errorCode: failure.code };
 }
 
-/** 运行期致命错误回落关闭：清定时器、写回 false、刷新通知、ERROR 日志 */
+/**
+ * 运行期致命错误回落关闭：清定时器、复位运行态、运行态通知刷新、ERROR 日志。
+ * 不写 watchEnabled（用户"意图=开"跨重启保留，重启后 startWatchService 自动恢复重试）；
+ * UI 开关本就绑 runtimeStatus（watch:status 轮询 5s），回落关闭经轮询即呈现，
+ * lastError 同步可供界面 Alert 提示。
+ */
 function fallbackCloseRuntime(code: string, reason: string): void {
   if (pollTimerHandle) {
     clearTimeout(pollTimerHandle);
@@ -884,9 +926,9 @@ function fallbackCloseRuntime(code: string, reason: string): void {
   nextPollAt = null;
   runtimeStatus = 'closed';
   setWatchRuntimeRunning(false);
-  persistWatchEnabled(false);
+  notifyRuntimeStateChange();
   lastError = { code, message: reason, at: new Date().toISOString() };
-  writeWatchLog('ERROR', 'watch.state', `值守运行期回落关闭：${code} ${reason}`);
+  writeWatchLog('ERROR', 'watch.state', `值守运行期回落关闭（watchEnabled 用户意图保留）：${code} ${reason}`);
 }
 
 async function runPollOnce(): Promise<PollOnceOutcome> {
@@ -1183,7 +1225,6 @@ async function executeListCommand(
   );
 
   const sendOutcome = await sendWatchReceiptWithRetry({
-    settings,
     to: settings.watchReceiptRecipient || settings.watchMailboxAddress,
     subject: `${RECEIPT_SUBJECT_PREFIX} ${command.requestId} 成功｜对话列表（1-${items.length}）`,
     html,
@@ -1284,30 +1325,38 @@ interface InjectRunParams {
 }
 
 /**
- * fire-and-forget 注入执行体（BUG1 修复）：写指令上下文后不 await 注入终态立即返回——
- * 不阻塞轮询循环与同批后续邮件处理；run 终态经 finalizeInjectRunOutcome 回调登记
- * （读清指令上下文、登记结果、触发兜底回执判定）；.catch 全覆盖（含进程退出前在途链路），
+ * fire-and-forget 注入执行体：构造 run 实例私有的指令上下文后不 await 注入终态立即返回——
+ * 不阻塞轮询循环与同批后续邮件处理；run 终态经 finalizeInjectRunOutcome 回调登记（读 run
+ * 实例持有的上下文、登记结果、触发兜底回执判定）；.catch 全覆盖（含进程退出前在途链路），
  * 保证不产生未处理 Promise 拒绝。
+ * 上下文所有者=run 实例（对齐 RuntimeSettingsSnapshot 先例）——对象由本闭包独占创建，
+ * 随 sendUserMessageIntoConversation → runMainAgent → executeSendEmailTool 调用链传递，send-email
+ * 在同一对象上直接标记回执观测字段；同会话第二条注入各自持有独立对象，互不覆盖、无误删；run
+ * 终态后随实例消亡，无全局表可污染。闸门失败（会话运行中）时对象从未被任何 run 消费，天然无副作用。
  */
 function launchInjectRunInBackground(params: InjectRunParams): void {
-  setWatchCommandContext(params.conversationId, {
+  const commandContext: WatchCommandContext = {
     requestId: params.requestId,
     commandMessageId: params.messageId,
     from: params.fromAddress,
     receiptRecipient: params.settings.watchReceiptRecipient || params.settings.watchMailboxAddress,
-  });
+    receiptSentByAgent: false,
+    receiptSentTo: '',
+    receiptSentMessageId: '',
+    receiptAttachmentCount: 0,
+  };
 
-  void sendUserMessageIntoConversation(params.conversationId, params.message)
-    .then((sendOutcome) => finalizeInjectRunOutcome(params, sendOutcome))
+  void sendUserMessageIntoConversation(params.conversationId, params.message, { watchCommandContext: commandContext })
+    .then((sendOutcome) => finalizeInjectRunOutcome(params, commandContext, sendOutcome))
     .catch((err: unknown) => {
-      // 防御性兜底：sendUserMessageIntoConversation 与 finalize 均已内部收敛，此处仍全覆盖
+      // 防御性兜底：sendUserMessageIntoConversation 与 finalize 均已内部收敛，此处仍全覆盖；
+      // 上下文为闭包私有对象，无需（也无从）清除任何共享状态
       writeWatchLog(
         'ERROR',
         'watch.command',
-        `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 注入链路未捕获异常（防御兜底，已读清指令上下文）`,
+        `uid=${params.uid} requestId=${params.requestId} ${params.logContext} 注入链路未捕获异常（防御兜底，run 私有指令上下文随闭包废弃）`,
         err,
       );
-      clearWatchCommandContext(params.conversationId);
     });
 }
 
@@ -1318,16 +1367,17 @@ function launchInjectRunInBackground(params: InjectRunParams): void {
  * - 执行期失败（ERR_WATCH_EXEC_ABORTED 含 30 分钟硬超时 / ERR_WATCH_EXEC_FAILED，BUG2 修复）：
  *   模型未发出回执（receiptSentByAgent !== true）→ 服务端兜底直发失败回执（主题保持
  *   [Delepi回执] 前缀防环、内容含失败码）；模型已发过回执则不重复直发（防重发）
+ * commandContext 为 launchInjectRunInBackground 创建的 run 私有对象（闭包直传），
+ * receiptSentByAgent 由 send-email 在同一对象上置位——防重发判定不依赖任何全局表。
  */
 async function finalizeInjectRunOutcome(
   params: InjectRunParams,
+  commandContext: WatchCommandContext,
   sendOutcome: Awaited<ReturnType<typeof sendUserMessageIntoConversation>>,
 ): Promise<void> {
-  const commandContextAfterRun = getWatchCommandContext(params.conversationId);
-  clearWatchCommandContext(params.conversationId);
 
   if (sendOutcome.ok) {
-    const agentReceiptSent = commandContextAfterRun?.receiptSentByAgent === true;
+    const agentReceiptSent = commandContext.receiptSentByAgent === true;
     writeWatchLog(
       'INFO',
       'watch.command',
@@ -1380,7 +1430,7 @@ async function finalizeInjectRunOutcome(
   }
 
   // 执行期失败（run 已启动：异常/中止/30 分钟硬超时）——BUG2 修复：兜底回执判定
-  const agentReceiptSent = commandContextAfterRun?.receiptSentByAgent === true;
+  const agentReceiptSent = commandContext.receiptSentByAgent === true;
   if (agentReceiptSent) {
     // 模型已发过回执：不重复直发，仅记日志（防重发）
     writeWatchLog(
@@ -1482,8 +1532,8 @@ function extractHandwrittenReplyBody(bodyText: string): string {
  * BUG3：出站映射命中的回复邮件 → 注入原对话（等同在当前对话输入该消息）。
  * - 正文含 --message 指令时取其值；否则剥离引用取全文；空正文静默跳过（不注入不回执）
  * - 目标会话已删除：静默跳过（本分支无指令请求语义，不产生回执噪音）
- * - 写指令上下文（requestId 自动生成）：后续 run 中模型调用 send_email 可回带
- *   In-Reply-To=本回复邮件 Message-ID（邮件线程闭环；新出站邮件同样登记映射，用户再回复仍可命中）
+ * - 随 run 传递指令上下文（run 私有对象，requestId 自动生成）：后续 run 中模型调用 send_email
+ *   可回带 In-Reply-To=本回复邮件 Message-ID（邮件线程闭环；新出站邮件同样登记映射，用户再回复仍可命中）
  * - 注入走 fire-and-forget（与 BUG1 注入类指令同策略，不阻塞轮询循环）
  */
 async function executeReplyMappedInjection(
@@ -1840,7 +1890,6 @@ export async function publishResumeIndexMapMail(settings: NormalizedWatchSetting
 
   const draft = buildResumeIndexMapMailDraft({ requestId, createdAtIso, items, total });
   const outcome = await sendWatchReceiptWithRetry({
-    settings,
     to: settings.watchReceiptRecipient || settings.watchMailboxAddress,
     subject: draft.subject,
     html: draft.html,
@@ -1894,8 +1943,9 @@ export async function startWatch(): Promise<WatchStartResult> {
   return performStart(false);
 }
 
-/** 关闭值守：清定时器、写回 watchEnabled=false、状态置 closed（幂等） */
+/** 关闭值守：清定时器、写回 watchEnabled=false、状态置 closed（幂等）；作废在途 start 事务 */
 export async function stopWatch(): Promise<WatchStopResult> {
+  startGeneration += 1;
   if (pollTimerHandle) {
     clearTimeout(pollTimerHandle);
     pollTimerHandle = null;
@@ -1904,6 +1954,8 @@ export async function stopWatch(): Promise<WatchStopResult> {
   runtimeStatus = 'closed';
   setWatchRuntimeRunning(false);
   persistWatchEnabled(false);
+  // 运行态标志复位与意图落库完成后统一通知（send_email 移出 MAIN_TOOLS，声明层与执行层同拍）
+  notifyRuntimeStateChange();
   writeWatchLog('INFO', 'watch.stop', '值守服务已关闭（watch:stop：清定时器、写回 watchEnabled=false、通知刷新工具清单）');
   return { ok: true, status: 'closed' };
 }
@@ -1947,7 +1999,8 @@ export async function pollWatchOnceForDiagnosis(): Promise<{ accepted: boolean; 
  * 值守服务启动入口（含自动恢复判定，幂等）：
  * - watchEnabled=false：保持关闭，零副作用，仅记 INFO 日志
  * - watchEnabled=true：真实自检（IMAP/SMTP），通过则以「本次启动时刻」为时间游标基线恢复轮询
- *   （不补处理停机期间的积压邮件），失败回落关闭（写回 false + ERROR 日志 + 界面 Alert 数据）
+ *   （不补处理停机期间的积压邮件），失败回落关闭（保留 watchEnabled 用户意图 +
+ *   ERROR 日志 + 界面 Alert 数据，下次重启仍会自动恢复重试）
  */
 export function startWatchService(): void {
   if (recoveryStarted) {
@@ -1979,8 +2032,10 @@ export function startWatchService(): void {
   });
 }
 
-/** 停止值守服务（应用退出时调用：仅清内存态与定时器，不写 watchEnabled——保留用户意图跨重启） */
+/** 停止值守服务（应用退出 before-quit 接线调用：仅清内存态与定时器，不写 watchEnabled——保留
+ * 用户意图跨重启）；作废在途 start 事务，与 stopWatch 同一世代仲裁口径。 */
 export function stopWatchService(): void {
+  startGeneration += 1;
   if (pollTimerHandle) {
     clearTimeout(pollTimerHandle);
     pollTimerHandle = null;
@@ -1989,5 +2044,7 @@ export function stopWatchService(): void {
   runtimeStatus = 'closed';
   setWatchRuntimeRunning(false);
   recoveryStarted = false;
+  // 运行态终局（closed + 标志复位）落位后统一通知（与其他终态转移同一时点口径）
+  notifyRuntimeStateChange();
   writeWatchLog('INFO', 'watch.state', '值守服务已随应用退出复位（stopWatchService：清定时器，不写回 watchEnabled）');
 }

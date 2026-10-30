@@ -243,12 +243,14 @@ export const IPC_WATCH = {
   /**
    * 开启值守（渲染→主，invoke）
    * 阶段1：开关在界面置灰，主进程侧为 stub（本地归一化 → 凭据自检 stub → 恒回落关闭）
-   * 阶段2：前置校验 + IMAP/SMTP 真实自检 + 水位初始化 + 启动轮询
+   * 阶段2：前置校验 + IMAP/SMTP 真实自检 + 时间游标基线 + 启动轮询；自检在途期间被
+   * watch:stop / 应用退出关闭的开启事务经世代化作废（不复活、不写任何终态）
    */
   START: 'watch:start',
   /**
    * 关闭值守（渲染→主，invoke）
-   * 写回 watchEnabled=false；阶段2补齐清定时器/终止在途信号/刷新工具清单
+   * 清定时器 + 写回 watchEnabled=false（仅用户关闭动作）+ 世代化作废在途开启事务
+   * + 刷新工具清单（send_email 声明层联动）；在途注入 run 不受影响（30 分钟硬超时自治）
    */
   STOP: 'watch:stop',
   /**

@@ -3,7 +3,8 @@
  *
  * 职责：
  * - 执行层能力拦截：值守运行态标志未置位时返回 TOOL_DISABLED_WATCH_OFF；
- *   工具声明层可见性由 prompt.ts buildMainTools() 无条件追加（本执行体保持同一拦截口径）。
+ *   工具声明层可见性由 prompt.ts buildMainTools() 按值守运行态（isWatchRuntimeRunning）
+ *   条件追加——声明层与执行层同一判定源。
  * - 参数校验：subject 1-200 / body 1-8192 / attachments string[]；
  *   不再读取正文格式与线程头入参（线程头只由值守指令上下文自动补全）。
  * - 收件人缺省解析：显式 to → watchReceiptRecipient → watchMailboxAddress。
@@ -17,7 +18,8 @@
  * - 头自动补全：In-Reply-To/References 取值守指令上下文的 commandMessageId；
  *   X-Delepi-Role: agent 恒加；X-Delepi-Command-Id 有上下文时回带。
  * - 失败按 stage 分类透传（validate/download/connect/auth/send/timeout），错误文本脱敏；
- *   发送成功后调用 markWatchCommandReceiptSent 标记回执已发出。
+ *   发送成功后在 run 私有指令上下文对象（context.watchCommandContext）上
+ *   直接标记回执已发出（receiptSentByAgent 等观测字段）。
  * - BUG3 登记侧：发送成功后登记出站邮件映射（Message-ID → conversationId → 收件人，
  *   outbound-mail-map，内存 + 文件缓存）——**不依赖值守指令上下文**，本地对话发起的
  *   run 同样登记，供收信侧把「用户直接回复本邮件」关联回原对话；登记失败不影响发送结果。
@@ -35,11 +37,7 @@ import {
 } from '../modules/mail/smtp-client';
 import { WATCH_SMTP_ENDPOINT } from '../modules/watch/mail-bridge';
 import { registerOutboundMail } from '../modules/watch/outbound-mail-map';
-import {
-  getWatchCommandContext,
-  isWatchRuntimeRunning,
-  markWatchCommandReceiptSent,
-} from '../modules/watch/watch-runtime-flag';
+import { isWatchRuntimeRunning } from '../modules/watch/watch-runtime-flag';
 import { isPathInsideDir, resolveConversationDir, resolveMonthlyOutputDir } from '../utils/storage-paths';
 import { buildToolResult, type ToolResult } from './result';
 import type { ToolRuntimeContext } from './runtime-context';
@@ -549,7 +547,9 @@ export async function executeSendEmailTool(
     }
   }
 
-  // 2. 值守配置与收件人缺省解析
+  // 2. 值守配置与收件人缺省解析（口径声明：工具体为全实时口径——发送时刻取值，
+  //    与值守邮箱"变更即轮询失败回落关闭"主链路一致；服务端直发回执（watch-service
+  //    sendWatchReceiptWithRetry）凭据与端点为发送时刻成对快照口径，两者各自时点自洽）
   const settings = configManager.getSettings();
   const mailbox = cleanOptionalString(settings.watchMailboxAddress);
   const authCode = cleanOptionalString(settings.watchMailboxAuthCode);
@@ -572,9 +572,11 @@ export async function executeSendEmailTool(
     );
   }
 
-  // 3. 值守指令上下文（线程头只由代码补全，模型不可见）
+  // 3. 值守指令上下文（线程头只由代码补全，模型不可见）：读 run 私有上下文对象
+  //    context.watchCommandContext——同会话并发 run 各自持有独立上下文，互不覆盖、
+  //    回执不错挂线程
   const conversationId = cleanOptionalString(context?.conversationId);
-  const commandContext = conversationId ? getWatchCommandContext(conversationId) : null;
+  const commandContext = context?.watchCommandContext ?? null;
   const inReplyTo = commandContext?.commandMessageId ?? '';
 
   // 4. 附件三类根校验（本地路径）
@@ -702,12 +704,12 @@ export async function executeSendEmailTool(
 
   if (outcome.ok) {
     if (commandContext) {
-      markWatchCommandReceiptSent(
-        conversationId,
-        resolvedTo,
-        outcome.declaredMessageId,
-        outcome.attachmentCount,
-      );
+      // 回执观测标记写入 run 私有上下文对象（唯一写目标=本次 run 实例；
+      // watch-service finalizeInjectRunOutcome 持同一对象做防重发判定）
+      commandContext.receiptSentByAgent = true;
+      commandContext.receiptSentTo = resolvedTo;
+      commandContext.receiptSentMessageId = outcome.declaredMessageId;
+      commandContext.receiptAttachmentCount = outcome.attachmentCount;
     }
     // BUG3 登记侧：出站邮件映射（不依赖指令上下文——本地对话发起的 run 同样登记），
     // 供收信侧把「用户直接回复本邮件」关联回原对话；登记失败不影响发送结果（内部已收敛）

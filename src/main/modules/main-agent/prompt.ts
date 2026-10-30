@@ -13,15 +13,21 @@ import {
 } from '../skill-system/skill-registry';
 import { COMMON_WORKFLOW_PROMPT } from './workflow-prompt';
 import { configManager } from '../config/config-manager';
+import { isWatchRuntimeRunning } from '../watch/watch-runtime-flag';
 
 type ToolSchema = Record<string, unknown>;
 
-/** 主智能体 send_email 工具名（阶段3：值守开启时按 watchEnabled 条件进入工具清单，v3 §8.1） */
+/** 主智能体 send_email 工具名（阶段3/v3 §8.1）：按值守运行态 isWatchRuntimeRunning()
+ *  条件进入工具清单——与执行层拦截同源判定；watchEnabled 仅承载用户意图，不参与装配决策 */
 export const MAIN_SEND_EMAIL_TOOL_NAME = 'send_email';
 
 //值守模式提示词
+// 声明层判定源统一：值守模式规则段与工具装配（buildMainTools）、执行层拦截（send-email.ts 入口）
+// 读同一判定源 isWatchRuntimeRunning()——watchEnabled 仅承载用户意图（true 但服务回落关闭/
+// 自检在途时不向模型宣告值守能力：send_email 未装配、执行层亦拦截，避免"提示词令其发回执
+// 而工具不存在"的声明-执行错位）。
 function buildLivePrompt(): string {
-  return configManager.getSettings().watchEnabled ?`
+  return isWatchRuntimeRunning() ?`
 # 值守模式规则（**内部规则**）
 \`\`\`
 1.**此模式凭借外部开关控制；为避免对上下文造成干扰，因此严格禁止将此模式的【当前状态表述】写入思考过程或最终回复中**
@@ -45,7 +51,7 @@ function buildSystemPromptBody(): string {
 - 当前对话实际的日期和时间：${formatCurrentDateTime()}
 - 【当前对话实际的日期和时间】仅供参考，不保证完全准确。
 - 严格禁止把【当前对话实际的日期和时间】当作内部记忆、先验知识、输入材料、工具结果或外部事实的时间。
-${configManager.getSettings().watchEnabled?'- 当前模式：【值守模式】':'- 当前模式：【专业模式】'}
+${isWatchRuntimeRunning()?'- 当前模式：【值守模式】':'- 当前模式：【专业模式】'}
 \`\`\`
 
 ${buildLivePrompt()}
@@ -456,7 +462,7 @@ function buildMainSendEmailToolParameters(): ToolSchema {
   };
 }
 
-/** 主智能体工具声明：send_email（仅值守开启时进入清单；执行体 src/main/tools/send-email.ts） */
+/** 主智能体工具声明：send_email（仅值守运行中进入清单；执行体 src/main/tools/send-email.ts） */
 function buildMainSendEmailTool() {
   return {
     type: 'function' as const,
@@ -485,9 +491,12 @@ export function buildMainTools() {
     buildMainFsListTool(),
     buildMainFsStatTool(),
   ];
-  // 阶段3（v3 §8.5）：仅值守开启时 send_email 进入主智能体工具清单；watch:start/stop
-  // 联动 refreshMainTools()（阶段2已接线）经 MAIN_TOOLS live-binding 即时生效。
-  tools.push(buildMainSendEmailTool());
+  // 阶段3（v3 §8.5）：仅值守运行中（isWatchRuntimeRunning）send_email 进入主智能体工具清单
+  // ——判定源与执行层拦截（send-email.ts 入口）完全同源；watch:start/stop 与运行期回落关闭经
+  // setWatchRuntimeStateChangeNotifier → refreshMainTools() 联动，经 MAIN_TOOLS live-binding 即时生效。
+  if (isWatchRuntimeRunning()) {
+    tools.push(buildMainSendEmailTool());
+  }
   return tools;
 }
 

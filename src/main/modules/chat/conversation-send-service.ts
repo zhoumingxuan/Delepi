@@ -2,7 +2,7 @@
  * conversation-send-service — 值守链路会话发送服务（阶段3）
  *
  * 职责（v3 §3.4 复用清单的落地；阶段3回执单轨调整后仍完全适用）：
- * - sendUserMessageIntoConversation(conversationId, message)：把 message 字符串
+ * - sendUserMessageIntoConversation(conversationId, message, options)：把 message 字符串
  *   【原样】作为单条 role='user' 消息写入目标会话并驱动主智能体——零加工原则
  *   （零前缀/零后缀/零包裹/零拼接，任何程序生成文本不得进入消息本体）；
  *   对大模型而言与用户在界面手动发送这条消息完全不可区分。
@@ -37,6 +37,7 @@ import { resolveConversationModelConfig } from '../config/conversation-model-pro
 import { ensureConversation, setConversationRunning } from '../../db';
 import type { ConversationRecord } from '../../db/types';
 import { runMainAgent } from '../main-agent/main-agent';
+import type { WatchCommandContext } from '../watch/watch-runtime-flag';
 import {
   abortConversationRun,
   beginConversationRun,
@@ -68,10 +69,18 @@ function emitConversationUpdatedFromWatch(conversation: ConversationRecord | nul
  * 把 message 原样写入指定会话并驱动主智能体（值守链路唯一注入入口）。
  * @param conversationId 目标会话 ID（调用方已校验存在）
  * @param message        指令邮件解析出的输入消息原文（原样传入，零加工）
+ * @param options        run 实例级可选载荷：watchCommandContext=本次注入的值守指令上下文
+ *                       （run 私有对象，仅在下方闸门获取成功后随 runMainAgent 传入本次 run；
+ *                       闸门失败路径不消费该对象，不触碰任何共享状态）
  */
+export interface SendUserMessageIntoConversationOptions {
+  watchCommandContext?: WatchCommandContext;
+}
+
 export async function sendUserMessageIntoConversation(
   conversationId: string,
   message: string,
+  options?: SendUserMessageIntoConversationOptions,
 ): Promise<WatchSendMessageOutcome> {
   // 1. 并发闸门：与 chat:send 共用同一把（beginConversationRun），同会话互斥
   const abortController = beginConversationRun(conversationId);
@@ -101,8 +110,10 @@ export async function sendUserMessageIntoConversation(
     // 4. 标记运行态并推送（setConversationRunning(true) + IPC_CONV.UPDATED）
     emitConversationUpdatedFromWatch(setConversationRunning(conversationId, true));
 
-    // 5. 执行主智能体（传参字段与取值来源与 chat:send 完全一致；uploadedFiles 为空数组；
-    //    用户消息 = message 原文，单条 role='user'，零加工；模型配置取本次 run 的快照）
+    // 5. 执行主智能体（传参字段与取值来源与 chat:send 完全一致，另携带值守链路专属的
+    //    watchCommandContext（run 私有指令上下文，chat:send 路径无此参）；
+    //    uploadedFiles 为空数组；用户消息 = message 原文，单条 role='user'，零加工；
+    //    模型配置取本次 run 的快照）
     const settings = runSettings;
     const result = await runMainAgent({
       conversationId,
@@ -143,6 +154,9 @@ export async function sendUserMessageIntoConversation(
       },
       uploadedFiles: [],
       signal: abortController.signal,
+      // 值守指令上下文随本次 run 传递（闸门已在上方获取成功；send_email 分支经
+      // ToolRuntimeContext.watchCommandContext 读取，本地 chat:send 路径恒为 undefined）
+      watchCommandContext: options?.watchCommandContext,
     });
 
     // 终态即返回（runMainAgent 返回值 MainAgentResult.content 是回执正文唯一可靠来源，

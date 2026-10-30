@@ -87,7 +87,7 @@ import { pythonManager, type SystemPythonInfo } from '../modules/python';
 
 import {
   getWatchStatus,
-  setWatchEnabledChangeNotifier,
+  setWatchRuntimeStateChangeNotifier,
   startWatch,
   startWatchService,
   stopWatch,
@@ -734,9 +734,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   };
 
   ipcMain.handle(IPC_CONFIG.SAVE, async (_event, params: ConfigSaveParamsWithContext): Promise<void> => {
-    // 【值守开关守卫（v3 §4.4）】watchEnabled 是"用户意图+运行态"双载体，仅允许
-    // watch:start / watch:stop / 自动恢复回落三个服务侧出口写回；config:save 直写该键
-    // 会造成"开关与轮询状态不一致"的绕过态，一律拒绝。
+    // 【值守开关守卫（v3 §4.4）】watchEnabled 唯一语义=用户意图，仅允许 watch:start（自检通过）/
+    // watch:stop 两个用户动作服务侧出口写回；运行态回落（自检失败/轮询故障）只复位 runtimeStatus
+    // 不写本键。config:save 直写该键会造成"意图与运行态不一致"的绕过态，一律拒绝。
     if (params.key === 'watchEnabled') {
       throw new Error(
         'ERR_WATCH_ENABLED_DIRECT_WRITE_FORBIDDEN：watchEnabled 不允许经 config:save 直接写入；请经 watch:start / watch:stop 调整值守开关',
@@ -1992,7 +1992,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC_WATCH.START, async (): Promise<WatchStartResult> => {
-    // 真实自检（IMAP+SMTP）→ 水位初始化 → 写回 watchEnabled=true → 启动递归轮询
+    // 真实自检（IMAP+SMTP）→ 时间游标基线 → 写回 watchEnabled=true（仅用户开启动作）→ 启动递归轮询
     const result = await startWatch();
     // v3 §4.4：无论成败统一刷新主智能体工具清单（阶段3 send_email 工具可见性随此联动）
     refreshMainTools();
@@ -2000,17 +2000,19 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   ipcMain.handle(IPC_WATCH.STOP, async (): Promise<WatchStopResult> => {
-    // 幂等关闭：清定时器、写回 watchEnabled=false、复位状态
+    // 幂等关闭：清定时器、写回 watchEnabled=false（仅用户关闭动作）、复位状态、作废在途开启事务
     const result = await stopWatch();
     refreshMainTools();
     return result;
   });
 
   // 值守服务启动入口（app ready 后随 registerIpcHandlers 调用，幂等）：
-  // 读 watchEnabled——false 保持关闭零副作用；true 走真实自检（IMAP/SMTP）：
-  // 通过则自动恢复运行（INFO watch.resume），失败回落关闭并写 ERROR 日志（watch.resume）。
-  // watchEnabled 的服务侧写回经此 notifier 同步刷新主智能体工具清单（v3 §4.4）。
-  setWatchEnabledChangeNotifier(() => refreshMainTools());
+  // 读 watchEnabled（=纯用户意图）——false 保持关闭零副作用；true 走真实自检（IMAP/SMTP）：
+  // 通过则自动恢复运行（INFO watch.resume），失败回落关闭并写 ERROR 日志（watch.resume；
+  // 回落不写 watchEnabled，下次重启仍自动恢复重试）。
+  // 值守运行态每次终态转移（开启成功/用户关闭/回落关闭/退出清理）经此 notifier 同步刷新
+  // 主智能体工具清单（send_email 声明层可见性随 isWatchRuntimeRunning 联动）。
+  setWatchRuntimeStateChangeNotifier(() => refreshMainTools());
   startWatchService();
 
   // 文件选择对话框

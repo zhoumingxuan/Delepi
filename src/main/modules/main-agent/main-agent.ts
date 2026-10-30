@@ -17,6 +17,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { streamChat, type ModelConfig } from '../llm/openai-client';
+import type { WatchCommandContext } from '../watch/watch-runtime-flag';
 import { initAdapterWithFallback, warnCodingPlanMismatch } from '../llm/adapters/adapter-factory';
 import type { ProtocolAdapter, AdapterInitConfig } from '../llm/adapters/protocol-adapter';
 import { isModelApiAbortError } from '../llm/model-retry';
@@ -143,6 +144,13 @@ export interface MainAgentOptions {
    * 必填：两个调用入口均已同步补齐（漏传会在 typecheck 暴露）。
    */
   runtimeSettingsSnapshot: RuntimeSettingsSnapshot;
+  /**
+   * 本次 run 的值守指令上下文（run 实例私有对象）：值守注入链路（conversation-send-service）
+   * 在会话闸门获取成功后传入；send_email 分支经 ToolRuntimeContext.watchCommandContext
+   * 透传给执行体做 In-Reply-To/X-Delepi-Command-Id 补全与回执观测标记。
+   * 本地 chat:send 路径恒为 undefined（无指令上下文，行为不变）。
+   */
+  watchCommandContext?: WatchCommandContext;
 }
 
 export interface MainAgentResult {
@@ -1286,6 +1294,11 @@ export async function runMainAgent(
             toolContext: {
               conversationId,
               runDir: conversationDir,
+              // 视觉配置 run 快照随工具上下文贯通（executeToolCall 签名通道）：
+              // inspect_media 工具体与 executor-registry 执行层拦截读快照；
+              // 值守后台 run 期间不直读全局（缺省回落全局仅限诊断直调场景）
+              visionModelConfig: options.visionModelConfig,
+              visionEnabled: options.runtimeSettingsSnapshot.visionEnabled,
             },
             // 已完成任务数组直接传下去（不做转换）：completedTasks.length>0 时传全量数组，否则 undefined
             // 与网站版 stream/route.ts L796-801 行为一致
@@ -1536,9 +1549,10 @@ export async function runMainAgent(
       } else if (toolCall.function.name === MAIN_SEND_EMAIL_TOOL_NAME) {
         // ★ 阶段3：主智能体 send_email 独立直接工具分支（值守回执唯一发送通道，时序1单轨）。
         //   位置：query_skill 分支之后、read_file/fs_* 直接工具分支之前（时序5锚点 L1524/L1525）；
-        //   执行层能力拦截（TOOL_DISABLED_WATCH_OFF：watchEnabled=false 或值守未运行）在
-        //   executeSendEmailTool 入口完成（先例 executor-registry.ts:225-232 inspect_media）；
-        //   声明层可见性由 buildMainTools() 按 watchEnabled 条件追加（prompt.ts，阶段3）。
+        //   执行层能力拦截（TOOL_DISABLED_WATCH_OFF：值守未运行）在
+        //   executeSendEmailTool 入口完成（先例 executor-registry.ts inspect_media）；
+        //   声明层可见性由 buildMainTools() 按值守运行态 isWatchRuntimeRunning() 条件追加
+        //   （prompt.ts，声明层与执行层同一判定源）。
         //   不进 executeToolCall——EXECUTOR_TOOLS 仅面向执行子智能体（B28：查不到返回
         //   TOOL_NOT_FOUND）；也不注册进 EXECUTOR_TOOLS（避免暴露给执行子智能体）。
         //   发送失败返回 success=false（不抛错），供主智能体按工具 description 第 4 条自主重试。
@@ -1548,6 +1562,9 @@ export async function runMainAgent(
             conversationId,
             runDir: resolveConversationDir(conversationId),
             signal: options.signal,
+            // 值守指令上下文直传执行体（本地 chat:send 路径为 undefined，
+            // In-Reply-To 不补全，行为不变）
+            watchCommandContext: options.watchCommandContext,
           });
         } catch (error) {
           sendEmailResult = buildToolResult({

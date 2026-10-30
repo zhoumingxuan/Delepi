@@ -19,6 +19,7 @@ import { registerIpcHandlers, writeMainLog } from './ipc/ipc-handlers';
 import { configManager } from './modules/config/config-manager';
 import { pythonManager } from './modules/python';
 import { initUpdateManager, disposeUpdateManager } from './modules/update';
+import { stopWatchService } from './modules/watch/watch-service';
 import {
   PRELOAD_PATH_SEGMENT,
   PRELOAD_FILE_NAME,
@@ -539,6 +540,9 @@ app.whenReady().then(async () => {
 app.on('before-quit', () => {
   // 客户端自动更新：清调度定时器 + 中止在途下载（幂等）
   disposeUpdateManager();
+  // 值守服务退出清理（与 registerIpcHandlers 内 startWatchService 对称）——清轮询定时器、
+  // 复位运行态与恢复标志；不写 watchEnabled（保留用户意图跨重启），并作废在途开启事务。
+  stopWatchService();
 });
 
 app.on('window-all-closed', () => {

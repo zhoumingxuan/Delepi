@@ -222,8 +222,12 @@ export async function executeToolCall(
     }, toolCallId);
   }
 
-  // 视觉识别总开关关闭时拒绝执行 inspect_media（执行层拦截；声明层过滤见 executor-agent.ts runDelegatedTask）
-  if (normalizedToolName === 'inspect_media' && !configManager.getSettings().visionEnabled) {
+  // 视觉识别总开关关闭时拒绝执行 inspect_media（执行层拦截；声明层过滤见 executor-agent.ts runDelegatedTask）。
+  // 判定读本次 run 快照（context.visionEnabled，经 main-agent → runDelegatedTask toolContext
+  // 从 RuntimeSettingsSnapshot.visionEnabled 透传）；快照缺失（诊断直调等无 run 上下文场景）
+  // 回落全局实时值，保持既有语义。
+  const visionEnabledSnapshot = context?.visionEnabled ?? configManager.getSettings().visionEnabled;
+  if (normalizedToolName === 'inspect_media' && !visionEnabledSnapshot) {
     return buildSimpleToolResult({
       success: false,
       code: 'TOOL_DISABLED_VISION_OFF',

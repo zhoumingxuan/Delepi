@@ -191,7 +191,7 @@ const electronAPI = {
   watch: {
     /**
      * 开启值守（渲染→主，invoke）
-     * 主进程执行：本地校验 → IMAP/SMTP 真实自检 → 水位初始化 → 写回 watchEnabled=true → 启动递归轮询
+     * 主进程执行：本地校验 → IMAP/SMTP 真实自检 → 时间游标基线 → 写回 watchEnabled=true（仅用户开启动作）→ 启动递归轮询
      * @returns { ok, status, code?, message? }（自检失败回落关闭并携带稳定错误码）
      */
     start: () => ipcRenderer.invoke(IPC_WATCH.START),
