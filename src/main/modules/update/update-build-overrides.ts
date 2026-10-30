@@ -2,7 +2,7 @@
  * 客户端自动更新：构建期默认值读取（全模块唯一读取点）
  *
  * L2：Vite define 注入的 __DELEPI_UPDATE_*_OVERRIDE__（未设置时为空串）；
- * L3：打包产物 package.json 的 extraMetadata.delepiUpdate（electron-builder 写入）；
+ * L3：已废弃（恒空串），保留读取代码以兼容读取旧安装包内已注入的 package.json；
  * L4：src/shared/update-constants.ts 的源码常量。
  *
  * 注意：必须用 fs.readFileSync 读取 package.json，禁止 require——require 会被 bundler

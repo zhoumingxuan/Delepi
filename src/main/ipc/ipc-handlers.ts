@@ -70,6 +70,7 @@ import { truncateConversationTitle } from '../modules/main-agent/title-generatio
 import { configManager } from '../modules/config/config-manager';
 import { updateManager } from '../modules/update/update-manager';
 import {
+  applyProfileToSettings,
   bindConversationToProfile,
   inspectConversationModelProfile,
   resolveConversationModelConfig,
@@ -100,6 +101,8 @@ import {
   ensureConversation,
   clearConversationModelProfileBindings,
   getConversationById,
+  getConversationModelProfileId,
+  getDb,
   listConversations,
   listRendererMessages,
   listTags,
@@ -447,6 +450,17 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         },
         // 视觉识别总开关联动：visionEnabled=false 时主智能体多模态强制关闭（multimodalEnabled = visionEnabled && mainModelMultimodal）
         mainAgentMultimodalEnabled: runSettings.visionEnabled && runSettings.mainModelMultimodal,
+        // 【F-4·R4 运行期快照】六键快照（主/子思考档位、主/子协议、压缩阈值、视觉总开关）随本次
+        // run 传入；main-agent/executor-agent 运行期一律读该快照，不再直读 configManager 全局——
+        // 运行中他处切换方案不影响本次 run（快照语义，INV-3）。与 conversation-send-service 入口同步。
+        runtimeSettingsSnapshot: {
+          mainThinkingLevel: runSettings.mainThinkingLevel,
+          mainModelProtocol: runSettings.mainModelProtocol,
+          executorThinkingLevel: runSettings.executorThinkingLevel,
+          executorModelProtocol: runSettings.executorModelProtocol,
+          executorContextCompressionThreshold: runSettings.executorContextCompressionThreshold,
+          visionEnabled: runSettings.visionEnabled,
+        },
         assistantMessageId: params.assistantMessageId,
         uploadedFiles,
         signal: abortController.signal,
@@ -704,7 +718,22 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     };
   });
 
-  ipcMain.handle(IPC_CONFIG.SAVE, async (_event, params: ConfigSaveParams): Promise<void> => {
+  /**
+   * 【结构性根治·写入目标随数据携带】config:save 扩展参数：在既有 ConfigSaveParams（src/main/types/ipc.ts）
+   * 基础上增加可选 conversationId / profileId；preload 的 save 通道按 unknown 透传，旧调用方不携带
+   * 新字段时全部回落旧行为（向后兼容，INV-6）。profileId = 编辑发起时的上下文方案身份（前端
+   * displayProfileId 在保存发起时捕获并随载荷上传），保存到达时直接按该 id 定位目标方案写入，
+   * 不读到达时刻的任何可变状态（activeProfileId / 会话绑定）——迟到的保存天然写回其发起时的
+   * 上下文方案，无需 prevValue 双通道守卫与切换窗口丢弃。
+   */
+  type ConfigSaveParamsWithContext = ConfigSaveParams & {
+    /** 发起编辑的会话 id（兜底通道：profileId 缺失时按该会话当前绑定解析写入目标） */
+    conversationId?: string;
+    /** 编辑发起时的上下文方案 id（首选通道：保存到达时直接定位该方案写入） */
+    profileId?: string;
+  };
+
+  ipcMain.handle(IPC_CONFIG.SAVE, async (_event, params: ConfigSaveParamsWithContext): Promise<void> => {
     // 【值守开关守卫（v3 §4.4）】watchEnabled 是"用户意图+运行态"双载体，仅允许
     // watch:start / watch:stop / 自动恢复回落三个服务侧出口写回；config:save 直写该键
     // 会造成"开关与轮询状态不一致"的绕过态，一律拒绝。
@@ -713,13 +742,70 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         'ERR_WATCH_ENABLED_DIRECT_WRITE_FORBIDDEN：watchEnabled 不允许经 config:save 直接写入；请经 watch:start / watch:stop 调整值守开关',
       );
     }
-    // 【F2·守卫前置】在本次写入（saveSetting/setSetting）之前记录该键的运行时旧值，
-    // 供链路C 做「方案现值 === 写入前运行时旧值」一致性比较；
-    // 禁止改用写入后的新值参与比较（否则守卫恒真失效）。
-    const prevRuntimeValue = (configManager.getSettings() as unknown as Record<string, unknown>)[params.key];
+    // 【结构性根治·链路C】方案键（PROFILE_CONFIG_KEYS 15 键）写入目标 = 编辑发起时随载荷固定的
+    // profileId，解析优先级：① 载荷 profileId 有效（存在于 modelProfiles）→ 无条件写入该方案
+    // （身份明确，无需「现值===基准」一致性守卫）；② 载荷缺失（旧调用方/防御）→ 按会话绑定
+    // （conversationId）解析；③ 均无 → 回落全局 activeProfileId（旧行为，INV-6 列表态兼容）。
+    // 全局 15 键运行时单键写入仅在「写入目标 = 当前全局激活方案」时执行（运行时=激活方案的投影）；
+    // 写入目标 ≠ 激活方案（迟到保存 / 会话绑定方案非激活）时零全局运行时写入——结构上杜绝
+    // 「把方案 A 上下文的编辑写进方案 B 的运行时」。非方案键（visionEnabled 等）走旧行为。
+    // 注：PROFILE_CONFIG_KEYS 在本函数后续定义，handler 回调异步执行时已初始化，无 TDZ 问题。
+    if ((PROFILE_CONFIG_KEYS as readonly string[]).includes(params.key)) {
+      const s = configManager.getSettings();
+      const ctxProfileId = typeof params.profileId === 'string' ? params.profileId.trim() : '';
+      const ctxConversationId = typeof params.conversationId === 'string' ? params.conversationId.trim() : '';
+      let targetId = ctxProfileId && s.modelProfiles.some((item) => item.id === ctxProfileId)
+        ? ctxProfileId
+        : '';
+      if (!targetId) {
+        const boundProfileId = ctxConversationId && getConversationById(ctxConversationId)
+          ? getConversationModelProfileId(ctxConversationId)
+          : '';
+        targetId = boundProfileId && s.modelProfiles.some((item) => item.id === boundProfileId)
+          ? boundProfileId
+          : s.activeProfileId;
+      }
+      if (targetId) {
+        const profiles = [...s.modelProfiles];
+        const idx = profiles.findIndex((item) => item.id === targetId);
+        if (idx >= 0) {
+          // 无条件写入目标方案：写入身份由载荷固定（随数据携带），旧「目标方案现值 === 运行时旧值/
+          // 前端基准」双通道一致性守卫随双状态源错位一起移除——写入目标不再取自到达时刻的可变
+          // 全局状态，守卫失去存在前提（结构性替代，非拦截式放宽）。
+          const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
+          next[params.key] = params.value;
+          profiles[idx] = next as ModelProfile;
+          saveSetting('modelProfiles', profiles);
+          configManager.setSetting('modelProfiles', profiles);
+        }
+        // 运行时投影：仅当写入目标 = 当前全局激活方案时同步 15 键运行时单键，保持
+        // 「全局默认方案存储 = 全局运行时」一致；否则零全局运行时写入（不污染默认方案运行时）
+        if (targetId === s.activeProfileId) {
+          saveSetting(params.key, params.value);
+          const appSettings = configManager.getSettings();
+          if (params.key in appSettings) {
+            configManager.setSetting(
+              params.key as keyof AppSettings,
+              params.value as AppSettings[keyof AppSettings],
+            );
+          }
+        }
+        return;
+      }
+      // 无任何方案（targetId=''，无方案回退态）：旧行为——仅写全局运行时单键（此时全局运行时
+      // 是唯一配置源，等价 resolver global-fallback 分支的读取口径）
+      saveSetting(params.key, params.value);
+      const fallbackSettings = configManager.getSettings();
+      if (params.key in fallbackSettings) {
+        configManager.setSetting(
+          params.key as keyof AppSettings,
+          params.value as AppSettings[keyof AppSettings],
+        );
+      }
+      return;
+    }
+    // 非方案键：旧行为（写运行时单键 + 客户端更新联动；无方案身份、不入档）
     saveSetting(params.key, params.value);
-
-    // 同步到 configManager
     const appSettings = configManager.getSettings();
     if (params.key in appSettings) {
       configManager.setSetting(
@@ -727,44 +813,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         params.value as AppSettings[keyof AppSettings],
       );
     }
-
     // 客户端自动更新：开关即时生效 / 地址变更重置状态（仅两个更新配置键，其它键零影响）
     if (params.key === 'updateAutoCheckEnabled' || params.key === 'updateBaseUrl') {
       updateManager.notifyConfigChanged(params.key);
-    }
-
-    // 【链路C】当前加载了方案（activeProfileId 存在）时，模型配置修改后同步更新该方案在
-    // modelProfiles 中的对应字段；方案字段全集 = PROFILE_CONFIG_KEYS（visionEnabled 等非方案键不入档，不同步）。
-    // 注：PROFILE_CONFIG_KEYS 在本函数后续定义，handler 回调异步执行时已初始化，无 TDZ 问题。
-    if ((PROFILE_CONFIG_KEYS as readonly string[]).includes(params.key)) {
-      const s = configManager.getSettings();
-      const activeId = s.activeProfileId;
-      if (activeId) {
-        const profiles = [...s.modelProfiles];
-        const idx = profiles.findIndex((item) => item.id === activeId);
-        if (idx >= 0) {
-          // 【F2·快照一致性守卫】仅当「该键在激活方案对象中的现值」与「本次写入前的运行时旧值」
-          // 一致（即用户改动的确源于当前方案上下文）时，才把新值同步写进激活方案并落库 modelProfiles；
-          // 错位态（如删除激活方案后转移未应用新方案配置导致的「激活=满配置方案、运行时=旧值」）
-          // 下跳过方案同步，仅完成上方单键运行时保存，不报错、不阻断保存。
-          const profileValue = (profiles[idx] as unknown as Record<string, unknown>)[params.key];
-          // 【缺键补录·白名单】仅 mainModelProtocol/executorModelProtocol/executorContextCompressionThreshold 三键：激活档案缺该键时放行守卫，
-          // 把本次保存写入全局的运行时值（params.value）补键写入档案 JSON 并落库，复用下方既有入档机制；
-          // 缺键判定=profileValue===undefined（JSON 无 undefined 值，缺键即 undefined）；其余 12 键及白名单键
-          // 已有键时仍仅按原守卫「现值 === 写入前运行时旧值」判定，行为零变化。
-          if (
-            profileValue === prevRuntimeValue ||
-            (profileValue === undefined &&
-              (params.key === 'mainModelProtocol' || params.key === 'executorModelProtocol' || params.key === 'executorContextCompressionThreshold'))
-          ) {
-            const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
-            next[params.key] = params.value;
-            profiles[idx] = next as ModelProfile;
-            saveSetting('modelProfiles', profiles);
-            configManager.setSetting('modelProfiles', profiles);
-          }
-        }
-      }
     }
   });
 
@@ -788,7 +839,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     conversationProfile?: ConversationModelProfileView | null;
   };
   type ProfileListParams = { conversationId?: string } | undefined;
-  type ProfileSaveParams = { name: string; blank?: boolean };
+  // 【F-8·R7 封口】非 blank 分支=以主进程全局当前值为快照覆盖同名方案——在「会话绑定≠全局激活」
+  // 错位态下这正是「把全局（可能=A）配置写进 B」的直接串扰形态；当前无任何前端调用方（前端仅
+  // blank:true 新建）。封口：非 blank 必须显式携带 mode:'snapshot-overwrite' 才放行，否则拒绝。
+  type ProfileSaveParams = { name: string; blank?: boolean; mode?: 'snapshot-overwrite' };
   type ProfileDeleteParams = { id: string };
   /** 切换参数：conversationId 存在时只把该会话绑定到新方案（不再只写全局 14 键） */
   type ProfileSwitchParams = { id: string; conversationId?: string };
@@ -797,6 +851,12 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     profileName: string;
     /** 切换后该会话的绑定方案 id（未传 conversationId 时为 ''） */
     conversationProfileId: string;
+    /**
+     * 带 conversationId 分支返回的新方案合成配置（= 全局设置 + 新方案 15 键覆盖，
+     * applyProfileToSettings 口径），供前端会话分支回填表单（不再 onReload 回灌全局值）；
+     * 未带 conversationId 时不返回该字段（列表态全局切换，旧行为）。
+     */
+    resolvedSettings?: AppSettings;
   };
 
   /** 档案切换批量写回的配置键全集（三组九键 + mainModelMultimodal + mainThinkingLevel + mainModelProtocol + executorThinkingLevel + executorModelProtocol + executorContextCompressionThreshold；visionEnabled 总开关不入档） */
@@ -839,11 +899,18 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     // 另存为：以主进程当前生效配置（九键+开关/档位/协议）为权威快照源；同名档案覆盖并保留原 id。
     // blank=true：新建空白方案——9 个文本键取空串，开关/档位取 DEFAULT_APP_SETTINGS 默认值
     // （禁止存空串：config-manager reload() 过滤空串，重启后默认值回填会造成方案内容漂移）；
-    // blank 为 undefined/null 时走原复制快照逻辑（另存为语义，向后兼容）。
+    // 【F-8】blank 非 true（原"复制全局快照"另存为语义）已封口：必须显式 mode:'snapshot-overwrite'
+    // 才放行（见下方守卫），默认一律拒绝——防止错位态下把全局值写入非上下文方案。
+    const blank = params.blank === true;
+    // 【F-8·R7 封口】非 blank（全局快照覆盖）分支：未显式携带 mode:'snapshot-overwrite' 一律拒绝
+    if (!blank && params.mode !== 'snapshot-overwrite') {
+      throw new Error(
+        'PROFILES_SAVE 非 blank 分支已封口：该分支以全局当前值快照覆盖方案存储，在「会话绑定≠全局激活」错位态下会把非上下文方案的内容写入目标方案；确需该语义必须显式传 mode:"snapshot-overwrite"（接入 UI 前须先落地 F-1/F-2 会话上下文对齐）',
+      );
+    }
     const settings = configManager.getSettings();
     const profiles = [...settings.modelProfiles];
     const existingIndex = profiles.findIndex((item) => item.name === name);
-    const blank = params.blank === true;
     const profile: ModelProfile = blank
       ? {
           id: existingIndex >= 0 ? profiles[existingIndex].id : uuidv4(),
@@ -956,61 +1023,85 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     if (!profile) {
       throw new Error('档案不存在或已被删除');
     }
-    // 切换流程：逐键「saveSetting 落库 + setSetting 即时生效」（对齐既有 config:save 模式）；
-    // 任一键失败：汇总错误返回且不回滚已写键（settings INSERT OR REPLACE 幂等，重试切换即自愈）；
-    // 全部成功后再写 activeProfileId。
-    const errors: string[] = [];
-    for (const key of PROFILE_CONFIG_KEYS) {
-      try {
-        const value = profile[key];
-        // 兜底：存量档案缺 mainThinkingLevel 时 value=undefined（stringifyJson(undefined)=undefined 经 better-sqlite3 绑定 NULL，触发 value_json NOT NULL 约束抛错）；
-        // 跳过 undefined 键，保持当前生效档位不动（对齐 visionEnabled 不入档语义）
-        // 协议键/压缩阈值键缺键回填：存量档案缺该键时以 DEFAULT_APP_SETTINGS 默认值落库并即时生效，杜绝切换后残留上一档案值
-        if (
-          value === undefined &&
-          (key === 'mainModelProtocol' || key === 'executorModelProtocol' || key === 'executorContextCompressionThreshold')
-        ) {
-          const fallbackValue = DEFAULT_APP_SETTINGS[key];
-          saveSetting(key, fallbackValue);
-          configManager.setSetting(key, fallbackValue);
-          continue;
-        }
-        if (value === undefined) continue;
-        saveSetting(key, value);
-        configManager.setSetting(key, value);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : String(error);
-        errors.push(`${key}: ${msg}`);
-      }
-    }
-    if (errors.length > 0) {
-      throw new Error(`切换档案「${profile.name}」部分失败（${PROFILE_CONFIG_KEYS.length - errors.length}/${PROFILE_CONFIG_KEYS.length} 键已写入，未回滚；重试切换可自愈）：${errors.join('；')}`);
-    }
-    saveSetting('activeProfileId', profile.id);
-    configManager.setSetting('activeProfileId', profile.id);
-
-    // 【阶段7 目标1】切换不再只写全局 14 键：带 conversationId 时把该会话绑定到新方案，
-    // 其他会话保持各自绑定（不再被全局切换污染）。conversationId 缺省=纯全局切换（旧行为兼容）。
     const targetConversationId = typeof params?.conversationId === 'string' ? params.conversationId.trim() : '';
-    let conversationProfileId = '';
+
     if (targetConversationId) {
-      if (getConversationById(targetConversationId)) {
-        bindConversationToProfile(targetConversationId, profile.id);
-        conversationProfileId = profile.id;
-        writeMainLog(
-          'INFO',
-          'config.profile',
-          `方案切换已绑定会话：conversationId=${targetConversationId} profileId=${profile.id} profileName=${profile.name}`,
-        );
-      } else {
-        writeMainLog(
-          'WARN',
-          'config.profile',
-          `方案切换：conversationId=${targetConversationId} 不存在，仅完成全局切换（未写会话绑定）`,
-        );
+      // 【结构性根治·会话级切换 = 纯会话绑定变更】只写 conversations.model_profile_id（单条 UPDATE，
+      // 天然原子），零全局写入——不写全局 15 键运行时、不写 activeProfileId。全局①②从此收缩为
+      // 「默认方案/列表态」单一语义（仅列表态切换 / PROFILES_DELETE 激活转移 / PROFILES_SAVE 空位
+      // 补位 / reload 补选时写入），会话级切换不再制造「全局运行时 = 非默认方案值」的双状态源错位
+      // （上一轮 F-3 保守变体的无条件全局写入已按根治设计移除）。
+      // 返回 resolvedSettings（= 全局设置 + 新方案 15 键覆盖，applyProfileToSettings 口径）供前端
+      // 会话分支回填表单；activeProfileId 返回当前真实全局激活（本次未改写）。
+      if (!getConversationById(targetConversationId)) {
+        throw new Error('会话不存在或已被删除，无法切换该对话的方案绑定');
       }
+      bindConversationToProfile(targetConversationId, profile.id);
+      const resolvedSettings = applyProfileToSettings(configManager.getSettings(), profile);
+      writeMainLog(
+        'INFO',
+        'config.profile',
+        `方案切换已绑定会话（零全局写入）：conversationId=${targetConversationId} profileId=${profile.id} profileName=${profile.name}`,
+      );
+      return {
+        activeProfileId: settings.activeProfileId,
+        profileName: profile.name,
+        conversationProfileId: profile.id,
+        resolvedSettings,
+      };
     }
-    return { activeProfileId: profile.id, profileName: profile.name, conversationProfileId };
+
+    // 列表态（无会话上下文）＝应用默认方案：全局 15 键 + activeProfileId 写入保持旧行为（INV-6）。
+    // 切换流程：逐键「saveSetting 落库」。【F-6·R5】15 键循环 + activeProfileId 写入整体包入
+    // getDb().transaction（参照 conversation.repo.ts deleteConversationGuarded 事务范式）——任一键
+    // 失败即整体回滚，DB 恒为「全成或全不改」，杜绝「半个 B」错乱态；configManager 内存同步统一
+    // 延后到事务提交成功后回放（内存永不超前于已提交的库状态，回滚后内存/库保持一致）。
+    const errors: string[] = [];
+    const appliedKv: Array<[string, unknown]> = [];
+    try {
+      getDb().transaction(() => {
+        for (const key of PROFILE_CONFIG_KEYS) {
+          try {
+            const value = profile[key];
+            // 兜底：存量档案缺 mainThinkingLevel 时 value=undefined（stringifyJson(undefined)=undefined 经 better-sqlite3 绑定 NULL，触发 value_json NOT NULL 约束抛错）；
+            // 跳过 undefined 键，保持当前生效档位不动（对齐 visionEnabled 不入档语义）
+            // 协议键/压缩阈值键缺键回填：存量档案缺该键时以 DEFAULT_APP_SETTINGS 默认值落库并即时生效，杜绝切换后残留上一档案值
+            if (
+              value === undefined &&
+              (key === 'mainModelProtocol' || key === 'executorModelProtocol' || key === 'executorContextCompressionThreshold')
+            ) {
+              const fallbackValue = DEFAULT_APP_SETTINGS[key];
+              saveSetting(key, fallbackValue);
+              appliedKv.push([key, fallbackValue]);
+              continue;
+            }
+            if (value === undefined) continue;
+            saveSetting(key, value);
+            appliedKv.push([key, value]);
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            errors.push(`${key}: ${msg}`);
+          }
+        }
+        if (errors.length > 0) {
+          // 抛出以触发事务回滚（better-sqlite3：transaction 函数抛错即 ROLLBACK，DB 恢复切换前状态）
+          throw new Error('__PROFILE_SWITCH_TX_ROLLBACK__');
+        }
+        saveSetting('activeProfileId', profile.id);
+      })();
+    } catch (txError) {
+      if (errors.length > 0) {
+        // 已整体回滚：全局运行时（库+内存）保持切换前状态；重试切换可自愈
+        throw new Error(`切换档案「${profile.name}」部分失败（${errors.length}/${PROFILE_CONFIG_KEYS.length} 键写入失败，事务已整体回滚，全局配置保持切换前状态；重试切换可自愈）：${errors.join('；')}`);
+      }
+      throw txError;
+    }
+    // 事务提交成功：统一同步 configManager 内存（逐键 setSetting，提交后内存态与旧版一致）
+    for (const [key, value] of appliedKv) {
+      configManager.setSetting(key as keyof AppSettings, value as AppSettings[keyof AppSettings]);
+    }
+    configManager.setSetting('activeProfileId', profile.id);
+    return { activeProfileId: profile.id, profileName: profile.name, conversationProfileId: '', resolvedSettings: undefined };
   });
 
   // ---- 方案导出/导入（文件 IO）：导出=ModelProfile 原样序列化落盘（密钥明文）；导入=白名单容错提取+补位，新档案追加不激活 ----

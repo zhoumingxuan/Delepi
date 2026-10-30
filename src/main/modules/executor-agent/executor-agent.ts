@@ -46,7 +46,7 @@ import {
   readCustomSkillTemplateContent,
   type ExecutorWorkflowTemplate,
 } from './executor-workflow-templates';
-import type { CustomSkillTag } from '@shared/types/config';
+import type { AppSettings, CustomSkillTag } from '@shared/types/config';
 
 import {
   executeToolCall,
@@ -1133,9 +1133,30 @@ async function completeExecutorTurn(options: {
 // 核心：runDelegatedTask - 执行委派任务
 // ============================================================
 
+/**
+ * 【F-4·R4 运行期快照】本次 run 的六键配置快照（runMainAgent 的两个入口——chat:send 与
+ * conversation-send-service——经 resolveConversationModelConfig 解析 runSettings 后构造，
+ * 并沿 runMainAgent → runDelegatedTask 调用链透传）。运行期的思考档位/协议/压缩阈值/视觉
+ * 总开关一律读本快照，禁止直读 configManager 全局：运行中他处切换方案不影响本次 run（快照
+ * 语义，INV-3）。六键全集与 PROFILE_CONFIG_KEYS 中的档位/协议/阈值键 + visionEnabled 对应。
+ */
+export interface RuntimeSettingsSnapshot {
+  mainThinkingLevel: AppSettings['mainThinkingLevel'];
+  mainModelProtocol: AppSettings['mainModelProtocol'];
+  executorThinkingLevel: AppSettings['executorThinkingLevel'];
+  executorModelProtocol: AppSettings['executorModelProtocol'];
+  executorContextCompressionThreshold: AppSettings['executorContextCompressionThreshold'];
+  visionEnabled: AppSettings['visionEnabled'];
+}
+
 export type RunDelegatedTaskOptions = {
   /** Assistant 运行时配置 */
   assistantConfig: AssistantRuntimeConfig;
+  /**
+   * 【F-4·R4】本次 run 的六键配置快照（runMainAgent 透传）：思考档位/协议/压缩阈值/视觉总开关
+   * 运行期一律读快照，禁止直读 configManager 全局（运行中切换方案不影响本次 run）。
+   */
+  runtimeSettingsSnapshot: RuntimeSettingsSnapshot;
   /** 委派任务参数（来自 MainAgent 的 delegate_executor 工具调用） */
   rawArguments: string;
   /** 对话 ID */
@@ -1317,8 +1338,9 @@ export async function runDelegatedTask(
   // executor-registry.executeToolCall）。动态工具全部纳入本禁用名单机制——首期 requiresVision=true
   // 被拒绝注册，动态工具均为非视觉，视觉关闭时保留；空动态表时过滤结果与原硬编码
   // 名单完全一致（等价性约束）。
+  // 【F-4·R4】visionEnabled 改读本次 run 快照（原直读 configManager 全局，运行中他处切方案会实时改变工具集）
   const executorTools = getExecutorOpenAITools(
-    configManager.getSettings().visionEnabled
+    options.runtimeSettingsSnapshot.visionEnabled
       ? undefined
       : getDefaultEnabledExecutorToolNames().filter((name) => name !== 'inspect_media'),
   );
@@ -1383,11 +1405,11 @@ export async function runDelegatedTask(
   // ============================================================
   // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每任务一实例（非常驻）——
   //   tools 传 delegatedExecutorTools 静态数组（L1285-1287 每任务局部构建，天然最新）；
-  //   档位传 getter（每次 sendMessage 组装思考参数时实时重读 executorThinkingLevel，
-  //   禁止清单⑨——init 注入值仅缺省兜底，与现状 L1069 每轮读取语义一致）；
+  //   档位传 getter：【F-4·R4】getter 内改读本次 run 的六键快照（runSettings.executorThinkingLevel），
+  //   不再直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义，INV-3）；
   //   M14 复位链经 init.hooks.onStreamRetry 承载（重试边界时序不变）；
-  //   协议选择：子智能体协议经 AppSettings.executorModelProtocol
-  //   实时注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定协议
+  //   协议选择：【F-4·R4】子智能体协议经本次 run 快照（runSettings.executorModelProtocol）
+  //   注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定协议
   //   时仅构造并 init 对应适配器，init 失败即抛 ModelApiAbortError（禁止自动降级，用
   //   不了就换一个协议由用户自己换）；未指定时走原探查降级链：先 Responses（探
   //   {baseUrl}/responses）后 CC（探 {baseUrl}/chat/completions）两级 await init，任一
@@ -1405,7 +1427,7 @@ export async function runDelegatedTask(
       apiKey: options.assistantConfig.executorModel.apiKey,
       model: options.assistantConfig.executorModel.model,
     },
-    thinkingLevel: () => configManager.getSettings().executorThinkingLevel,
+    thinkingLevel: () => options.runtimeSettingsSnapshot.executorThinkingLevel,
     systemMessage: String(initialMessages[0]?.content ?? ''),
     tools: delegatedExecutorTools as unknown as Array<Record<string, unknown>>,
     hooks: {
@@ -1413,7 +1435,8 @@ export async function runDelegatedTask(
       onStreamRetry: () => options.onStreamRetry?.(),
     },
   };
-  const adapterSetup = await initAdapterWithFallback(adapterInitConfig, configManager.getSettings().executorModelProtocol);
+  // 【F-4·R4】协议读本次 run 快照（原直读 configManager 全局）
+  const adapterSetup = await initAdapterWithFallback(adapterInitConfig, options.runtimeSettingsSnapshot.executorModelProtocol);
   const adapter = adapterSetup.adapter;
   warnCodingPlanMismatch(adapterSetup.protocol, options.assistantConfig.executorModel.baseUrl);
   // ★ 阶段四：适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；
@@ -1424,13 +1447,13 @@ export async function runDelegatedTask(
 
   // ★ 上下文压缩 runner（executorContextCompressionThreshold 运行时消费）：
   //   门禁(''/中止/服务端驻留/未超限)→slice(2)统计→同步压缩→原位重建→notice 全内聚于模块内；
-  //   阈值 getter 每轮现读（对齐上方 adapterInitConfig.thinkingLevel 实时读取范式）；
+  //   阈值 getter：【F-4·R4】改读本次 run 快照（对齐上方 thinkingLevel 快照范式，不直读全局）；
   //   压缩模型=executorModel 三键（任务内冻结）；无 recordSession 时 notice 跳过、重建照常。
   const executorCompressionStep = createExecutorContextCompressionRunner({
     messages: runtimeMessages,
     adapter,
     signal: options.signal,
-    readThreshold: () => configManager.getSettings().executorContextCompressionThreshold,
+    readThreshold: () => options.runtimeSettingsSnapshot.executorContextCompressionThreshold,
     modelConfig: options.assistantConfig.executorModel,
     originalSystemMessage: executorCompressionBase.originalSystemMessage,
     originalUserContent: executorCompressionBase.originalUserContent,

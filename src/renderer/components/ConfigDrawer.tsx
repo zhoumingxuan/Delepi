@@ -75,6 +75,8 @@ interface ProfileSwitchResult {
   profileName: string;
   /** 阶段7：切换时带了 conversationId 才有值（该会话被绑定到新方案） */
   conversationProfileId?: string;
+  /** 【F-3】带 conversationId 分支返回的新方案合成配置（全局设置+新方案15键覆盖），会话分支回填表单用 */
+  resolvedSettings?: Partial<AppSettings>;
 }
 
 /** 方案导出结果：成功含落盘完整路径；canceled=true 为用户取消（渲染层静默不反馈） */
@@ -275,7 +277,17 @@ interface ConfigDrawerProps {
    * - 无值时（列表态）：切换=纯全局切换（新建会话首次运行时懒绑定的默认方案）
    */
   conversationId?: string | null;
-  onSave: (key: keyof AppSettings, value: unknown) => Promise<void> | void;
+  /**
+   * 【结构性根治·写入目标随数据携带】保存回调：第 3 参透传当前会话 id；第 4 参 profileId =
+   * 保存发起时的上下文方案身份（displayProfileId：会话绑定优先/回落全局激活），随载荷上传，
+   * 主进程到达时直接定位该方案写入——迟到的保存天然写回发起时的上下文方案。
+   */
+  onSave: (
+    key: keyof AppSettings,
+    value: unknown,
+    conversationId?: string | null,
+    profileId?: string | null,
+  ) => Promise<void> | void;
   onSaveAll: (updates: Partial<AppSettings>) => Promise<void> | void;
   onReload: () => Promise<void> | void;
   /** 外部控制当前激活的 Tab（不传时内部自管） */
@@ -347,22 +359,6 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     [onTabChange],
   );
 
-  const handleSave = useCallback(
-    async (key: keyof AppSettings) => {
-      try {
-        const value = form.getFieldValue(key);
-        // 【F4】同值跳过：表单待保存值与最近运行时值一致时不发起 config:save
-        //（config 经 saveConfig 乐观更新后即含最近值），消除失焦/焦点迁移类噪声写库
-        //（如 ApiKeyPassword 点眼睛经 requestAnimationFrame 聚焦再失焦产生的同值 onBlur）。
-        if (value === config[key]) return;
-        await onSave(key, value);
-      } catch (err) {
-        antdMessage.error('保存失败');
-      }
-    },
-    [form, onSave, antdMessage, config],
-  );
-
   // ---- 配置方案（多槽位）状态与操作 ----
   const profilesApi = useMemo(
     () => window.electronAPI?.config as unknown as ProfilesConfigApi | undefined,
@@ -382,10 +378,47 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const profilesApiMissingRef = useRef(false);
 
   /**
+   * 【F-2·显示面合成】（R1 显示半边，与 F-1 同批交付）：会话绑定方案有效（conversationProfile
+   * 与当前 conversationId 一致且 boundProfileValid）时，15 个方案键以绑定方案存储值覆盖显示
+   * （过滤 undefined 跳过缺键，与主进程 applyProfileToSettings 的键覆盖语义一致）；非方案键
+   * （visionEnabled 等全局键）仍取全局 config。无有效绑定（列表态/未绑定/绑定悬空/视图未就绪）
+   * 时 displayConfig === config，行为与旧版一致。数据源复用 loadProfiles 已返回的
+   * profiles + conversationProfile，不新增 IPC。使「表单所见 = 会话绑定方案内容」（INV-1），
+   * 并为 handleSave/onChange 的同值跳过（F4）提供比较基准。
+   */
+  const displayConfig = useMemo<AppSettings>(() => {
+    const boundValid = Boolean(
+      conversationId &&
+        conversationProfile?.conversationId === conversationId &&
+        conversationProfile?.boundProfileValid,
+    );
+    if (!boundValid) {
+      return config;
+    }
+    const boundProfile =
+      profiles.find((item) => item.id === conversationProfile?.boundProfileId) ?? null;
+    if (!boundProfile) {
+      return config;
+    }
+    const boundSource = boundProfile as unknown as Record<string, unknown>;
+    const profilePatch: Partial<AppSettings> = {};
+    for (const key of Object.keys(boundSource)) {
+      if (key === 'id' || key === 'name') continue;
+      const value = boundSource[key];
+      if (value !== undefined) {
+        (profilePatch as Record<string, unknown>)[key] = value;
+      }
+    }
+    return { ...config, ...profilePatch };
+  }, [config, conversationId, conversationProfile, profiles]);
+
+  /**
    * 方案下拉框的「显示值」派生（仅用于展示，不改变 activeProfileId 在导出/删除/回填等用途上的语义）：
    * - 当前对话的绑定视图与 conversationId 一致且绑定有效 → 显示该会话绑定的方案；
    * - 未绑定 / 绑定方案已删除 / 视图尚未对应当前对话 / 未打开对话 → 显示全局激活方案。
    * 所有字段均取自主进程 listProfiles({ conversationId }) 返回的 conversationProfile，渲染层不推导绑定关系。
+   * 【结构性根治】该值兼任「保存发起时的上下文方案身份」（handleSave/onChange 第 4 参 profileId）：
+   * 会话绑定有效 → 绑定 id；否则 → 全局激活 id——声明须位于 handleSave 之前（TDZ）。
    */
   const displayProfileId =
     conversationId &&
@@ -393,6 +426,26 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     conversationProfile?.boundProfileValid
       ? conversationProfile.boundProfileId
       : activeProfileId;
+
+  const handleSave = useCallback(
+    async (key: keyof AppSettings) => {
+      try {
+        const value = form.getFieldValue(key);
+        // 【F4】同值跳过 + 【F-2】基准切换：比较基准改为合成显示值（会话绑定方案有效时
+        // = 绑定方案存储值；无绑定/列表态 = 全局 config 值，行为与旧版一致），消除失焦/焦点
+        // 迁移类噪声写库（如 ApiKeyPassword 点眼睛经 rAF 聚焦再失焦产生的同值 onBlur）。
+        if (value === displayConfig[key]) return;
+        // 【结构性根治】写入目标随数据携带：第 4 参 = 保存发起时的上下文方案身份
+        // （displayProfileId：会话绑定有效→绑定 id；否则→全局激活 id），主进程按载荷定位
+        // 写入、不读到达时刻可变状态——迟到的保存写回发起时上下文方案，无需 F-5 切换窗口
+        // 拦截（已移除）
+        await onSave(key, value, conversationId, displayProfileId);
+      } catch (err) {
+        antdMessage.error('保存失败');
+      }
+    },
+    [form, onSave, antdMessage, displayConfig, conversationId, displayProfileId],
+  );
 
   const loadProfiles = useCallback(async () => {
     if (!profilesApi) {
@@ -421,11 +474,13 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
   }, [open, loadProfiles]);
 
-  // 【链路B】打开配置抽屉时，以最新 config 全量刷新表单。
+  // 【链路B】打开配置抽屉时，以最新显示配置全量刷新表单。
   // antd Form initialValues 仅在首次挂载时生效一次，且 Drawer 未配置 destroyOnClose（Form store 跨打开保留），
   // 若不显式 setFieldsValue，打开配置页后表单将显示过期/残留值（"打开配置页加载方案后 ApiKey 显示 BaseUrl"的根因载体）。
-  const latestConfigRef = useRef(config);
-  latestConfigRef.current = config;
+  // 【F-2】填充源由全局 config 改为合成显示值 displayConfig：会话绑定方案有效时 15 个方案键
+  // = 绑定方案存储值（INV-1），非方案键仍取全局；无绑定时与全局 config 等价（旧行为不变）。
+  const latestConfigRef = useRef(displayConfig);
+  latestConfigRef.current = displayConfig;
   useEffect(() => {
     if (open && !configLoading) {
       form.setFieldsValue(latestConfigRef.current);
@@ -436,16 +491,18 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   // 【链路B】config 引用变化时，同步全部未 touched 字段（用户正在编辑的字段不打断）。
   // 覆盖"打开配置页时 config 异步加载完成"与"加载/切换方案后 reload 刷新 config"两类时序，
   // 保证表单字段始终与当前生效配置一致，杜绝 ApiKey 等字段残留 BaseUrl 值。
+  // 【F-2】同步源改为合成显示值 displayConfig：绑定方案视图就绪/方案列表刷新时（loadProfiles
+  // 返回后）同样触发同步，使表单 15 键始终 = 绑定方案合成值（INV-1）；无绑定时等价旧行为。
   useEffect(() => {
     if (configLoading) return;
     const patch: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(config)) {
+    for (const [key, value] of Object.entries(displayConfig)) {
       if (!form.isFieldTouched(key as keyof AppSettings) && value !== undefined) {
         patch[key] = value;
       }
     }
     form.setFieldsValue(patch);
-  }, [config, configLoading, form]);
+  }, [displayConfig, configLoading, form]);
 
   /** 切换方案：成功后回填表单（Form initialValues 不随 config 刷新）并刷新全局 config */
   const handleSwitchProfile = useCallback(
@@ -454,12 +511,20 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       const profile = profiles.find((item) => item.id === id);
       setProfileActionLoading(true);
       try {
-        // 阶段7：带 conversationId → 主进程把该会话绑定到新方案（不再只写全局 14 键）
+        // 【结构性根治】带 conversationId → 主进程纯会话绑定变更（零全局写入）；列表态 → 应用默认方案
         const result = await profilesApi.switchProfile(
           conversationId ? { id, conversationId } : { id },
         );
         setActiveProfileId(result?.activeProfileId ?? id);
-        if (profile) {
+        if (conversationId && result?.resolvedSettings) {
+          // 会话分支：主进程零全局写入（全局 config 未变），用返回的新方案合成配置
+          // （全局设置+新方案15键覆盖，与 F-2 displayConfig 同口径）回填表单；不 await
+          // onReload()——全局 config 本就未变（onReload 仅由列表态分支保留）
+          const clean = Object.fromEntries(
+            Object.entries(result.resolvedSettings).filter(([, v]) => v !== undefined),
+          );
+          form.setFieldsValue(clean);
+        } else if (profile) {
           const { id: _profileId, name: _profileName, ...profileValues } = profile;
           // 【链路B】回填兜底：存量档案可能缺键/含 undefined，合并默认值并过滤 undefined，
           // 避免切换方案后表单字段残留旧值或显示错位值
@@ -474,7 +539,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
             ? `已切换到方案「${result?.profileName ?? profile?.name ?? ''}」，并绑定到当前对话`
             : `已切换到方案「${result?.profileName ?? profile?.name ?? ''}」`,
         );
-        await onReload();
+        // 列表态（无会话上下文）保持旧行为：onReload 刷新全局 config；会话分支仅
+        // loadProfiles 刷新绑定视图（displayConfig/displayProfileId 随之切到新绑定方案）
+        if (!conversationId) {
+          await onReload();
+        }
         await loadProfiles();
       } catch (err) {
         antdMessage.error(err instanceof Error ? err.message : '切换方案失败，可重试；已填写的配置不会丢失');
@@ -496,9 +565,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
    * 新建方案（禁止重名）：经 profilesApi.saveProfile({ name, blank: true }) 创建空白方案
    * （主进程 blank 分支：9 个文本键取空串、开关/档位/协议取 DEFAULT_APP_SETTINGS 默认值；前端
    * 不自行拼装方案对象写库）；随后取新方案 id（saveProfile 返回按唯一名匹配，缺失时回退
-   * listProfiles 匹配），经等价 switchProfile 链路自动激活切换（与 handleSwitchProfile 同语义：
-   * 写 14 键 + activeProfileId、回填表单为空白值、onReload 刷新全局 config），最后 loadProfiles
-   * 刷新方案列表。全程不写旧方案任何内容，此后字段修改经链路C 写入新方案。
+   * listProfiles 匹配），经等价 switchProfile 链路切换（【结构性根治】有会话上下文时带
+   * conversationId → 新方案绑定当前会话（displayProfileId 随之切到新方案，后续编辑保存的
+   * profileId=新方案，表单/写入目标一致）；列表态 → 应用默认方案（写全局 14 键 + activeProfileId，
+   * 旧行为）、回填表单为空白值，最后 onReload + loadProfiles 刷新。全程不写旧方案任何内容，
+   * 此后字段修改经链路C 写入新方案。
    * 注：不直接复用 handleSwitchProfile，因其闭包内的 profiles 为创建前快照、找不到新方案，
    * 表单回填分支会被跳过；此处在拿到新方案对象后执行等价链路，行为与其完全一致。
    */
@@ -526,7 +597,12 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       if (!target) {
         throw new Error('未找到新建的方案');
       }
-      const switchResult = await profilesApi.switchProfile({ id: target.id });
+      // 【结构性根治】有会话上下文时带 conversationId：新方案绑定当前会话（零全局写入），
+      // displayProfileId/loadProfiles 后切换到新方案，此后编辑保存写入新方案（上下文一致）；
+      // 列表态不带 → 应用默认方案（全局写入，旧行为）
+      const switchResult = await profilesApi.switchProfile(
+        conversationId ? { id: target.id, conversationId } : { id: target.id },
+      );
       setProfiles(newProfiles);
       setActiveProfileId(switchResult?.activeProfileId ?? target.id);
       const { id: _newProfileId, name: _newProfileName, ...newProfileValues } = target;
@@ -538,14 +614,18 @@ export const ConfigDrawer = memo(function ConfigDrawer({
       setProfileCreateModalOpen(false);
       setProfileCreateNameInput('');
       antdMessage.success(`已创建并切换到方案「${switchResult?.profileName ?? name}」`);
-      await onReload();
+      // 会话分支：主进程零全局写入，全局 config 未变，仅 loadProfiles 刷新绑定视图即可；
+      // 列表态：onReload 刷新全局 config（与 handleSwitchProfile 同语义）
+      if (!conversationId) {
+        await onReload();
+      }
       await loadProfiles();
     } catch (err) {
       antdMessage.error(err instanceof Error ? err.message : '新建方案失败');
     } finally {
       setProfileActionLoading(false);
     }
-  }, [profilesApi, profileCreateNameTrimmed, profiles, form, antdMessage, onReload, loadProfiles]);
+  }, [profilesApi, profileCreateNameTrimmed, profiles, form, antdMessage, onReload, loadProfiles, conversationId]);
 
   /** 删除方案：删除激活方案后激活态自动转移至剩余第一个方案并应用其配置（F1+F3，删除后表单所见=新激活方案内容）；剩余为空则置空且九键保持现状，下次加载时主进程重建默认方案 */
   const handleDeleteProfile = useCallback(
@@ -1184,9 +1264,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         <Switch
                           disabled={!config.visionEnabled}
                           onChange={(value) => {
-                            // 【F4】同值跳过：值未变化不发起 config:save
-                            if (value === config.mainModelMultimodal) return;
-                            onSave("mainModelMultimodal", value);
+                            // 【F4】同值跳过（【F-2】基准=合成显示值）；【结构性根治】第 4 参=保存发起时
+                            // 的上下文方案身份（displayProfileId），主进程按载荷定位写入，无需切换窗口拦截
+                            if (value === displayConfig.mainModelMultimodal) return;
+                            onSave("mainModelMultimodal", value, conversationId, displayProfileId);
                           }}
                         />
                       </Form.Item>
@@ -1207,9 +1288,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         <Select
                           options={REASONING_EFFORT_OPTIONS}
                           onChange={(value) => {
-                            // 【F4】同值跳过：值未变化不发起 config:save
-                            if (value === config.mainThinkingLevel) return;
-                            onSave("mainThinkingLevel", value);
+                            // 【F4】同值跳过（【F-2】基准=合成显示值）；【结构性根治】第 4 参=保存发起时
+                            // 的上下文方案身份（displayProfileId），主进程按载荷定位写入，无需切换窗口拦截
+                            if (value === displayConfig.mainThinkingLevel) return;
+                            onSave("mainThinkingLevel", value, conversationId, displayProfileId);
                           }}
                           style={{ maxWidth: 220 }}
                         />
@@ -1231,9 +1313,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         <Select
                           options={MODEL_PROTOCOL_OPTIONS}
                           onChange={(value) => {
-                            // 【F4】同值跳过：值未变化不发起 config:save
-                            if (value === config.mainModelProtocol) return;
-                            onSave("mainModelProtocol", value);
+                            // 【F4】同值跳过（【F-2】基准=合成显示值）；【结构性根治】第 4 参=保存发起时
+                            // 的上下文方案身份（displayProfileId），主进程按载荷定位写入，无需切换窗口拦截
+                            if (value === displayConfig.mainModelProtocol) return;
+                            onSave("mainModelProtocol", value, conversationId, displayProfileId);
                           }}
                           style={{ maxWidth: 220 }}
                         />
@@ -1348,9 +1431,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         <Select
                           options={REASONING_EFFORT_OPTIONS}
                           onChange={(value) => {
-                            // 【F4】同值跳过：值未变化不发起 config:save
-                            if (value === config.executorThinkingLevel) return;
-                            onSave("executorThinkingLevel", value);
+                            // 【F4】同值跳过（【F-2】基准=合成显示值）；【结构性根治】第 4 参=保存发起时
+                            // 的上下文方案身份（displayProfileId），主进程按载荷定位写入，无需切换窗口拦截
+                            if (value === displayConfig.executorThinkingLevel) return;
+                            onSave("executorThinkingLevel", value, conversationId, displayProfileId);
                           }}
                           style={{ maxWidth: 220 }}
                         />
@@ -1372,9 +1456,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         <Select
                           options={EXECUTOR_CONTEXT_COMPRESSION_THRESHOLD_OPTIONS}
                           onChange={(value) => {
-                            // 【F4】同值跳过：值未变化不发起 config:save
-                            if (value === config.executorContextCompressionThreshold) return;
-                            onSave("executorContextCompressionThreshold", value);
+                            // 【F4】同值跳过（【F-2】基准=合成显示值）；【结构性根治】第 4 参=保存发起时
+                            // 的上下文方案身份（displayProfileId），主进程按载荷定位写入，无需切换窗口拦截
+                            if (value === displayConfig.executorContextCompressionThreshold) return;
+                            onSave("executorContextCompressionThreshold", value, conversationId, displayProfileId);
                           }}
                           style={{ maxWidth: 220 }}
                         />
@@ -1396,9 +1481,10 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         <Select
                           options={MODEL_PROTOCOL_OPTIONS}
                           onChange={(value) => {
-                            // 【F4】同值跳过：值未变化不发起 config:save
-                            if (value === config.executorModelProtocol) return;
-                            onSave("executorModelProtocol", value);
+                            // 【F4】同值跳过（【F-2】基准=合成显示值）；【结构性根治】第 4 参=保存发起时
+                            // 的上下文方案身份（displayProfileId），主进程按载荷定位写入，无需切换窗口拦截
+                            if (value === displayConfig.executorModelProtocol) return;
+                            onSave("executorModelProtocol", value, conversationId, displayProfileId);
                           }}
                           style={{ maxWidth: 220 }}
                         />
@@ -1452,14 +1538,15 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                       >
                         <Switch
                           onChange={(value) => {
-                            // 【F4】同值跳过：值未变化不发起 config:save（提示随保存一并跳过，避免同值噪声）
-                            if (value === config.visionEnabled) return;
+                            // 【F4】同值跳过（visionEnabled 为非方案键，恒取全局；无方案身份，第 4 参
+                            // 传 displayProfileId 亦不入档——主进程对非方案键走旧行为）
+                            if (value === displayConfig.visionEnabled) return;
                             if (value) {
                               antdMessage.info(
                                 "开启视觉识别需配置模型 API，否则视觉识别会报错",
                               );
                             }
-                            onSave("visionEnabled", value);
+                            onSave("visionEnabled", value, conversationId);
                           }}
                         />
                       </Form.Item>

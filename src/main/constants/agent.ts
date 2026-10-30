@@ -13,7 +13,7 @@ import { SCRIPTS_TOOLS_DIR_NAME } from './paths';
 // 工作流模板
 // ============================================================
 
-/** 自定义技能标签数量上限（不含内置13项：主智能体4项＋执行子智能体9项） */
+/** 自定义技能标签数量上限（不含内置11项：主智能体2项＋执行子智能体9项） */
 export const CUSTOM_TASK_TAG_LIMIT = 16;
 
 /** 单个自定义模板最大字符数（与内置最大模板同量级，防上下文 token 膨胀） */
@@ -25,7 +25,7 @@ export const EXECUTOR_WORKER_SKILLS_DIR = path.join(
   'skills',
 );
 
-/** 主智能体技能目录（生产：打包 resources/main-skills；开发：项目根 main-skills；仅承载主智能体四项技能） */
+/** 主智能体技能目录（生产：打包 resources/main-skills；开发：项目根 main-skills；仅承载主智能体两项技能） */
 export const MAIN_AGENT_SKILLS_DIR = path.join(
   app.isPackaged ? process.resourcesPath : process.cwd(),
   'main-skills',
@@ -165,7 +165,7 @@ export const TASK_TYPE_VALUES = [
 ] as const;
 export type TaskType = (typeof TASK_TYPE_VALUES)[number];
 
-/** 内置技能标签（主智能体4项＋执行子智能体9项，只读锁定：一字不动、不可删除；内置模板映射不可被自定义覆盖） */
+/** 内置技能标签（主智能体2项＋执行子智能体9项，只读锁定：一字不动、不可删除；内置模板映射不可被自定义覆盖） */
 export const BUILTIN_TASK_TAGS = [
   '问题诊断',
   '方案设计',
@@ -176,15 +176,13 @@ export const BUILTIN_TASK_TAGS = [
   '调查研究',
   '视觉设计',
   '文书编写',
-  '交互设计',
   '思路设计',
-  '问题解答',
   '推理分析',
 ] as const;
 export type TaskTag = (typeof BUILTIN_TASK_TAGS)[number];
 
 /** 内置技能归属分组（非开放要求：禁止调整划分或引入第三类归属；owner 仅存在于代码常量与自定义元数据，不落入模板/yaml 数据文件） */
-export const BUILTIN_MAIN_TASK_TAGS = ['交互设计', '思路设计', '问题解答', '推理分析'] as const;
+export const BUILTIN_MAIN_TASK_TAGS = ['思路设计', '推理分析'] as const;
 export const BUILTIN_EXECUTOR_TASK_TAGS = [
   '问题诊断',
   '自动化交互',
@@ -220,15 +218,15 @@ export const EXECUTOR_DELIVERY_TYPES = [
 export type ExecutorDeliveryType = (typeof EXECUTOR_DELIVERY_TYPES)[number];
 
 
-/** 内置任务标签集合（O(1) 查找；只读锁定=内置13项，用于自定义重名校验；TASK_TAG_SET 保持内置 13 项全集用于跨侧重名校验，放行集合按 owner 分组取值） */
+/** 内置任务标签集合（O(1) 查找；只读锁定=内置11项，用于自定义重名校验；TASK_TAG_SET 保持内置 11 项全集用于跨侧重名校验，放行集合按 owner 分组取值） */
 export const TASK_TAG_SET: ReadonlySet<string> = new Set<string>(BUILTIN_TASK_TAGS);
 
 /**
  * 合并层取值函数（必须声明归属）：按 owner 分组的内置集合 ∪ 归属匹配的启用自定义技能标签（放行链三关统一数据源）。
- * owner='main' 取 BUILTIN_MAIN_TASK_TAGS（4 项），否则取 BUILTIN_EXECUTOR_TASK_TAGS（9 项），以此作为返回值起始内容。
+ * owner='main' 取 BUILTIN_MAIN_TASK_TAGS（2 项），否则取 BUILTIN_EXECUTOR_TASK_TAGS（9 项），以此作为返回值起始内容。
  * 自定义条目归属：owner 字段严格等于 'main' 时归 main，其余一切情形（缺失/非字符串/'executor'/非法值）一律归 executor；
  * 条目归属与入参 owner 不相等则跳过。内置优先且内置名占用不可被自定义覆盖；停用（enabled=false）标签不进入放行链；自动去重。
- * TASK_TAG_SET 保持内置 13 项全集用于跨侧重名校验，放行集合按 owner 分组取值。
+ * TASK_TAG_SET 保持内置 11 项全集用于跨侧重名校验，放行集合按 owner 分组取值。
  * customSkillTags 形参按结构最小约定收窄（避免常量层依赖 config 模块）。
  */
 export function getAllTaskTags(

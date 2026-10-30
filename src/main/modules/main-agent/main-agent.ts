@@ -20,7 +20,6 @@ import { streamChat, type ModelConfig } from '../llm/openai-client';
 import { initAdapterWithFallback, warnCodingPlanMismatch } from '../llm/adapters/adapter-factory';
 import type { ProtocolAdapter, AdapterInitConfig } from '../llm/adapters/protocol-adapter';
 import { isModelApiAbortError } from '../llm/model-retry';
-import { configManager } from '../config/config-manager';
 import {
   buildMainAgentTextContent,
   buildMainAgentUserContent,
@@ -32,7 +31,7 @@ import { formatCurrentDateTime } from '../../utils/helper';
 import { buildMainSystemPrompt, MAIN_TOOLS, MAIN_SEND_EMAIL_TOOL_NAME } from './prompt';
 import { getLatestCompletedContextCompression, runContextCompressionIfNeeded } from './context-compression-task';
 import { generateConversationTitle, truncateConversationTitle } from './title-generation';
-import { runDelegatedTask, computeTaskDurationSeconds } from '../executor-agent/executor-agent';
+import { runDelegatedTask, computeTaskDurationSeconds, type RuntimeSettingsSnapshot } from '../executor-agent/executor-agent';
 import { buildToolResult, stringifyToolResult, type ToolResult } from '../../tools/result';
 import { executeToolCall } from '../../tools/executor-registry';
 import { skillQuery } from '../../tools/skill-query';
@@ -136,6 +135,14 @@ export interface MainAgentOptions {
   uploadedFiles?: ChatAttachment[];
   /** 是否启用多模态 */
   mainAgentMultimodalEnabled?: boolean;
+  /**
+   * 【F-4·R4 运行期快照】本次 run 的六键配置快照（入口构造：chat:send 与
+   * conversation-send-service 经 resolveConversationModelConfig 解析 runSettings 后传入）。
+   * main-agent/executor-agent 运行期的思考档位/协议/压缩阈值/视觉总开关一律读本快照，
+   * 禁止直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义，INV-3）。
+   * 必填：两个调用入口均已同步补齐（漏传会在 typecheck 暴露）。
+   */
+  runtimeSettingsSnapshot: RuntimeSettingsSnapshot;
 }
 
 export interface MainAgentResult {
@@ -734,9 +741,9 @@ export async function runMainAgent(
       apiKey: options.modelConfig.apiKey,
       model: options.modelConfig.model,
     },
-    // 档位 getter：每次 sendMessage 组装思考参数时实时读取 AppSettings.mainThinkingLevel
-    //   （禁止清单⑨——禁 init 快照缓存，与现状 L702 每轮读取语义一致）
-    thinkingLevel: () => configManager.getSettings().mainThinkingLevel,
+    // 档位 getter：【F-4·R4】改读本次 run 的六键快照（runSettings.mainThinkingLevel），
+    //   不再直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义，INV-3）
+    thinkingLevel: () => options.runtimeSettingsSnapshot.mainThinkingLevel,
     systemMessage: systemPrompt,
     // MAIN_TOOLS live-binding getter：每次 sendMessage resolve（禁快照；refreshMainTools
     //   四处刷新 ipc-handlers L329/L711/L949/L967 经 live-binding 自动生效）
@@ -882,14 +889,15 @@ export async function runMainAgent(
   let delegateArgsRetryCount = 0;
 
   try {
-    // ★ 协议选择：主智能体协议经 AppSettings.mainModelProtocol
+    // ★ 协议选择：【F-4·R4】主智能体协议经 AppSettings.mainModelProtocol 的本次 run 快照
     //   实时注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定
     //   协议时仅构造并 init 对应适配器，init 失败即抛 ModelApiAbortError（禁止自动
     //   降级，用不了就换一个协议由用户自己换）；未指定时走原协议探查降级链（先
     //   Responses 探 {baseUrl}/responses 后 CC 探 {baseUrl}/chat/completions），两级均
     //   失败 = 请求大模型 API 完全失败，走下方既有 catch（MAIN_AGENT_ERROR_EVENT /
     //   MODEL_API_ERROR）与 finally 收口。
-    const adapterSetup = await initAdapterWithFallback(adapterInitConfig, configManager.getSettings().mainModelProtocol);
+    // 【F-4·R4】协议读本次 run 快照（原直读 configManager 全局，运行中他处切方案会实时改变协议）
+    const adapterSetup = await initAdapterWithFallback(adapterInitConfig, options.runtimeSettingsSnapshot.mainModelProtocol);
     adapter = adapterSetup.adapter;
     warnCodingPlanMismatch(adapterSetup.protocol, options.modelConfig.baseUrl);
     // 三回调注册（onChunk 单通道拆分映射见循环内接线；onToolCall=通知模式默认；
@@ -1261,6 +1269,8 @@ export async function runMainAgent(
           // runDir 为 run_shell / run_with_python 未传 run_dir 时的默认目录。
           const execResult = await runDelegatedTask({
             assistantConfig: options.assistantConfig,
+            // 【F-4·R4】六键 run 快照透传 executor（运行期读快照，不直读全局）
+            runtimeSettingsSnapshot: options.runtimeSettingsSnapshot,
             rawArguments: toolCall.function.arguments,
             conversationId,
             taskId,

@@ -12,9 +12,14 @@
  *
  * 修复设计：
  * - 持久化：conversations.model_profile_id（仅 ADD COLUMN，存量行回填空串）；
- * - 读取优先级：会话绑定方案（有效） → 当前激活方案（懒绑定后生效） → 全局 14 键（无任何方案）；
+ * - 读取优先级：会话绑定方案（有效） → 当前激活方案（懒绑定后生效，取其存储值合成） → 全局 14 键（无任何方案）；
  * - 写绑定时机：① 会话首次运行时懒绑定当前激活方案；② 用户在配置抽屉里主动切换方案
- *   （PROFILES_SWITCH 带 conversationId → 只改该会话绑定）；③ 绑定方案被删除时清空悬空绑定；
+ *   （PROFILES_SWITCH 带 conversationId → 只改该会话绑定）；
+ *   ③ 绑定方案被删除时清空悬空绑定；
+ * - 【结构性根治（2026-10-30 第二轮）】双状态源收敛：会话级切换 = 纯会话绑定变更（零全局
+ *   写入）；全局激活方案与全局 15 键收缩为「默认方案/列表态」单一语义；config:save 的写入
+ *   目标在编辑发起时随载荷携带 profileId 固定（详见 ipc-handlers.ts 链路C 注释）。本模块
+ *   global-active 分支随之改为按激活方案存储值合成（与 conversation 分支同口径）。
  * - 运行期读取：chat:send 与值守注入都经 resolveConversationModelConfig() 取「本次 run 的快照」，
  *   因此「运行中切换方案」不会改变已在跑的 run（快照语义），只影响下一次 run。
  *
@@ -128,12 +133,16 @@ export function resolveConversationModelConfig(conversationId: string | null): R
   const warnings: string[] = [];
 
   if (!conversationId) {
-    // 无会话上下文（防御性分支）：等价「未绑定」，不写任何绑定
+    // 无会话上下文（防御性分支）：等价「未绑定」，不写任何绑定；取值口径与会话内
+    // global-active 分支一致（激活方案存在 → 按其存储值合成；applyProfileToSettings
+    // 返回新对象，天然不含 configManager 内部引用，F-7 语义保持）
     return {
       profileId: activeProfile?.id ?? '',
       profileName: activeProfile?.name ?? '',
       source: activeProfile ? 'global-active' : 'global-fallback',
-      settings: globalSettings,
+      settings: activeProfile
+        ? applyProfileToSettings(globalSettings, activeProfile)
+        : { ...globalSettings },
       warnings,
     };
   }
@@ -166,22 +175,27 @@ export function resolveConversationModelConfig(conversationId: string | null): R
     } catch (err) {
       warnings.push(`会话懒绑定写入失败（本次运行继续使用全局配置）：${err instanceof Error ? err.message : String(err)}`);
     }
+    // 【结构性根治·读取侧对齐】懒绑定后本会话的方案身份 = activeProfile，配置取值与其余
+    // conversation 分支同口径：applyProfileToSettings（激活方案 15 键覆盖全局副本），而非直接
+    // 返回全局 15 键运行时——全局运行时已收缩为「默认方案投影」语义，不再承诺等于任一会话
+    // 上下文方案的值；本分支返回新合成对象，天然不含 configManager 内部引用（F-7 语义保持）。
     return {
       profileId: activeProfile.id,
       profileName: activeProfile.name,
       source: 'global-active',
-      settings: globalSettings,
+      settings: applyProfileToSettings(globalSettings, activeProfile),
       warnings,
     };
   }
 
   // 边界 6：系统中没有任何方案 → 全局 14 键，不写绑定
   warnings.push('系统中没有任何模型方案：本次运行使用全局模型配置（不写会话绑定）');
+  // 【F-7·R6】返回全局设置浅拷贝（原返回 configManager 内部引用，误写即全局污染）
   return {
     profileId: '',
     profileName: '',
     source: 'global-fallback',
-    settings: globalSettings,
+    settings: { ...globalSettings },
     warnings,
   };
 }

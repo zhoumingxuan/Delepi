@@ -151,7 +151,7 @@ export interface AppSettings {
   // 客户端自动更新（v1 仅两个配置键：不做「自动安装」「跳过版本」「通道」等扩展）
   /** 是否启用自动检查更新（默认 true；关闭后不再自动检查，仍可手动检查） */
   updateAutoCheckEnabled: boolean;
-  /** 更新服务地址（默认 https://update.ai-cnlab.com；空串=回落构建期默认值） */
+  /** 更新服务地址（空串=回落构建期默认值；默认值唯一来源见 update-constants.ts 的 UPDATE_BASE_URL_SOURCE_DEFAULT） */
   updateBaseUrl: string;
 
 }

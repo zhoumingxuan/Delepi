@@ -34,6 +34,7 @@ import {
   theme,
 } from 'antd';
 import { QuestionCircleOutlined } from '@ant-design/icons';
+import { UPDATE_BASE_URL_SOURCE_DEFAULT } from '@shared/update-constants';
 import { useSettings } from '../hooks/useSettings';
 import { useUpdateState } from '../hooks/useUpdateState';
 
@@ -1148,7 +1149,7 @@ export function OtherSettingsTab() {
         ) : null}
         <Text style={{ ...labelStyle, marginTop: token.paddingSM }}>更新地址</Text>
         <Input
-          placeholder="https://update.ai-cnlab.com"
+          placeholder={UPDATE_BASE_URL_SOURCE_DEFAULT}
           value={updateBaseUrl}
           status={updateBaseUrlError ? 'error' : undefined}
           onChange={(event) => setUpdateBaseUrl(event.target.value)}

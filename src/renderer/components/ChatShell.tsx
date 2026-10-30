@@ -672,7 +672,11 @@ const { check, canCheck } = useConfigReadiness({
         config={config}
         configLoading={configLoading}
         conversationId={conversationId}
-        onSave={saveConfig}
+        // 【结构性根治】onSave 包裹透传当前会话 id：ConfigDrawer 统一透传 conversationId/profileId，
+        // 此处兜底绑定 ChatShell 作用域的 conversationId（两者同源；无会话上下文时为 null → 主进程回落旧行为）
+        onSave={(key, value, conversationIdArg, profileId) =>
+          saveConfig(key, value, conversationIdArg ?? conversationId, profileId)
+        }
         onSaveAll={saveAllConfig}
         onReload={reloadConfig}
         activeTab={configDrawerActiveTab}

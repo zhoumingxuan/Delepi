@@ -4,7 +4,6 @@
  */
 
 import type { AppSettings } from './types/config';
-import { UPDATE_BASE_URL_SOURCE_DEFAULT } from './update-constants';
 
 /** 默认对话标题（fallback） */
 export const DEFAULT_CONVERSATION_TITLE = '新对话';
@@ -60,7 +59,8 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
 
   // 客户端自动更新：键白名单硬要求同上（必须与 AppSettings 逐键同步，否则 reload 静默丢弃）
   updateAutoCheckEnabled: true,
-  updateBaseUrl: UPDATE_BASE_URL_SOURCE_DEFAULT,
+  // 更新地址默认空串=未自定义，运行时回落构建期默认值（默认值唯一来源见 update-constants.ts）
+  updateBaseUrl: '',
 
 };
 

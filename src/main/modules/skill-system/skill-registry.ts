@@ -3,7 +3,7 @@
  * 职责：内置技能适用条件 yaml 读取（userData 覆写优先→归属对应内置目录→注册表 description 三级回退，永不抛错）、
  * 归属过滤技能清单构建（主/子技能集）、query_skill 工具数据源（技能内容查询）、
  * 主/执行两侧内置模板的归属判定与视图/白名单/正文读取（IPC 的唯一归属入口）。
- * 归属规则：主智能体四项标签 → main-agent/main-agent-workflow-templates（正文目录 MAIN_AGENT_SKILLS_DIR）；
+ * 归属规则：主智能体两项标签 → main-agent/main-agent-workflow-templates（正文目录 MAIN_AGENT_SKILLS_DIR）；
  * 其余内置标签 → executor-agent/executor-workflow-templates（正文目录 EXECUTOR_WORKER_SKILLS_DIR）。
  * 本模块是两侧载体的唯一汇合点：两侧载体文件之间零互相 import。
  */
@@ -64,7 +64,7 @@ export type BuiltinSkillTemplateMeta = {
   fileName: string;
 };
 
-/** 内置标签归属判定（唯一运行时归属来源：主智能体四项标签集合成员判定，其余内置标签归执行子智能体） */
+/** 内置标签归属判定（唯一运行时归属来源：主智能体两项标签集合成员判定，其余内置标签归执行子智能体） */
 export function resolveBuiltinSkillOwner(tag: string): SkillOwner {
   return (BUILTIN_MAIN_TASK_TAGS as readonly string[]).includes(tag) ? 'main' : 'executor';
 }

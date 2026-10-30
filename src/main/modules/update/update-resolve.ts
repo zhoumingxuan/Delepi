@@ -8,8 +8,7 @@
 import {
   UPDATE_ACCESS_KEY_SOURCE_DEFAULT,
   UPDATE_BASE_URL_SOURCE_DEFAULT,
-  UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT,
-  UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT_V2,
+  UPDATE_BASE_URL_LEGACY_DEFAULTS,
 } from '@shared/update-constants';
 
 export type UpdateValueSource = 'env' | 'yml' | 'source';
@@ -73,7 +72,7 @@ export function resolveDefaultUpdateBaseUrl(envBaseUrl: string, ymlBaseUrl: stri
   if (yml && isAllowedUpdateBaseUrl(yml)) {
     return { baseUrl: yml, source: 'yml' };
   }
-  return { baseUrl: UPDATE_BASE_URL_SOURCE_DEFAULT, source: 'source' };
+  return { baseUrl: normalizeUpdateBaseUrl(UPDATE_BASE_URL_SOURCE_DEFAULT), source: 'source' };
 }
 
 /**
@@ -88,10 +87,10 @@ export function resolveEffectiveUpdateBaseUrl(
   if (!settings) {
     return defaultBaseUrl;
   }
+  const normalizedDefault = normalizeUpdateBaseUrl(UPDATE_BASE_URL_SOURCE_DEFAULT);
   if (
-    settings === UPDATE_BASE_URL_SOURCE_DEFAULT ||
-    settings === UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT ||
-    settings === UPDATE_BASE_URL_SOURCE_LEGACY_DEFAULT_V2
+    settings === normalizedDefault ||
+    UPDATE_BASE_URL_LEGACY_DEFAULTS.some((legacy) => settings === legacy)
   ) {
     return defaultBaseUrl;
   }

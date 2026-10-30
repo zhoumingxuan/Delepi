@@ -252,7 +252,7 @@ function buildMainSkillQueryDescription(): string {
   `;
 }
 
-/** 主智能体工具声明：query_skill（enum=主智能体技能集：交互设计/思路设计/问题解答/推理分析+归属main的启用自定义） */
+/** 主智能体工具声明：query_skill（enum=主智能体技能集：思路设计/推理分析+归属main的启用自定义） */
 function buildMainSkillQueryTool() {
   return {
     type: 'function' as const,

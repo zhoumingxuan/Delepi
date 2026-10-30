@@ -131,6 +131,16 @@ export async function sendUserMessageIntoConversation(
       },
       // 视觉识别总开关联动（对齐 chat:send：visionEnabled=false 时主智能体多模态强制关闭）
       mainAgentMultimodalEnabled: settings.visionEnabled && settings.mainModelMultimodal,
+      // 【F-4·R4 运行期快照】六键快照随本次 run 传入（与 chat:send 入口同步补齐，防两入口行为分叉）；
+      // main-agent/executor-agent 运行期一律读该快照，运行中他处切换方案不影响本次 run（INV-3）。
+      runtimeSettingsSnapshot: {
+        mainThinkingLevel: settings.mainThinkingLevel,
+        mainModelProtocol: settings.mainModelProtocol,
+        executorThinkingLevel: settings.executorThinkingLevel,
+        executorModelProtocol: settings.executorModelProtocol,
+        executorContextCompressionThreshold: settings.executorContextCompressionThreshold,
+        visionEnabled: settings.visionEnabled,
+      },
       uploadedFiles: [],
       signal: abortController.signal,
     });
