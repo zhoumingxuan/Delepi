@@ -50,9 +50,6 @@ export interface RunningAssistantMessage {
     | { id: string; type: 'reasoning'; text: string }
     | { id: string; type: 'tool_call'; toolCallId: string }
   >;
-  // ★ F4 新增：content 首次出现时由 onChunk 设置，onThinking 检测后新开 reasoning 段
-  //   解决 reasoning_split 模型下 packet 同时返回 content+reasoning 时出现的跨段粘连
-  forceNewReasoningSegment?: boolean;
 }
 
 /**

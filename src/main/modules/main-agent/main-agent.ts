@@ -633,12 +633,15 @@ export async function runMainAgent(
     //   reasoning 增量由独立的 chat:thinking 事件承担
     //   解决 reasoning_split 模型同 packet 同时返回 content+reasoning 时正文被丢弃的问题
     // ★ 转发 finishReason 到 IPC,前端 useChat.ts 据此设置消息 status
-    // ★ F4 新增：content 首次出现时记录"reasoning 段封口"标记，onThinking 下次触发会新开 reasoning 段
-    //   解决 reasoning_split 模型下 packet 同时返回 content+reasoning 时的跨段粘连
+    // ★ 正文首现判据：累计 content 去除空白与零宽字符后仍有可见字符，才算正文开始；
+    //   单个空格 / 换行 / 制表符 / 零宽字符不再冒充正文首现，reasoning 段无需封口
     const runningForContent = getRunningAssistantMessage(conversationId);
-    const isContentFirstAppearance = runningForContent
-      && (runningForContent.content === '' || runningForContent.content === undefined)
-      && (chunk.content || '').length > 0;
+    const hasVisibleContent = (text: string): boolean =>
+      /[^\s\u200b\u200c\u200d\u2060\ufeff]/.test(text);
+    const accumulatedContent = runningForContent?.content || '';
+    const isContentFirstAppearance = Boolean(runningForContent)
+      && !hasVisibleContent(accumulatedContent)
+      && hasVisibleContent(chunk.content || '');
 
     eventBus.emit(MAIN_AGENT_CHUNK_EVENT, {
       conversationId,
@@ -648,15 +651,17 @@ export async function runMainAgent(
       finishReason: chunk.finishReason,
     });
     // ★ 累积内容到 runningAssistantMessages
-    //   content 首次出现 → 在 runningMessage 中标记 forceNewReasoningSegment=true
-    //   后续 onThinking 检测到该标记时新开 reasoning 段（避免跨段粘连）
+    //   正文尚未开始时纯空白 / 纯零宽 delta 不进入 content（避免废物文本污染正文首现判定）；
+    //   正文开始之后空格、换行、制表符原样保留，禁止 trim（避免破坏 Markdown 排版）
     if (runningForContent) {
-      updateRunningAssistantMessage(conversationId, {
-        content: (runningForContent.content || '') + (chunk.delta || ''),
-        ...(isContentFirstAppearance ? { forceNewReasoningSegment: true } : {}),
-      });
+      const contentDelta = chunk.delta || '';
+      if (isContentFirstAppearance || hasVisibleContent(accumulatedContent) || hasVisibleContent(contentDelta)) {
+        updateRunningAssistantMessage(conversationId, {
+          content: accumulatedContent + contentDelta,
+        });
+      }
     }
-    // ★ T-A：thinking 流结束信号（content 首个 delta，isContentFirstAppearance
+    // ★ T-A：thinking 流结束信号（content 首个可见字符，isContentFirstAppearance
     //   既有判定）→ 半成品 assistant 行落库。insertMessage 同 id INSERT OR REPLACE 幂等演进：
     //   thinking/segments 取更新后 running 快照、content 空串占位、不写 tool_calls；seq 首次
     //   取号后钉死、createdAt 首落库时刻回传（防漂移）；重试复位后新 attempt 的 content 再次
@@ -690,30 +695,27 @@ export async function runMainAgent(
     //   让 conv:get-messages 在流式过程中也能返回最新思考内容
     const running = getRunningAssistantMessage(conversationId);
     if (running) {
-      // ★ F2/F4 新增：累积 segments（与 ai_fr openai.ts L171-190 appendReasoningSegment 同款）
-      //   策略：若 forceNewReasoningSegment=true（content 已出现），丢弃旧 segments 强制新开 reasoning 段；
-      //     否则若末段是 reasoning 则追加到该段 text；否则新开一段 reasoning。
-      const forceNew = Boolean(running.forceNewReasoningSegment);
+      // ★ F2 新增：累积 segments（与 ai_fr openai.ts L171-190 appendReasoningSegment 同款）
+      //   策略：始终在已累积的 baseSegments 基础上扩展——末段是 reasoning 则追加到该段 text；
+      //     否则新开一段 reasoning。禁止整体替换为空数组，保证各 reasoning 段 text 依次拼接恒等于 thinking。
       const baseSegments: AssistantMessageSegment[] = Array.isArray(running.segments)
         ? [...running.segments]
         : [];
-      const existingSegments: AssistantMessageSegment[] = forceNew ? [] : baseSegments;
-      const lastSegment = existingSegments[existingSegments.length - 1];
-      if (lastSegment && lastSegment.type === 'reasoning' && !forceNew) {
+      const lastSegment = baseSegments[baseSegments.length - 1];
+      if (lastSegment && lastSegment.type === 'reasoning') {
         lastSegment.text = (lastSegment.text || '') + thinking;
       } else {
-        existingSegments.push({
+        baseSegments.push({
           id: crypto.randomUUID(),
           type: 'reasoning',
           text: thinking,
         });
       }
       const newThinking = (running.thinking || '') + thinking;
-      // ★ 回填 thinking + segments 到 runningAssistantMessages，并清除 forceNewReasoningSegment 标记
+      // ★ 回填 thinking + segments 到 runningAssistantMessages
       updateRunningAssistantMessage(conversationId, {
         thinking: newThinking,
-        segments: existingSegments,
-        forceNewReasoningSegment: false,
+        segments: baseSegments,
       });
       // ★ F2 新增：发送完整 thinking + segments（与 ai_fr assistant.message.snapshot 载荷对齐）
       //   前端 ChatMessageContent 优先使用 payload.thinking/segments（F6 配套），否则用 delta
@@ -725,9 +727,8 @@ export async function runMainAgent(
         conversationId,
         delta: thinking,
         thinking: newThinking,
-        // ★ F4 修复：使用 existingSegments（含 F4 forceNew 时的新段），而不是 baseSegments
-        //   forceNew=true 时 baseSegments 仍是旧 segments，existingSegments 才是新段
-        segments: existingSegments,
+        // ★ 使用本次累积后的 segments（含新开的 reasoning 段）
+        segments: baseSegments,
       });
     } else {
       // running 不存在时（如未走初始化路径），退化为原始 emit
@@ -766,7 +767,6 @@ export async function runMainAgent(
           content: retryBaseline.content,
           thinking: retryBaseline.thinking,
           segments: retryBaseline.segments,
-          forceNewReasoningSegment: false,
         });
         // ★ 同步：复位内存后，若行已落库则同 id OR REPLACE 写回基线
         //   payload——库内行与 running map/前端矫正事件三方一致，废弃 attempt 的 thinking
@@ -1031,7 +1031,6 @@ export async function runMainAgent(
         content: retryBaseline.content,
         thinking: retryBaseline.thinking,
         segments: retryBaseline.segments,
-        forceNewReasoningSegment: false,
       });
       // ★ 同步：参数校验复位与 onStreamRetry 同款——复位内存后同步
       //   同 id OR REPLACE 写回基线 payload（库内行/内存/前端矫正事件三方一致）。

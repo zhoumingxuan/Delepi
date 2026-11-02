@@ -161,6 +161,21 @@ export const ToolCallGroupCard = memo(function ToolCallGroupCard({
             />
           ))}
         </div>
+      ) : userToggled === false ? (
+        <div className="chat-tool-group-body">
+          {/* 收起态占位（真实文本节点，非隐藏手段）：每个子工具一行显示名，复用组头 stats 次级文本样式与组头标题区分 */}
+          {messages.map((message) => {
+            const toolName = message.toolCall?.name?.trim();
+            const displayName = toolName
+              ? resolveToolDisplayName(toolName, toolSummaries)
+              : '未知工具';
+            return (
+              <div key={message.id} className="chat-tool-group-stats">
+                {displayName}
+              </div>
+            );
+          })}
+        </div>
       ) : null}
     </div>
   );
