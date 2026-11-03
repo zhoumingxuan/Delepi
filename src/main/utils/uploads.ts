@@ -1,8 +1,7 @@
 /**
  * 上传/沙箱 目录管理 + 输出文件清单
  *
- * P9 移植自 E:\\ai_fr lib/uploads.ts（去 userKey 多用户隔离层）
- */
+ *  */
 import {
   mkdir,
   readdir,
@@ -167,9 +166,8 @@ export async function removeConversationOutputFiles(conversationId: string): Pro
 /**
  * 扫描 conversations/ 目录,删除 SQLite 中无引用的孤儿会话目录
  *
- * 与 E:\\ai_fr lib/uploads.ts removeOrphanConversationUploadDirs 对齐,去 userKey 层:
- * - ai_fr 扫两层 userKey/conversationId;Delepi 单用户扫单层 conversationId
- * - 校验每个被删目录必须在 bin/conversations/ 内（防越权）
+ * 
+ * * - 校验每个被删目录必须在 bin/conversations/ 内（防越权）
  */
 export async function removeOrphanConversationUploadDirs(
   existingConversationIds: string[],

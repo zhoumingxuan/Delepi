@@ -1,8 +1,8 @@
 /**
- * watch.repo — 值守模式两表仓储（watch_state / watch_processed_mails，v3 §10.3）
+ * watch.repo — 值守模式两表仓储（watch_state / watch_processed_mails）
  *
  * 说明：
- * - 本仓储不经 src/main/db/index.ts 汇出（该文件不在阶段2改动白名单内），
+ * - 本仓储不经 src/main/db/index.ts 汇出，
  *   由 watch-service 以相对路径直接引用
  * - watch_state：单行水位（id 恒为 1）；UIDVALIDITY 变化时由调用方判定重置基线
  * - watch_processed_mails：
@@ -142,7 +142,7 @@ export function markWatchMailProcessed(entry: WatchProcessedMailEntry): void {
   );
 }
 
-/** 维护性清理：删除 30 天前记录；总量超 5000 时按 created_at 升序删至 4000（v3 §10.3） */
+/** 维护性清理：删除 30 天前记录；总量超 5000 时按 created_at 升序删至 4000 */
 export function cleanupWatchProcessedMails(): void {
   const db = getDb();
   db.prepare("DELETE FROM watch_processed_mails WHERE created_at < datetime('now', 'localtime', '-30 days')").run();

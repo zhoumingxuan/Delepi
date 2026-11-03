@@ -17,7 +17,7 @@ import { isWatchRuntimeRunning } from '../watch/watch-runtime-flag';
 
 type ToolSchema = Record<string, unknown>;
 
-/** 主智能体 send_email 工具名（阶段3/v3 §8.1）：按值守运行态 isWatchRuntimeRunning()
+/** 主智能体 send_email 工具名（/）：按值守运行态 isWatchRuntimeRunning()
  *  条件进入工具清单——与执行层拦截同源判定；watchEnabled 仅承载用户意图，不参与装配决策 */
 export const MAIN_SEND_EMAIL_TOOL_NAME = 'send_email';
 
@@ -412,9 +412,9 @@ function buildMainFsStatTool() {
 }
 
 /**
- * 主智能体 send_email 工具 description（工具提示词，v3 §8.1 定稿全文 8 条 + 开头段按时序1反转改写）。
+ * 主智能体 send_email 工具 description（工具提示词， 定稿全文 8 条 + 开头段）。
  * 发件规范唯一承载处（零处理原则：任何发件/回执引导只允许存在于这里，严禁进入对话消息本体）。
- * 反转点（阶段3回执单轨）：原文“值守链路对每条指令的处理结果回执由系统自动发送，无需你主动
+ * 反转点（回执单轨）：原文“值守链路对每条指令的处理结果回执由系统自动发送，无需你主动
  * 发送‘处理结果通知’类邮件”改为“主智能体负责在处理完成后经 send_email 发送回执——正文只写
  * 最终回复、四类交付物以附件带回”；第 2 条融合交付物路径来源引导（委派结果结构化字段
  * local_files / image_files 主源，can_openfile_url / image_urls 备用源）。
@@ -430,7 +430,7 @@ function buildMainSendEmailDescription(): string {
   );
 }
 
-/** 主智能体 send_email 工具参数 Schema（v3 §8.2 JSON Schema 原样） */
+/** 主智能体 send_email 工具参数 Schema（ JSON Schema 原样） */
 function buildMainSendEmailToolParameters(): ToolSchema {
   return {
     type: 'object',
@@ -491,7 +491,7 @@ export function buildMainTools() {
     buildMainFsListTool(),
     buildMainFsStatTool(),
   ];
-  // 阶段3（v3 §8.5）：仅值守运行中（isWatchRuntimeRunning）send_email 进入主智能体工具清单
+  // （）：仅值守运行中（isWatchRuntimeRunning）send_email 进入主智能体工具清单
   // ——判定源与执行层拦截（send-email.ts 入口）完全同源；watch:start/stop 与运行期回落关闭经
   // setWatchRuntimeStateChangeNotifier → refreshMainTools() 联动，经 MAIN_TOOLS live-binding 即时生效。
   if (isWatchRuntimeRunning()) {

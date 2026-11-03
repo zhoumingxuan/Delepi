@@ -1,5 +1,5 @@
 /**
- * mime-parser — 纯 Node.js MIME 解析（阶段7 目标2：收信桥 Node 化的解析层）
+ * mime-parser — 纯 Node.js MIME 解析（收信桥 Node 化的解析层）
  *
  * 覆盖范围（与被替换的旧桥解析实现对齐）：
  * - 头部折行（RFC 5322 folding / unfolding）

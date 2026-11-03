@@ -1,6 +1,6 @@
 /**
  * ChatArea 聊天区域组件
- * 对齐 ai-client ChatArea.tsx 样式结构 + 三色头像规范
+ * 
  *
  * 适配层：
  * - 粘底滚动开关 stickToBottomRef 由 useChat 拥有并管理
@@ -28,7 +28,7 @@ import type { ChatMessage } from '../hooks/useChat';
 import type { ExecutorTaskChatMessage } from '../lib/executor-record-messages';
 
 // ============================================================
-// ★ 新版方案 §7.7：executor 任务记录虚拟消息时间线合并（数据源切换为 useExecutorTaskRecords）
+// executor 任务记录虚拟消息时间线合并（数据源切换为 useExecutorTaskRecords）
 // 合并算法（existingToolCallIds 去重 + time→seq→id 三级稳定排序）原样保留；
 // 虚拟消息构造职责移至 lib/executor-record-messages（buildExecutorTaskMessages）
 // ============================================================
@@ -47,7 +47,7 @@ function parseTimelineTime(value: string | undefined | null): number {
 
 /**
  * 把虚拟消息（executor 任务记录）合并到 messages 时间线（泛化）
- * 算法原样保留（对位 ai_fr chat-shell.tsx L504-539 语义）：
+ * 算法原样保留（）：
  * 1. existingToolCallIds 去重：真实 tool 消息已存在的 callId 虚拟消息让位
  *    （真实 tool.message.created 到达后，运行中任务卡自然切换为既有 Result 渲染）
  * 2. 虚拟消息按 createdAt 排序（time → seq → id 三级稳定排序）
@@ -77,7 +77,7 @@ export function mergeVirtualMessagesIntoTimeline(
     return messages;
   }
 
-  // ★ M11 三级稳定排序：time → seq（持久化稳定次序键，同批 created_at 同值时排序依据）
+  // 三级稳定排序：time → seq（持久化稳定次序键，同批 created_at 同值时排序依据）
   //   → id 字典序（最终兜底：无 seq 的虚拟快照消息）
   const seqOf = (message: ChatMessage): number =>
     typeof message.seq === 'number' ? message.seq : Number.MAX_SAFE_INTEGER;
@@ -113,7 +113,7 @@ export function mergeVirtualMessagesIntoTimeline(
 }
 
 // ============================================================
-// ★ 视觉方案 §2/§4.1：小工具调用折叠聚合（渲染层单元化，零数据层改动）
+  // 小工具调用折叠聚合（渲染层单元化，零数据层改动）
 //   - 任意数量（含单个）的连续【小工具】调用（tool 消息、无 executorTask 徽标、非委派工具调用）
 //     均折叠为单一分组容器（阈值 1，单个工具同样折叠为组头）；
 //   - 委派任务卡（运行/完成两态）不参与聚合，并作为分组边界（中断连续 run）；
@@ -182,13 +182,13 @@ export function buildToolCallRenderUnits(messages: ChatMessage[]): ToolCallRende
 interface ChatAreaProps {
   messages: ChatMessage[];
   /**
-   * ★ 新版方案 §7.7：executor 任务记录虚拟消息（useExecutorTaskRecords →
+   * executor 任务记录虚拟消息（useExecutorTaskRecords →
    * buildExecutorTaskMessages 产物，已按当前会话过滤），按时间戳合并到 messages 时间线；
    * 真实 tool 消息到达后由 existingToolCallIds 去重替换
    */
   executorTaskMessages?: ChatMessage[];
   /**
-   * ★ 新版方案 §7.7：executor 任务卡面板上下文透传（onOpenPanel 打开右栏 +
+   * executor 任务卡面板上下文透传（onOpenPanel 打开右栏 +
    * activeDelegateCallId 判定按钮激活态）；不传时 ChatMessageContent 内任务卡按钮
    * 仍可复制路径调用（无面板联动）
    */
@@ -197,7 +197,7 @@ interface ChatAreaProps {
     activeDelegateCallId: string | null;
   };
   /**
-   * ★ 修复主/子智能体消息混淆：当前活跃会话 ID
+   * ★ 当前活跃会话 ID
    * 用于过滤虚拟消息（避免跨会话污染）
    */
   conversationId?: string | null;
@@ -211,16 +211,16 @@ interface ChatAreaProps {
   scrollSettleTick?: number;
   isStreaming?: boolean;
   /**
-   * ★ 对齐 ai_fr：消息加载过渡态，true 时显示 Spin 占位
-   * 对齐 E:\ai_fr components\chat-shell.tsx L2678-2680
+   * ★ 
+   * 
    */
   messageLoading?: boolean;
   emptyState?: ReactNode;
   children?: ReactNode;
   /**
-   * ★ 对齐参考项目 E:\ai_fr\components\chat-shell.tsx L2684-2738
+   * 
    * 工具摘要列表，用于把 toolCall.name 解析为 displayName。
-   * 对应 ai_fr 的 config?.tools。
+   * 对应 的 config?.tools。
    * - 不传时 ChatMessageContent 内部降级到 pickTaskTitleFromArguments || toolName 行为
    */
   toolSummaries?: ToolSummary[];
@@ -238,7 +238,7 @@ export const ChatArea = memo(function ChatArea({
   scrollSettleTick = 0,
   isStreaming = false,
   /**
-   * ★ 对齐 ai_fr：消息加载过渡态
+   * ★ 
    */
   messageLoading = false,
   emptyState,
@@ -353,7 +353,7 @@ export const ChatArea = memo(function ChatArea({
   );
 
   /**
-   * ★ 修复主/子智能体消息混淆：合并 toolSnapshots 到 messages 时间线
+   * ★ 合并 toolSnapshots 到 messages 时间线
    * - 合并后用于 bubbleItems 渲染和 showEmpty 判定
    * - useMemo 缓存避免每次重渲染都重新合并
    */
@@ -366,7 +366,7 @@ export const ChatArea = memo(function ChatArea({
     [messages, executorTaskMessages],
   );
 
-  /** 核心判定函数（对位 ai_fr updateScrollBottomState）
+  /** 核心判定函数（）
    *  - 阈值常量：SCROLLABLE_THRESHOLD_PX = 8、AT_BOTTOM_THRESHOLD_PX = 96
    *  - 仅在判定结果与外部状态不一致时回调，避免无效 setState
    */
@@ -532,8 +532,8 @@ export const ChatArea = memo(function ChatArea({
     [],
   );
 
-  // 三色头像 roleConfig（对齐 ai-client + operation_strategy.md 第 7.2.1 节）
-  // ★ 对齐参考项目 E:\ai_fr\components\chat-shell.tsx L2684-2738
+  // 三色头像 roleConfig（）
+  // 
   // 每个 role 增加 contentRender 函数，从 bubbleItem.extraInfo.message 读取 message，
   // 并调用 ChatMessageContent 渲染。
   const roleConfig = useMemo(
@@ -686,7 +686,7 @@ export const ChatArea = memo(function ChatArea({
     [toolSummaries, conversationId, renderUserMessageFooter, executorPanel],
   );
 
-  // ★ 对齐参考项目 E:\ai_fr\components\chat-shell.tsx L2684-2738
+  // 
   // bubbleItem.content 设为空字符串占位（contentRender 接管渲染）：
   // - 单条消息：通过 extraInfo.message 把 message 传给 contentRender；
   // - 小工具分组单元（连续 ≥2 个小工具调用）：通过 extraInfo.toolGroupMessages 传给 ToolCallGroupCard。
@@ -745,7 +745,7 @@ export const ChatArea = memo(function ChatArea({
     return items;
   }, [mergedMessages]);
 
-  // ★ 修复主/子智能体消息混淆：showEmpty 判定使用合并后消息列表
+  // ★ showEmpty 判定使用合并后消息列表
   // 如果只有 toolSnapshots（无主消息）也视为非空（避免空状态闪烁）
   const showEmpty = mergedMessages.length === 0;
 

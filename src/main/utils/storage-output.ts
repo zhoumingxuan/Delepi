@@ -76,7 +76,7 @@ export async function copyFilesToOutputDir(
     outputPaths.push(await copyFileToOutputDir(sourcePath, outputDir));
   }
 
-  // P9: 追加写入 manifest.json(沿用 ai_fr appendConversationOutputFileManifest)
+  // P9: 追加写入 manifest.json()
   //   - 仅当传入了 conversationId 时才写入(向后兼容)
   //   - 文件去重由 appendConversationOutputFileManifest 内部处理
   if (options?.conversationId && outputPaths.length > 0) {

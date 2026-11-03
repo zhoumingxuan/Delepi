@@ -1,9 +1,9 @@
 /**
  * SQLite 数据库适配器
  * 5 张表 DDL：conversations / messages / context_compressions / settings / conversation_tags
- * 阶段7（目标1）：conversations 新增列 model_profile_id（会话级模型方案绑定），
+ * conversations 含列 model_profile_id（会话级模型方案绑定），
  * 存量库就地 ALTER TABLE ADD COLUMN 补建 + 存量行回填空串；不 DROP、不重建、不动既有列。
- * 值守模式的指令邮件一律不落库（阶段5 起移除值守模式的两张状态/已处理表；存量库中的
+ * 值守模式的指令邮件一律不落库（不创建值守状态/已处理两张表；存量库中的
  * 两张旧表保留不动——仅代码不再创建、不再读写，且不执行任何 DROP/ALTER）
  * WAL 模式开启，无全文索引
  * Schema DDL 已内联，避免打包后路径解析问题
@@ -126,7 +126,7 @@ CREATE INDEX IF NOT EXISTS idx_conversation_tags_conversation ON conversation_ta
 `;
 
 /**
- * conversations.model_profile_id 就地补建 DDL（阶段7 目标1）
+ * conversations.model_profile_id 就地补建 DDL
  * 背景：getDb 的 needsInit 仅检查 conversations 表，存量库不会执行全量 SCHEMA_SQL，
  *       新增列必须在此单独补建；ADD COLUMN 带 NOT NULL DEFAULT '' 会把存量行回填为空串
  *       （=未绑定，行为等价于「历史会话从未绑定过方案」）。
@@ -139,7 +139,7 @@ const CONVERSATION_MODEL_PROFILE_COLUMN_DDL =
 let dbInstance: Database.Database | null = null;
 
 /**
- * 检查指定列是否存在（阶段7：conversations.model_profile_id 就地补建判定）
+ * 检查指定列是否存在（conversations.model_profile_id 就地补建判定）
  */
 function columnExists(db: Database.Database, tableName: string, columnName: string): boolean {
   const rows = db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>;
@@ -204,7 +204,7 @@ export function getDb(): Database.Database {
       console.log('[SQLite] conversation_tags table created (in-place upgrade)');
     }
 
-    // 阶段7 目标1：conversations.model_profile_id 就地补建（ADD COLUMN + 存量行回填空串；
+    // conversations.model_profile_id 就地补建（ADD COLUMN + 存量行回填空串；
     // 不 DROP 表、不删改既有列、不重建表）
     if (!columnExists(dbInstance, 'conversations', 'model_profile_id')) {
       dbInstance.exec(CONVERSATION_MODEL_PROFILE_COLUMN_DDL);

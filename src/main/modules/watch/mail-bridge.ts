@@ -1,25 +1,25 @@
 /**
- * mail-bridge — 值守模式邮件通道桥（阶段7：收信侧完整 Node.js 化）
+ * mail-bridge — 值守模式邮件通道桥（收信侧完整 Node.js 化）
  *
- * 阶段7 变更（目标2）：
+ * 
  * - 删除内嵌解释器脚本桥（原内嵌脚本常量 / 落盘脚本文件 / spawn 子进程 / 行式 JSON 协议）；
  * - 收信改由纯 Node 实现承担：
  *     mail/imap-client.ts    —— IMAP 协议（TCP/TLS、LOGIN、ID、EXAMINE、UID SEARCH、UID FETCH、LOGOUT）
  *     mail/mime-parser.ts    —— MIME 解析（multipart/alternative、base64、quoted-printable、字符集）
- *     mail/smtp-client.ts    —— SMTP 发送（阶段4 已 Node 化，本轮新增 STARTTLS 支持）
+ *     mail/smtp-client.ts    —— SMTP 发送
  * - 本模块只保留「编排 + 契约」：对外仍是 mailSelfTest / mailImapPoll / mailImapPollSince /
  *   mailSmtpSend 四个导出，解析产物仍是 FetchedWatchMail 九字段契约，调用方零改造；
  * - 端点不再写死：全部来自 mail/mail-provider.ts 的 provider 解析结果（MailProviderEndpoints），
  *   由 watch-service 按当前 settings 注入。
  *
- * 兼容接缝（发信侧 send_email 工具在阶段7 改动白名单之外，无法直接改造）：
+ * 兼容接缝：
  * - 导出 WATCH_SMTP_ENDPOINT 以「只读 getter 对象」形式保留：host/port 在访问时返回当前生效
- *   provider 端点（未注入前回落到 QQ 内置常量，与阶段4~6 行为逐字节一致）；
+ *   provider 端点（未注入前回落到 QQ 内置常量，与~6 行为逐字节一致）；
  * - 同时把 provider 的 SMTP 加密方式写入 smtp-client 的进程级默认值
  *   （setDefaultSmtpEncryption），使未显式传 encryption 的既有调用方自动跟随 provider 设置。
- *   两处接缝都属于「迁移记录」性质，详见阶段7 实现报告第 4/5 章。
+ *   两处接缝。
  *
- * 错误阶段分类（保持阶段2 的对外语义）：
+ * 错误阶段分类：
  * - connect：TCP/DNS/TLS 建连失败
  * - auth：登录被拒（QQ IMAP 返回 NO [AUTHENTICATIONFAILED]；SMTP 认证失败在 QQ 上表现为直接断连）
  * - recv：登录成功后的 EXAMINE / SEARCH / FETCH 失败
@@ -41,7 +41,7 @@ import {
   type SmtpHeaderInput,
 } from '../mail/smtp-client';
 
-/** 单次操作超时（毫秒，沿用阶段2 口径：IMAP 轮询 45 秒；SMTP 发信基础 90 秒） */
+/** 单次操作超时（毫秒，沿用 口径：IMAP 轮询 45 秒；SMTP 发信基础 90 秒） */
 export const MAIL_BRIDGE_TIMEOUT_MS = {
   selfTest: 45_000,
   imapPoll: 45_000,
@@ -85,7 +85,7 @@ export function getActiveMailEndpoints(): MailProviderEndpoints {
 }
 
 /**
- * 兼容导出（阶段4~6 的既有引用点：src/main/tools/send-email.ts）。
+ * 兼容导出（~6 的既有引用点：src/main/tools/send-email.ts）。
  * 只读 getter：每次访问都取当前生效 provider 端点，使 send_email 无需改动即可跟随邮箱类型设置。
  */
 export const WATCH_SMTP_ENDPOINT: { readonly host: string; readonly port: number } = {
@@ -97,7 +97,7 @@ export const WATCH_SMTP_ENDPOINT: { readonly host: string; readonly port: number
   },
 };
 
-/** 兼容导出：IMAP 端点（阶段7 起仅供诊断展示，收信一律走 provider 解析） */
+/** 兼容导出：IMAP 端点（仅供诊断展示，收信一律走 provider 解析） */
 export const WATCH_IMAP_ENDPOINT: { readonly host: string; readonly port: number } = {
   get host(): string {
     return activeEndpoints.imap.host;
@@ -128,14 +128,14 @@ export interface MailBridgeContext {
   endpoints: MailProviderEndpoints;
 }
 
-/** 授权码脱敏：任何外发文本中一律以占位符替换（§10.5） */
+/** 授权码脱敏：任何外发文本中一律以占位符替换 */
 function sanitizeWithSecret(text: string, secret: string): string {
   const masked = maskAuthCode(text, secret);
   const outText = secret ? masked.split(secret).join(AUTH_CODE_PLACEHOLDER) : masked;
   return outText.length > 500 ? `${outText.slice(0, 500)}…` : outText;
 }
 
-/** IMAP 阶段失败 → 对外统一失败契约（阶段2 的错误码/文案保持不变） */
+/** IMAP 阶段失败 → 对外统一失败契约 */
 function classifyImapFailure(failure: ImapFailure): MailBridgeFailure {
   if (failure.stage === 'auth') {
     return {
@@ -417,7 +417,7 @@ export function sortMailsByTimeAscending(mails: FetchedWatchMail[]): FetchedWatc
 /**
  * IMAP 增量收信：UID FETCH (sinceUid+1):* BODY.PEEK[]（不置已读）。
  * 星号语义可能多带回一封不大于 sinceUid 的旧邮件，调用方必须按 uid > sinceUid 过滤。
- * 阶段7 起为「保留能力」：值守主链路使用时间增量（mailImapPollSince），本导出供诊断与兼容调用。
+ * 为「保留能力」：值守主链路使用时间增量（mailImapPollSince），本导出供诊断与兼容调用。
  */
 export async function mailImapPoll(
   input: { mailbox: string; authCode: string; sinceUid: number },

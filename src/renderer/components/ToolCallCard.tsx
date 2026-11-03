@@ -1,9 +1,9 @@
 /**
  * 工具调用卡片组件
  * 基于 @ant-design/x ThoughtChain 组件
- * 实时计时器 + 加载中思考/进度分离（对齐 E:\ai_fr\components\chat-message-content.tsx）
+ * 实时计时器 + 加载中思考/进度分离（）
  *
- * Phase 3 P0-2 适配层：
+ * 
  * - 加载中：拆分 result 字段为 thinking / progress 两段，渲染双 Think 块
  *   - thinking → ThinkingBlock title="思考中..." / "思考过程"
  *   - progress → ThinkingBlock title="工具调用中..." / "工具进度"
@@ -46,7 +46,7 @@ export interface ToolCallInfo {
   status: 'loading' | 'success' | 'error';
   startedAt?: string;
   finishedAt?: string;
-  // 消息/快照创建时刻：startedAt 缺失时的计时兜底来源（对齐 ai_fr chat-message-content.tsx:352-358
+  // 消息/快照创建时刻：startedAt 缺失时的计时兜底来源（
   // payload.startedAt ?? createdAt——回退消息创建时刻而非渲染时刻，避免计时起点错位）
   createdAt?: string;
   isError?: boolean;
@@ -54,7 +54,7 @@ export interface ToolCallInfo {
 }
 
 /**
- * 加载中双 Think 渲染（Phase 3 P0-2）
+ * 加载中双 Think 渲染
  * - result 非空：拆分 thinking / progress，渲染两个 ThinkingBlock
  * - result 为空：显示"执行中..."占位
  */

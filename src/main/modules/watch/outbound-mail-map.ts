@@ -1,10 +1,10 @@
 /**
- * outbound-mail-map — 出站邮件映射（BUG3 修复：send_email 出站邮件 ↔ 原对话）
+ * outbound-mail-map — 出站邮件映射（send_email 出站邮件 ↔ 原对话）
  *
- * 背景（用户第 8 条 / BUG3 修复语义）：
+ * 背景：
  * - 用户直接回复智能体经 send_email 发出的邮件时，收信侧需要把该回复关联回原对话
  *   （等同在当前对话输入该消息）；前提是存在「出站邮件 Message-ID → conversationId」
- *   的可反查映射。本模块即该映射的登记与解析实现（仿 conversation-index-map 先例）。
+ *   的可反查映射。本模块即该映射的登记与解析实现（结构同 conversation-index-map）。
  * - 登记侧：send-email.ts 发送成功后登记（**不依赖值守指令上下文**——本地对话发起的
  *   run 同样登记，否则本地对话的邮件回复无法关联回原对话）。
  * - 消费侧：watch-service.processWatchMail 在 non_command 判定前，用回复邮件的
@@ -29,7 +29,7 @@
  *   与编号映射同策略：未命中由调用方回落 non_command 静默忽略，防误注入）。
  *
  * 可验证性：本模块不 import electron；userData 基目录由 watch-service 在模块加载时注入
- * （与 conversation-index-map 的 baseDir 注入先例一致），无 Electron 本地环境可直接加载验证。
+ * （与 conversation-index-map 的 baseDir 注入方式一致），无 Electron 本地环境可直接加载验证。
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

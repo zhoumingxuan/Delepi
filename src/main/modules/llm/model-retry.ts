@@ -3,7 +3,7 @@
  * - 5次重试上限
  * - 限流/网络错误：10秒延迟
  * - 400错误/算法错误：1秒快速重试
- * - 100%复用自参考项目 E:\ai_fr
+ * - 
  */
 
 import { ensureErrorMessage } from '../../utils/index';
@@ -179,7 +179,7 @@ export async function runModelApiWithRetry<T>(
   options?: {
     signal?: AbortSignal;
     /**
-     * ★ M12 重试回调重置协议（可选）：retryCount += 1 之后、sleepBeforeRetry 之前调用——
+     * 重试回调重置协议（可选）：retryCount += 1 之后、sleepBeforeRetry 之前调用——
      *   消费者先复位已累积的增量态，sleep 后才收到新 attempt 增量（协议顺序保证）
      */
     onRetry?: (retryCount: number) => void;
@@ -211,7 +211,7 @@ export async function runModelApiWithRetry<T>(
         }
 
         retryCount += 1;
-        // ★ M12：重试边界回调——消费者先复位（矫正事件同点发出），再 sleep 重放
+        // ：重试边界回调——消费者先复位（矫正事件同点发出），再 sleep 重放
         options?.onRetry?.(retryCount);
         await sleepBeforeRetry(retryDelayMs, options?.signal);
         continue;

@@ -1,13 +1,13 @@
 /**
- * OtherSettingsTab — 其他设置（值守模式）Tab 组件（阶段2：开关真实启停）
+ * OtherSettingsTab — 其他设置（值守模式）Tab 组件（开关真实启停）
  *
  * 功能（对齐 PythonEnvTab.tsx:48-51 先例：具名导出函数组件 + useSettings() 读写 + AntApp.useApp() 反馈）：
  * - 值守模式总开关：真实启停（调 watch:start / watch:stop）；开启前本地校验邮箱/授权码，
  *   主进程执行 IMAP/SMTP 真实自检；含"自检中 / 运行中 / 已停止"状态反馈与开启失败错误提示
  * - 运行状态区：每 5 秒递归 setTimeout 轮询 watch:status，展示状态、增量游标、本次运行已处理封数
- *   与下次轮询时间（阶段5 起不再展示 UID 水位）；
+ *   与下次轮询时间（不再展示 UID 水位）；
  *   运行期回落关闭（自检失败/连续失败阈值）经 lastError Alert 展示错误码与原因
- * - 邮箱类型（阶段7 目标3）：QQ邮箱（内置端点）/ 其他（自定义 IMAP/SMTP 主机、端口、加密方式）；
+ * - 邮箱类型：QQ邮箱（内置端点）/ 其他（自定义 IMAP/SMTP 主机、端口、加密方式）；
  *   选择「其他」时展开六个自定义参数，保存即生效（收信与发信两侧统一由 provider 解析端点）
  * - 值守邮箱 / 授权码（密码型输入）/ 轮询间隔（分钟数字输入）/ 回信收件人：失焦校验 + trim 保存
  * - 指令说明：值守模式行尾问号图标 → Popover 展示命令行协议与最小可用示例（可复制）
@@ -40,7 +40,7 @@ import { useUpdateState } from '../hooks/useUpdateState';
 
 const { Title, Text, Paragraph } = Typography;
 
-/** 邮箱格式校验正则（与 v3 方案 §4.1 定义一致） */
+/** 邮箱格式校验正则（与 v3 方案 定义一致） */
 const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ interface WatchApi {
   stop: () => Promise<{ ok: boolean; status: WatchRuntimeStatusLite }>;
   /**
    * 状态查询：status/enabled/lastError/watermark(恒 null)/cursor/nextPollAt/processedCount
-   * 阶段5：watermark 保留字段但恒为 null（不再展示），时间增量进度改由 cursor.sinceTime 表达
+   * watermark 保留字段但恒为 null（不再展示），时间增量进度改由 cursor.sinceTime 表达
    */
   status: () => Promise<{
     status: WatchRuntimeStatusLite;
@@ -206,7 +206,7 @@ export function OtherSettingsTab() {
   const [updateNotesOverflowing, setUpdateNotesOverflowing] = useState<boolean | null>(null);
   const [updateActionBusy, setUpdateActionBusy] = useState(false);
 
-  // ===== 邮箱类型（阶段7 目标3：provider 选择 + 自定义端点） =====
+  // ===== 邮箱类型（provider 选择 + 自定义端点） =====
   const [providerType, setProviderType] = useState<MailProviderTypeLite>('qq');
   const [customImapHost, setCustomImapHost] = useState('');
   const [customImapPort, setCustomImapPort] = useState(993);
@@ -233,7 +233,7 @@ export function OtherSettingsTab() {
   // ===== 指令说明浮层（问号图标：点击常驻、ESC 关闭） =====
   const [commandHelpOpen, setCommandHelpOpen] = useState(false);
 
-  // ===== 值守运行态（阶段2：经 watch IPC 与主进程值守服务联动） =====
+  // ===== 值守运行态（经 watch IPC 与主进程值守服务联动） =====
   const { message } = AntApp.useApp();
   const [runtimeStatus, setRuntimeStatus] = useState<WatchRuntimeStatusLite>('closed');
   const [watchError, setWatchError] = useState<{ code: string; message: string; at: string } | null>(null);
@@ -253,7 +253,7 @@ export function OtherSettingsTab() {
       setWatchError(s.lastError);
       if (s.status === 'running') {
         const parts: string[] = [];
-        // 阶段5：有 cursor 时显示「增量游标 <本地时间>」；无 cursor 时不显示任何水位相关内容
+        // 有 cursor 时显示「增量游标 <本地时间>」；无 cursor 时不显示任何水位相关内容
         if (s.cursor) {
           parts.push(`增量游标 ${formatCursorLocal(s.cursor.sinceTime)}`);
         }
@@ -270,7 +270,7 @@ export function OtherSettingsTab() {
     }
   }, []);
 
-  // 挂载即取一次状态，随后每 5 秒递归轮询（v3 §5.2 状态区节奏；卸载时清理）
+  // 挂载即取一次状态，随后每 5 秒递归轮询（ 状态区节奏；卸载时清理）
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
@@ -303,7 +303,7 @@ export function OtherSettingsTab() {
         return;
       }
       if (checked) {
-        // 阶段7：自定义邮箱必须先填两端主机（主进程还会做一次 validateMailEndpoints 校验）
+        // 自定义邮箱必须先填两端主机（主进程还会做一次 validateMailEndpoints 校验）
         if (providerType === 'custom') {
           if (!customImapHost.trim() || !customSmtpHost.trim()) {
             message.error('开启失败：请先填写 IMAP 与 SMTP 服务器地址');

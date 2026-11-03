@@ -1,11 +1,11 @@
 /**
  * 消息过滤辅助函数
- * Phase 3 P3-2 适配层：空泡过滤
+ * 空泡过滤
  *
  * 目标行为：assistant 消息若 content.trim() === '' 且无 thinking / toolCalls，
  * 不应渲染为 bubble（避免空泡）。同时实现 filter 函数用于 messages 列表过滤。
  *
- * 对齐 E:\ai_fr chat-shell.tsx L2355-2362：
+ * 
  *   filter((item) =>
  *     !(
  *       item.role === 'assistant' &&
@@ -29,7 +29,7 @@ import type { ChatMessage } from '../hooks/useChat';
 
 /**
  * 判断 assistant 消息是否为"空泡"
- * 对齐 E:\ai_fr finishReason='tool_calls' + content='\\n\\n' + reasoning 空
+ * 
  * @param message 待判断的消息
  * @returns 是否为空泡
  */
@@ -59,7 +59,7 @@ export function filterEmptyAssistantBubbles(messages: ChatMessage[]): ChatMessag
 
 /**
  * AssistantMessageSegment 二元结构（P1-A1）
- * 对齐 E:\ai_fr lib/types/chat.ts L51-58
+ * 
  * - type='reasoning'：思考内容段，含 text 字段
  * - type='tool_call'：工具调用段，含 toolCallId 字段（索引 AssistantToolCall.id）
  */
@@ -77,7 +77,7 @@ export type AssistantMessageSegment =
 
 /**
  * AssistantToolCall 工具调用定义（P1-A1 兼容路径）
- * 对齐 E:\ai_fr AssistantToolCall
+ * 
  */
 export interface AssistantToolCall {
   id: string;
@@ -91,7 +91,7 @@ export interface AssistantToolCall {
 /**
  * 旧数据兼容路径（P1-A2）
  * 从 thinking + toolCalls 派生 segments 列表
- * 对齐 E:\ai_fr chat-message-content.tsx L286-307 buildLegacySegments
+ * 
  * - 若 thinking 非空，第一个段为 reasoning
  * - 每个 toolCall 生成一个 tool_call 段（id 为 `legacy-tool-${toolCall.id}`）
  * @param thinking 旧 thinking 字段

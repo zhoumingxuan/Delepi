@@ -1,6 +1,6 @@
 /**
  * SenderBox 输入框组件
- * 对齐 ai-client SenderBox.tsx 样式结构 + boxShadow 规范
+ * 
  *
  * 样式对齐：
  * - 外层 padding: 12px 24px 24px
@@ -37,7 +37,7 @@ export interface PendingFile {
 }
 
 /**
- * 附件条可见的上传状态（R3 修复配套：附件条渲染 uploadStatus/uploadError）
+ * 附件条可见的上传状态（附件条渲染 uploadStatus/uploadError）
  * UploadPendingFile（useFileUpload）扩展字段的子集；旧调用方不传时按无状态渲染，向后兼容。
  */
 export interface PendingFileUploadState {
@@ -54,7 +54,7 @@ interface SenderBoxProps {
   onCancel?: (() => void) | undefined;
   loading?: boolean | undefined;
   showCancel?: boolean | undefined;
-  /** ★ M4：提交被拦截时的反馈回调（组件内 300ms 节流，避免高频提示） */
+  /** ：提交被拦截时的反馈回调（组件内 300ms 节流，避免高频提示） */
   onBlocked?: ((reason: 'locked' | 'empty') => void) | undefined;
   canSend?: boolean | undefined;
   pendingFiles?: (PendingFile & PendingFileUploadState)[] | undefined;
@@ -97,7 +97,7 @@ export const SenderBox = memo(function SenderBox({
   const { token } = theme.useToken();
   const [dragActive, setDragActive] = useState(false);
   const dragDepthRef = useRef(0);
-  // ★ M4：被拦截提示 300ms 节流——连按回车/连点按钮只反馈一次
+  // ：被拦截提示 300ms 节流——连按回车/连点按钮只反馈一次
   const lastBlockedNotifyAtRef = useRef(0);
   const notifyBlocked = useCallback(
     (reason: 'locked' | 'empty') => {
@@ -214,12 +214,12 @@ export const SenderBox = memo(function SenderBox({
         if (!showCancel && (value.trim() || pendingFiles.length > 0)) {
           event.preventDefault();
           handleSubmit();
-          // ★ M5：返回 false 抑制 @ant-design/x Sender 内部 onInternalKeyDown 的
+          // ：返回 false 抑制 @ant-design/x Sender 内部 onInternalKeyDown 的
           //   triggerSend 二次提交（TextArea.js:97 “eventRes === false 即跳过”）。
           //   M5 解冻 submitDisabled 后内部提交路径恢复可用，必须防止双发。
           return false;
         }
-        // ★ M4：锁定时反馈（原为静默吞回车）；空内容静默（与原行为一致）
+        // ：锁定时反馈（原为静默吞回车）；空内容静默（与原行为一致）
         if (showCancel) notifyBlocked('locked');
       }
     },
@@ -433,7 +433,7 @@ export const SenderBox = memo(function SenderBox({
                     handleSubmit();
                   }
                 }}
-                // ★ M4：disabled 联动目标会话级锁——锁定态保持可点击（点击后被拦并反馈），
+                // ：disabled 联动目标会话级锁——锁定态保持可点击（点击后被拦并反馈），
                 //   非锁定态按 canSend 判定
                 disabled={showCancel ? false : !canSend}
               />

@@ -31,13 +31,13 @@ export const USER_MESSAGE_CREATED_EVENT = 'user.message.created';
 
 // ============================================================
 // ★ S3 批次完成事件（M4）：批内全部工具调用结束（含失败/中止）后于批次收口点发出
-//   对齐 ai_fr types/chat.ts:171-177 事件形态；发送时序=main-agent.ts 批次收口块内、全中止判定之前
+//   
 // ============================================================
 
 export const TOOL_BATCH_COMPLETED_EVENT = 'tool.batch.completed';
 
 // ============================================================
-// 执行子智能体任务记录渲染信号（新版方案 §5.2-A2）
+// 执行子智能体任务记录渲染信号
 // 由 executor-task-record-store 内建 200ms leading+trailing 节流发射，
 // ipc-handlers 白名单转发 IPC_EXECUTOR.RECORD_SIGNAL 给渲染进程（信号不携带过程内容）。
 // ============================================================

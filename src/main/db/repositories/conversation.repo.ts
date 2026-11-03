@@ -115,7 +115,7 @@ export function getConversationById(conversationId: string): ConversationRecord 
 }
 
 // ============================================================
-// 阶段7 目标1：会话级模型方案绑定（conversations.model_profile_id）
+// 会话级模型方案绑定（conversations.model_profile_id）
 //
 // 设计说明：
 // - 列由 sqlite-adapter 的 DDL 与就地补建共同保证存在；本文件只读写，不建表；
@@ -178,7 +178,7 @@ export function setConversationRunning(
 }
 
 /**
- * ★ 缺陷③根因修复（is_running 写入不跨 run 生效）：touchConversation 拆分职责，
+ * touchConversation 拆分职责，
  *   仅更新 updated_at（列表排序语义保持不变，不更新 is_running）——is_running 的
  *   写入出口收敛到 run 生命周期边界（chat:send 启动的 setConversationRunning(true)、
  *   run 真实 settle 出口的 setConversationRunning(false) 与 chat:abort 复位），
@@ -197,8 +197,8 @@ export function updateConversationTitle(conversationId: string, title: string): 
   db.prepare(`
     UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?
   `).run(title, nowIso(), conversationId);
-}
-
+}
+
 // ============================================================
 // 方向3：conversation_tags 标签仓储 + 自定义重命名
 // （独立新表，UNIQUE(conversation_id, tag) 约束去重；
@@ -223,7 +223,7 @@ export function removeTag(conversationId: string, tag: string): void {
 }
 
 /**
- * 自定义重命名（方向3 conv:rename 专用）
+ * 自定义重命名（conv:rename 专用）
  * 仅更新 title：不更新 updated_at（避免对话被顶到列表顶部）、不改 is_running
  * （区别于 updateConversationTitle：自动标题生成沿用既有函数保持现状行为）
  */
@@ -232,8 +232,8 @@ export function renameConversationTitle(conversationId: string, title: string): 
   db.prepare(`
     UPDATE conversations SET title = ? WHERE id = ?
   `).run(title, conversationId);
-}
-
+}
+
 /**
  * 条件更新标题（方向3 A3-3 原子版本检查·最终防线）
  * 仅当当前 title 仍等于 expectedTitle（生成期间的基线）时写入——

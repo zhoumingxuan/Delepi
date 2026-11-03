@@ -1,5 +1,5 @@
 /**
- * watch-navigation — 值守指令 → 前端会话跳转（阶段7 目标5②）
+ * watch-navigation — 值守指令 → 前端会话跳转
  *
  * 职责边界（单一职责，便于受控断言）：
  * - 定义主进程推送给渲染层的载荷结构（IPC_WATCH.COMMAND_NAVIGATE）；

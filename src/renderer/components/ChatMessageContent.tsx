@@ -1,7 +1,7 @@
 /**
  * 消息内容渲染分发组件
  * 处理 user / assistant / tool 三种角色消息
- * 执行子智能体进度模式 + 任务标题提取（对齐 E:\ai_fr\components\chat-message-content.tsx）
+ * 执行子智能体进度模式 + 任务标题提取（）
  *
  * 适配 Delepi 后端实现（替换 Next.js StreamMessage → Delepi ChatMessage）：
  * - 数据模型：StreamMessage (payload.content/reasoning/toolCalls) → ChatMessage (content/thinking/toolCalls)
@@ -9,14 +9,14 @@
  * - 附件渲染：实现（Delepi ChatMessage 现在携带 attachments 字段，P6 历史消息附件回显）
  *   - Image.PreviewGroup + Image lazy loading，单图 320px，多图 152px
  *   - Flex + FileOutlined + 文件名 + size 文件条
- *   - 仅附件无文本：仅显示附件（不渲染「已发送 N 张图片 / N 个附件」摘要气泡，对齐 ai_fr）
+ *   - 仅附件无文本：仅显示附件（不渲染「已发送 N 张图片 / N 个附件」摘要气泡，）
  * - 渲染组件：AssistantContentRenderer → RichMarkdown
  *
- * Phase 3 P0-2 适配层（保留）：
+ * 适配层：
  * - EXECUTOR_TOOL_PROGRESS_PATTERNS / isExecutorToolProgressText / splitLoadingToolContent
  *   提取到 lib/executor-thinking.ts 共享，ToolCallCard 同步使用
  *
- * Phase 3 P3-2 适配层（保留）：
+ * 适配层：
  * - assistant 空泡过滤（isEmptyAssistantBubble）：当 content.trim() === '' 且无 thinking / toolCalls
  *   且 status !== 'loading' 时直接返回 null，避免渲染空 bubble
  * - 完整 filter 函数 filterEmptyAssistantBubbles 由 lib/message-filter.ts 提供
@@ -38,7 +38,7 @@ import type { AssistantMessageSegment } from '../lib/message-filter';
 import { latestToolProgressTextCached, splitLoadingToolContentCached } from '../lib/executor-thinking';
 import { isEmptyAssistantBubble } from '../lib/message-filter';
 import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
-// ★ 新版方案 §7.7：executor 任务虚拟消息徽标分发（任务卡=最新一行思考+图标按钮）；
+// executor 任务虚拟消息徽标分发（任务卡=最新一行思考+图标按钮）；
 //   EXECUTOR_RECORD_PANEL_ENABLED 纯显示开关（useExecutorTaskRecords 顶部，默认 true）——
 //   置 false 即短路回既有渲染（单点回滚）
 import { EXECUTOR_RECORD_PANEL_ENABLED } from '../hooks/useExecutorTaskRecords';
@@ -47,7 +47,7 @@ import type { ExecutorTaskChatMessage } from '../lib/executor-record-messages';
 
 /**
  * 工具摘要（用于把 toolCall.name 解析为 displayName）
- * 对齐 E:\ai_fr\lib\types\config.ts ToolSummary
+ * 
  * - 由调用方传入（参考项目 chat-shell.tsx L2684-2738 传 config?.tools）
  */
 export interface ToolSummary {
@@ -63,7 +63,7 @@ const USER_TEXT_COLLAPSE_THRESHOLD = 600;
 const TOOL_RESULT_EXPANDED_MAX_HEIGHT_PX = 320;
 
 /**
- * ★ Phase 3 P3-5 修复：图片附件 previewUrl 缺失时的占位符
+ * 图片附件 previewUrl 缺失时的占位符
  * 使用 1x1 透明 PNG (data URI) 兜底,antd Image.fallback 会替换显示
  * 不再用 attachment.storageKey 兜底(storageKey 不是合法 URL,会触发 404)
  */
@@ -192,8 +192,8 @@ function renderToolResultContent(
 }
 
 // ★ P04: 追加第三参 cacheKey（必传，流标识级缓存键），切分改走增量缓存（根因 R4）
-// ★ 缺陷②修复：追加第四参 progressOverride（= options.progressText / message.progress，
-//   快照级进度行）——优先于缓存提取，接通 M17 完成分支删除后失连的
+// ★ 追加第四参 progressOverride（= options.progressText / message.progress，
+//   快照级进度行）——优先于缓存提取，接通 完成分支删除后失连的
 //   '工具调用'块渲染出口（子工具原始 result 不匹配进度正则致缓存提取恒空的场景由该参兜住）
 function renderLoadingToolContent(
   value: string,
@@ -202,7 +202,7 @@ function renderLoadingToolContent(
   progressOverride?: string,
 ) {
   const { thinking: thinkingFromResult } = splitLoadingToolContentCached(cacheKey, value);
-  // ★ 项9：对齐 ai_fr renderLoadingToolContent(value, thinkingOverride?)——优先使用显式 thinking
+  // ★ 项9：
   const thinking = thinkingOverride?.trim() || thinkingFromResult;
   const progressContent = progressOverride?.trim()
     || latestToolProgressTextCached(cacheKey, value)
@@ -392,20 +392,20 @@ function renderToolResultSegment(
   // ★ 本次修复：运行中（loading）不再把 toolCall.result（=末项子工具结果 JSON）作为渲染输入，
   //   改用 options.content（=message.content=快照 payload.result：思考全量/最新进度文本）——
   //   彻底移除「工具调用任务调用结果（Result 内容）」混入运行中 tool 显示区域；
-  //   完成态（loading=false）仍仅渲染 Result（M17 既有正确行为，零回归）
+  //   完成态（loading=false）仍仅渲染 Result（既有正确行为，零回归）
   const content = loading
     ? options?.content || ''
     : renderToolResultContent(toolCall.result || '', {
         includeStructuredFilePreview: options?.includeStructuredFilePreview,
       });
   const renderedContent = loading ? (
-    // ★ 缺陷②修复：接通 options.progressText（=message.progress，消息级进度文本）
+    // ★ 接通 options.progressText（=message.progress，消息级进度文本）
     //   作为'工具调用'块内容——运行中可见且内容可追溯；完成分支不受影响
-    //   （loading=false 不进本调用，仅渲染 Result，M17 零回归）；
-    //   新版方案：executor 任务卡已由徽标分支短路（ExecutorTaskCard），本路径仅服务主智能体链路
+    //   （loading=false 不进本调用，仅渲染 Result，零回归）；
+    //   executor 任务卡已由徽标分支短路（ExecutorTaskCard），本路径仅服务主智能体链路
     renderLoadingToolContent(content, thinkingText, toolCall.callId, options?.progressText)
   ) : (
-    // ★ M17（D3 两态覆盖历史）：完成分支仅渲染 Result（RichMarkdown）；思考块/工具调用块移除
+    // （D3 两态覆盖历史）：完成分支仅渲染 Result（RichMarkdown）；思考块/工具调用块移除
     <div style={{ maxHeight: TOOL_RESULT_EXPANDED_MAX_HEIGHT_PX, overflowY: 'auto' }}>
       <RichMarkdown content={content} />
     </div>
@@ -441,7 +441,7 @@ function renderToolResultSegment(
 
 /**
  * ★ P6 辅助函数：生成附件摘要文本
- * 对齐 E:\ai_fr components/chat-message-content.tsx renderUserAttachmentSummary
+ * 
  * - 全部为图片：「已发送 N 张图片」
  * - 包含其他类型：「已发送 N 个附件」
  */
@@ -460,7 +460,7 @@ function renderUserAttachmentSummary(attachments: ChatAttachment[]): string {
 
 /**
  * ★ P6 辅助函数：渲染附件区域（Image.PreviewGroup + FileOutlined 文件条）
- * 对齐 E:\ai_fr components/chat-message-content.tsx renderUserAttachments
+ * 
  *
  * 实现要点：
  * - 图片：antd Image.PreviewGroup，单图 320px，多图 152px（square）
@@ -489,7 +489,7 @@ function renderUserAttachments(attachments: ChatAttachment[]) {
           isImageContentType(attachment.contentType) ? (
             <Image
               key={attachment.id || attachment.storageKey}
-              // ★ Phase 3 P3-5 修复：previewUrl 缺失时不渲染 Image 显示占位图
+              // previewUrl 缺失时不渲染 Image 显示占位图
               //   原实现：用 attachment.storageKey 兜底,但 storageKey 不是合法 src,
               //   会触发 404。现在改为：previewUrl 缺失时显示占位气泡,
               //   不再 fallback 到 storageKey(用户能直观看到预览失效,而非看到损坏图)
@@ -557,7 +557,7 @@ function formatFileSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** 用户文本气泡（Phase 1: 使用 #171717 背景 + 白字） */
+/** 用户文本气泡（: 使用 #171717 背景 + 白字） */
 function UserTextBubble({ text }: { text: string }) {
   const [expanded, setExpanded] = useState(false);
   const shouldCollapse = text.length > USER_TEXT_COLLAPSE_THRESHOLD;
@@ -607,7 +607,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
   message: ChatMessage;
   /**
    * 工具摘要列表（用于把 toolCall.name 解析为 displayName）
-   * 对齐 E:\ai_fr\components\chat-message-content.tsx ChatMessageContentInner
+   * 
    * 调用方传入（参考 chat-shell.tsx L2684-2738 传 config?.tools）
    */
   toolSummaries?: ToolSummary[];
@@ -617,7 +617,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
    */
   conversationId?: string | null;
   /**
-   * ★ 新版方案 §7.7：executor 任务卡面板上下文（onOpenPanel 打开右栏 + activeDelegateCallId
+   * executor 任务卡面板上下文（onOpenPanel 打开右栏 + activeDelegateCallId
    * 判定按钮激活态）；不传时任务卡按钮仍可复制路径调用（无面板联动，保持 props 兼容）
    */
   executorPanel?: {
@@ -636,9 +636,9 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     return attachments.filter((att) => isImageContentType(att.contentType));
   }, [message]);
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
-  // ★ 修复 blobURL 过早撤销: 镜像最新 previewUrls, 供加载 effect 在不依赖 previewUrls 的前提下判断哪些附件仍缺有效预览 URL
+  // blobURL 过早撤销: 镜像最新 previewUrls, 供加载 effect 在不依赖 previewUrls 的前提下判断哪些附件仍缺有效预览 URL
   const previewUrlsRef = useRef<Record<string, string>>({});
-  // ★ 修复 blobURL 过早撤销: 登记本组件创建的 blob URL, 组件卸载时统一 revoke, 不在 effect 重跑时提前撤销
+  // blobURL 过早撤销: 登记本组件创建的 blob URL, 组件卸载时统一 revoke, 不在 effect 重跑时提前撤销
   const createdUrlsRef = useRef<string[]>([]);
   useEffect(() => {
     const next: Record<string, string> = {};
@@ -648,10 +648,10 @@ export const ChatMessageContent = memo(function ChatMessageContent({
         next[att.storageKey] = existing;
       }
     }
-    // ★ Phase 3 P3-2 合并语义：异步获取的 previewUrl 不能被同步覆盖清空
+    // ★ 合并语义：异步获取的 previewUrl 不能被同步覆盖清空
     setPreviewUrls((prev) => ({ ...prev, ...next }));
   }, [imageAttachments]);
-  // ★ 修复 blobURL 过早撤销: previewUrls 变化时同步镜像到 ref, 供下方加载 effect 的 needed 判断读取
+  // blobURL 过早撤销: previewUrls 变化时同步镜像到 ref, 供下方加载 effect 的 needed 判断读取
   useEffect(() => {
     previewUrlsRef.current = previewUrls;
   }, [previewUrls]);
@@ -691,12 +691,12 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     return () => {
       cancelled = true;
     };
-    // ★ 修复 blobURL 过早撤销: previewUrls 已移出依赖数组(needed 判断改读 previewUrlsRef 镜像),
+    // blobURL 过早撤销: previewUrls 已移出依赖数组(needed 判断改读 previewUrlsRef 镜像),
     //   依赖变化重跑时不再提前 revoke 本次创建的 blob URL(否则 img 渲染时 src 已失效);
     //   统一交由下方卸载 effect 在组件卸载时 revoke createdUrlsRef 登记的 URL
   }, [conversationId, imageAttachments]);
 
-  // ★ 修复 blobURL 过早撤销: 独立卸载 effect —— 仅在组件卸载时统一 revoke 本组件创建的全部 blob URL
+  // blobURL 过早撤销: 独立卸载 effect —— 仅在组件卸载时统一 revoke 本组件创建的全部 blob URL
   useEffect(() => {
     return () => {
       for (const url of createdUrlsRef.current) {
@@ -728,7 +728,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     // 渲染附件区域(Image.PreviewGroup + FileOutlined 文件条)
     const attachmentContent = renderUserAttachments(attachments);
 
-    // 情况 1：仅附件无文本 → 仅显示附件（对齐 ai_fr，不渲染摘要气泡）
+    // 情况 1：仅附件无文本 → 仅显示附件（）
     if (!text && attachments.length > 0) {
       return (
         <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
@@ -737,7 +737,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
       );
     }
 
-    // 情况 2：文本 + 附件 → 显示附件 + 文本（对齐 ai_fr，不渲染摘要气泡）
+    // 情况 2：文本 + 附件 → 显示附件 + 文本（）
     if (text && attachmentContent) {
       return (
         <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
@@ -766,7 +766,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
 
   // 工具消息
   if (message.role === 'tool') {
-    // ★ 新版方案 §7.7：executor 任务虚拟消息徽标分发（运行中任务卡=最新一行思考+图标按钮，
+    // executor 任务虚拟消息徽标分发（运行中任务卡=最新一行思考+图标按钮，
     //   不显示思考折叠块/工具调用块；既有 renderToolResultSegment/ToolCallCard 兜底路径不动）
     const executorTaskBadge = (message as ExecutorTaskChatMessage).executorTask;
     if (executorTaskBadge && EXECUTOR_RECORD_PANEL_ENABLED) {
@@ -803,8 +803,8 @@ export const ChatMessageContent = memo(function ChatMessageContent({
 
   // 助理消息
   // ============================================================
-  // Phase 3 P3-2 空泡过滤：finishReason='tool_calls' + content='\n\n' + reasoning 空时不渲染
-  // 对齐 E:\ai_fr chat-shell.tsx L2355-2362
+  // 空泡过滤：finishReason='tool_calls' + content='\n\n' + reasoning 空时不渲染
+  // 
   // 由 lib/message-filter.ts 的 isEmptyAssistantBubble 实现
   // ============================================================
   if (isEmptyAssistantBubble(message)) {

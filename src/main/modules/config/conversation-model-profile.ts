@@ -1,22 +1,17 @@
 /**
- * conversation-model-profile — 会话级模型方案解析（阶段7 目标1：模型配置方案 × 对话隔离 BUG 修复）
+ * conversation-model-profile — 会话级模型方案解析（模型配置方案 × 对话隔离）
  *
- * BUG 根因（代码级）：
- * 1) 只有全局单键 activeProfileId（shared/constants.ts DEFAULT_APP_SETTINGS）承载「当前方案」；
- * 2) 方案切换处理器把方案 14 键批量写进全局 settings，再写全局 activeProfileId
- *    （ipc-handlers PROFILES_SWITCH）——这是**进程级**状态，与对话无关；
- * 3) 运行期（chat:send / 值守注入）直接读 configManager.getSettings() 的同一批全局键
- *    （ipc-handlers chat:send、conversation-send-service）；
- * 4) 会话表没有「我用的哪个方案」字段 —— 于是「对话 A 用方案 A 跑、对话 B 用方案 B 跑，
- *    再切回 A」时，A 的运行只能读到最后一次切换写进全局的 B。
+ * 设计动机：全局单键 activeProfileId 与全局 14 键是进程级状态，与对话无关；若会话表
+ *   无「我用的哪个方案」字段，「对话 A 用方案 A 跑、对话 B 用方案 B 跑，再切回 A」时，
+ *   A 的运行只能读到最后一次切换写进全局的 B。
  *
- * 修复设计：
+ * 设计：
  * - 持久化：conversations.model_profile_id（仅 ADD COLUMN，存量行回填空串）；
  * - 读取优先级：会话绑定方案（有效） → 当前激活方案（懒绑定后生效，取其存储值合成） → 全局 14 键（无任何方案）；
  * - 写绑定时机：① 会话首次运行时懒绑定当前激活方案；② 用户在配置抽屉里主动切换方案
  *   （PROFILES_SWITCH 带 conversationId → 只改该会话绑定）；
  *   ③ 绑定方案被删除时清空悬空绑定；
- * - 【结构性根治（2026-10-30 第二轮）】双状态源收敛：会话级切换 = 纯会话绑定变更（零全局
+ * - 双状态源收敛：会话级切换 = 纯会话绑定变更（零全局
  *   写入）；全局激活方案与全局 15 键收缩为「默认方案/列表态」单一语义；config:save 的写入
  *   目标在编辑发起时随载荷携带 profileId 固定（详见 ipc-handlers.ts 链路C 注释）。本模块
  *   global-active 分支随之改为按激活方案存储值合成（与 conversation 分支同口径）。
@@ -61,7 +56,7 @@ export type ProfileConfigKey = (typeof PROFILE_CONFIG_KEYS)[number];
 export type ConversationModelConfigSource =
   | 'conversation'      // 会话绑定方案（权威快照）
   | 'global-active'     // 会话未绑定 → 懒绑定当前激活方案（首次运行）
-  | 'global-fallback';  // 系统中无任何方案 → 直接用全局 14 键（等价阶段6 行为）
+  | 'global-fallback';  // 系统中无任何方案 → 直接用全局 14 键
 
 /** 解析结果：本次 run 使用的模型配置快照 + 判定来源 */
 export interface ResolvedConversationModelConfig {
@@ -118,13 +113,13 @@ export function applyProfileToSettings(base: AppSettings, profile: ModelProfile)
 /**
  * 解析某个会话本次 run 使用的模型配置（**运行期唯一读取点**）。
  *
- * 6 个边界行为（与报告第 3 章行为表逐条对应）：
+ * 6 个边界行为：
  * 1) 历史会话从未绑定过方案：绑定为空 → 懒绑定当前激活方案（写库），本次用全局/激活方案配置；
  * 2) 绑定的方案被删除：清空悬空绑定 + 告警，回落当前激活方案（若还有方案），否则回落全局 14 键；
  * 3) 该会话正在运行中用户切换方案：本次 run 已持有快照，不受影响；绑定按切换决定，下一次 run 生效；
  * 4) 新建会话：绑定为空，首次运行时懒绑定（与 1 同路径）；
  * 5) 值守邮件触发新建会话：与 4 完全一致（createConversation → 注入时懒绑定）；
- * 6) 系统中一个方案都没有：不写绑定，直接用全局 14 键（等价阶段6 行为），不报错。
+ * 6) 系统中一个方案都没有：不写绑定，直接用全局 14 键，不报错。
  */
 export function resolveConversationModelConfig(conversationId: string | null): ResolvedConversationModelConfig {
   const globalSettings = configManager.getSettings();
@@ -169,13 +164,13 @@ export function resolveConversationModelConfig(conversationId: string | null): R
   }
 
   if (activeProfile) {
-    // 边界 1/4/5：未绑定（或刚被清空）→ 懒绑定当前激活方案，本次 run 行为与阶段6 完全一致
+    // 边界 1/4/5：未绑定（或刚被清空）→ 懒绑定当前激活方案，本次 run 行为一致
     try {
       setConversationModelProfileId(conversationId, activeProfile.id);
     } catch (err) {
       warnings.push(`会话懒绑定写入失败（本次运行继续使用全局配置）：${err instanceof Error ? err.message : String(err)}`);
     }
-    // 【结构性根治·读取侧对齐】懒绑定后本会话的方案身份 = activeProfile，配置取值与其余
+    // 懒绑定后本会话的方案身份 = activeProfile，配置取值与其余
     // conversation 分支同口径：applyProfileToSettings（激活方案 15 键覆盖全局副本），而非直接
     // 返回全局 15 键运行时——全局运行时已收缩为「默认方案投影」语义，不再承诺等于任一会话
     // 上下文方案的值；本分支返回新合成对象，天然不含 configManager 内部引用（F-7 语义保持）。
@@ -190,7 +185,7 @@ export function resolveConversationModelConfig(conversationId: string | null): R
 
   // 边界 6：系统中没有任何方案 → 全局 14 键，不写绑定
   warnings.push('系统中没有任何模型方案：本次运行使用全局模型配置（不写会话绑定）');
-  // 【F-7·R6】返回全局设置浅拷贝（原返回 configManager 内部引用，误写即全局污染）
+  // 返回全局设置浅拷贝（原返回 configManager 内部引用，误写即全局污染）
   return {
     profileId: '',
     profileName: '',

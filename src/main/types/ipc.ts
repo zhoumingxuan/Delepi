@@ -55,7 +55,7 @@ export interface ConfigSaveParams {
 
 // ============================================================
 // P5 文件上传独立 IPC 通道参数/返回类型
-// 对齐 E:\ai_fr app/api/uploads/route.ts 三件套（去除鉴权层）
+// ）
 // ============================================================
 
 /**
@@ -121,7 +121,7 @@ export interface FileReadParams {
 /**
  * file:read 返回：已上传文件的二进制内容 + 元数据
  * - data: ArrayBuffer（IPC 序列化兼容,前端用 URL.createObjectURL(new Blob([data])) 重建预览）
- * - contentType: 文件 MIME 类型（用于 Blob type 字段,★ Phase 3 P3-3 后端基于扩展名/magic 推断）
+ * - contentType: 文件 MIME 类型（用于 Blob type 字段,★ 后端基于扩展名/magic 推断）
  * - name: 原始文件名（用于 Blob name 字段,非必填但保留）
  * - size: 文件字节数（用于 Blob size 字段,与读取后大小一致）
  */
@@ -132,7 +132,7 @@ export interface FileReadResult {
    */
   data: ArrayBuffer;
   /**
-   * ★ Phase 3 P3-3 文件 MIME 类型（后端基于扩展名或 magic number 推断）
+   * ★ 文件 MIME 类型（后端基于扩展名或 magic number 推断）
    * 前端直接使用 readResult.contentType 作为 Blob type,不再依赖 file:list 的二次关联
    */
   contentType: string;
@@ -172,7 +172,7 @@ export interface FileCleanupOrphansResult {
 }
 
 // ============================================================
-// 执行子智能体任务记录增量查询（新版方案 §5.2-B2）
+// 执行子智能体任务记录增量查询
 // ============================================================
 
 /**

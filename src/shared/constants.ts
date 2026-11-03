@@ -48,7 +48,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   watchPollIntervalMinutes: 2,
   watchReceiptRecipient: '',
 
-  // 邮箱服务商（阶段7 目标3）：键白名单硬要求同上，必须与 AppSettings 逐键同步
+  // 邮箱服务商：键白名单硬要求同上，必须与 AppSettings 逐键同步
   mailProviderType: 'qq',
   mailCustomImapHost: '',
   mailCustomImapPort: 993,

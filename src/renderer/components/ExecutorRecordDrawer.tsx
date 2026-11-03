@@ -1,5 +1,5 @@
 /**
- * ExecutorRecordDrawer —— 任务执行记录固定 dock 右栏（新版设计方案 M8 / §6.2 / §6.4 视觉规格）
+ * ExecutorRecordDrawer —— 任务执行记录固定 dock 右栏（ 视觉规格）
  *
  * 择型：固定 dock 布局列（非 antd Drawer / 非 Modal）——常驻观察面需与消息流同时可读；
  * 宽度 clamp(280px, 26vw, 400px)、高度 100dvh、borderLeft 1px colorBorderSecondary，
@@ -20,7 +20,7 @@
  * - 归档空态（hasRecords=false）：居中"任务记录已随本轮结束归档"（13px secondary），
  *   标题区保留任务名+终态 Tag，关闭按钮可用。
  *
- * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均已接线：停止经 onStopTask → 任务级 IPC 精确停止，发送经 onSendTaskMessage → 任务级消息入队；草稿按 delegateCallId 键控隔离；原"纯只读面板"声明随之废止，§1.2-A 修订）。
+ * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均已接线：停止经 onStopTask → 任务级 IPC 精确停止，发送经 onSendTaskMessage → 任务级消息入队；草稿按 delegateCallId 键控隔离；原"纯只读面板"声明随之废止，修订）。
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';

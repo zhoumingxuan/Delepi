@@ -22,7 +22,7 @@
  * 解析（resolveConversationIdByIndex）：编号不在映射内返回 null，调用方必须据此发失败回执并中止
  *
  * 可验证性：本模块不 import electron；userData 基目录由 watch-service 在模块加载时注入
- * （与 mail-bridge 的 baseDir 注入先例一致），因此在无 Electron、无网络的本地环境可直接加载验证。
+ * （与 mail-bridge 的 baseDir 注入方式一致），因此在无 Electron、无网络的本地环境可直接加载验证。
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -170,7 +170,7 @@ function pruneIndexMapFiles(dir: string): void {
 }
 
 /**
- * 由会话列表构建一份编号映射（阶段7：`--list` 回执与「重启续期邮件」共用同一构建逻辑）：
+ * 由会话列表构建一份编号映射（`--list` 回执与「重启续期邮件」共用同一构建逻辑）：
  * 按传入顺序（调用方保证= conversations 表的 updated_at DESC 排序）编号 1..N，
  * limit 缺省/非法时不截断。返回结构与 saveConversationIndexMap 入参完全一致。
  */

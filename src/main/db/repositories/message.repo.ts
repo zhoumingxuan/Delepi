@@ -1,7 +1,7 @@
 /**
  * messages 表操作
  * 从 repository.ts 拆分
- * 批量入口 insertMessages = 批次末配对写入专用（对齐 ai_fr sqlite-adapter.ts insertMessages）
+ * 批量入口 insertMessages = 批次末配对写入专用（）
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -148,7 +148,7 @@ export function listStoredMessages(conversationId: string): StoredMessageRecord[
 }
 
 /**
- * ★ A-2 修复：segments 读库净化（元素级结构校验，先判结构后读字段）
+ * segments 读库净化（元素级结构校验，先判结构后读字段）
  * - 非数组/undefined → undefined（保持无 segments 字段时的原透传语义）
  * - 元素 null/非对象（含数组）→ 丢弃
  * - type==='reasoning'：text 非 string 归一为空字符串（保留该段，id 缺失时以索引兜底）
@@ -236,13 +236,13 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
         : undefined;
 
     // ★ F5 新增：从 payload 提取 segments 字段
-    //   对齐 ai_fr AssistantMessageSegment 类型（reasoning | tool_call）
+    //   ）
     //   持久化在 messages.payload_json.segments 中（由 insertMessage/F3 写入）
     const rawSegments = Array.isArray((payload as Record<string, unknown>).segments)
       ? ((payload as Record<string, unknown>).segments as AssistantMessageSegment[])
       : undefined;
 
-    // ★ A-2 修复：toolCalls 映射前置为变量（输出结构不变），供 segments 净化做 tool_call
+    // toolCalls 映射前置为变量（输出结构不变），供 segments 净化做 tool_call
     //   关联判定（tool_call 段与 toolCalls 同源 payload 静态对照，无渲染端竞态）
     const toolCalls = rawToolCalls?.map((toolCallValue) => {
       const toolCallObject = toolCallValue as {
@@ -257,13 +257,13 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
         isDelegatedExecutor: toolCallObject.function?.name === 'delegate_executor',
       };
     });
-    // ★ A-2 修复：segments 读库净化后透传（元素级结构校验，替代原样透传 rawSegments）
+    // segments 读库净化后透传（元素级结构校验）
     const sanitizedSegments = sanitizeAssistantSegments(rawSegments, toolCalls);
 
     return {
       id: message.id,
       role: message.role,
-      /** ★ M11 持久化稳定次序键贯通：listStoredMessages 已携带 seq，此处映射透传（原在此丢弃） */
+      /** 持久化稳定次序键：listStoredMessages 已携带 seq，此处映射透传 */
       seq: message.seq,
       content: message.role === 'user'
         ? buildUserPayloadDisplayText(payload)
@@ -272,7 +272,7 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
           : typeof payload.result === 'string'
             ? payload.result
             : '',
-      // ★ P6 历史消息附件回显：user 角色携带附件元数据供 ChatMessageContent 渲染图片缩略图/文件条
+      // 历史消息附件回显：user 角色携带附件元数据供 ChatMessageContent 渲染图片缩略图/文件条
       //   assistant/tool 角色不携带附件,保持 undefined
       ...(message.role === 'user' && payloadAttachments(payload).length > 0
         ? { attachments: payloadAttachments(payload) }
@@ -280,7 +280,7 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
       thinking: typeof payload.thinking === 'string' ? payload.thinking : '',
       // ★ F5 新增：返回 segments 字段（与 RendererChatMessage.segments 对齐）
       //   前端 ChatMessageContent 优先使用 message.segments，不再走 buildLegacySegments 兜底
-      // ★ A-2 修复：返回净化后的 segments（元素级结构校验，null/非对象/未知 type 已剔除，
+      // 返回净化后的 segments（元素级结构校验，null/非对象/未知 type 已剔除，
       //   reasoning text 归一为空字符串，tool_call 段与 toolCalls 关联校验后透传）
       segments: sanitizedSegments,
       toolCalls,
@@ -293,7 +293,7 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
 }
 
 /**
- * ★ 启动自愈（方案④4.1/⑥#14）：取指定会话最后一条 message。
+ * 启动自愈支撑：取指定会话最后一条 message。
  * SQL 形态 ORDER BY seq DESC LIMIT 1 由索引 idx_messages_conversation_seq(conversation_id, seq)
  * 直接支持（每会话一次倒序 LIMIT 1 索引扫描）；行映射与 listStoredMessages 一致；无行返回 null。
  */
@@ -327,9 +327,9 @@ export function getLastStoredMessage(conversationId: string): StoredMessageRecor
 }
 
 /**
- * ★ API 报错保留现场·D7 拍板豁免支撑：列出库内 tool 消息结果文本中引用的全部
+ * API 报错保留现场豁免支撑：列出库内 tool 消息结果文本中引用的全部
  * execution_log_path（current_task_execution_result.data.execution_log_path，读侧解析
- * 对齐 extractExecutionLogPathFromToolResultText 先例）。启动清理 cleanupStaleTasksDirsOnStartup
+ * 逻辑同 extractExecutionLogPathFromToolResultText）。启动清理 cleanupStaleTasksDirsOnStartup
  * 据此跳过被库内引用的任务现场目录，保证报错轮 execution_log_path 重启后持续有效。
  */
 export function listStoredExecutionLogPaths(): string[] {

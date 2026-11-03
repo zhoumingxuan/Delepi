@@ -99,7 +99,7 @@ export function createExecutorContextCompressionRunner(
     const thresholdLabel = readThreshold();
     const thresholdChars = parseExecutorCompressionThreshold(thresholdLabel);
     if (thresholdChars === null) { return; }
-    // 中止预检（压缩调用链不可传 signal；中止语义交还既有检查点）
+    // 中止预检（本链路压缩调用不传 signal；中止语义交还既有检查点）
     if (signal?.aborted) { return; }
     // 初始形态短路（计数必 0）
     if (messages.length <= 2) { return; }
@@ -131,7 +131,7 @@ export function createExecutorContextCompressionRunner(
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       consecutiveFailures += 1;
-      if (consecutiveFailures === 1) { // 仅首次连续失败记录，防每轮刷屏（见 D8）
+      if (consecutiveFailures === 1) { // 仅首次连续失败记录，防每轮刷屏
         onNotice({
           status: 'failed',
           text: `上下文压缩失败（已跳过，任务继续执行）：可计字符 ${beforeChars} 已超过阈值 ${thresholdLabel}；原因：${reason}`,
@@ -160,7 +160,7 @@ export function createExecutorContextCompressionRunner(
     // 中止复查：压缩返回后已中止 → 丢弃结果（保全完整历史供执行日志快照）
     if (signal?.aborted) { return; }
 
-    // 原位重建（规则5；格式参照主智能体三段式注入 main-agent.ts L207-219）
+    // 原位重建（格式同主智能体三段式注入）
     const summaryChars = summary.length;
     const rebuiltUserContent = [
       originalUserContent,

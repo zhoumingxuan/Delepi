@@ -33,7 +33,7 @@ import { resolveWindowsPowerShellPath, resolveWindowsTaskkillPath } from './util
 console.log('[sandbox-diag] argv =', JSON.stringify(process.argv));
 console.log('[sandbox-diag] ELECTRON_DISABLE_SANDBOX =', process.env.ELECTRON_DISABLE_SANDBOX ?? '(unset)');
 
-// writeMainLog 已移至 ./ipc/ipc-handlers.ts 并导出（R3/R5 修复配套）：
+// writeMainLog 位于 ./ipc/ipc-handlers.ts 并导出：
 // IPC handler 层错误（如 file:upload catch）与 log:renderer 渲染端转发
 // 与本文件启动链/运行期日志共用同一持久日志出口 userData/logs/main.log。
 
@@ -209,7 +209,7 @@ function createWindow(): void {
 }
 
 /**
- * BUG1 修复：启动期清空各会话 tasks 目录内的残留快照。
+ * 启动期清空各会话 tasks 目录内的残留快照。
  * 强杀客户端时轮末收尾（finished 收尾快照 + 批次消息落库 + 清空 tasks）全部缺失，
  * tasks/{toolCallId}/snapshot.json 会残留 init/running 状态；重启后 conv:get-messages
  * 读取残留快照，导致该会话永久显示"执行任务中"。
@@ -218,10 +218,10 @@ function createWindow(): void {
  * 同构）；uploads/output 等其余目录不受影响。
  */
 async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
-  // ★ D7 拍板豁免（方案⑧ D7 最终决策=启动清理对报错保留现场豁免）：库内 tool 消息
+  // ★ 豁免：库内 tool 消息
   //   execution_log_path 引用的任务现场目录（tasks/<delegateCallId>/，运行期 apiErrorHit
   //   豁免保留的磁盘现场）不参与启动清空重建——保证报错轮日志路径重启后持续有效；
-  //   未被引用的残留照常清理（BUG1 修复语义保持）。
+  //   未被引用的残留照常清理。
   let preservedTaskDirKeys = new Set<string>();
   try {
     preservedTaskDirKeys = collectPreservedTaskDirKeys();
@@ -257,7 +257,7 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
         continue;
       }
       // 存在被库内 execution_log_path 引用的任务现场：仅清空未被引用的残留条目，
-      // 被引用的现场目录原样保留（D7 拍板豁免；下次成功轮末照常统一清理）
+      // 被引用的现场目录原样保留（豁免；下次成功轮末照常统一清理）
       writeMainLog('INFO', 'cleanupStaleTasksDirsOnStartup',
         `会话 tasks 含 API 报错保留现场（${preservedCount} 个目录），启动清理豁免: ${tasksDir}`);
       for (const subEntry of tasksSubEntries) {
@@ -275,7 +275,7 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
 }
 
 /**
- * ★ D7 拍板豁免支撑：库内 tool 消息引用的 execution_log_path → 其所在任务现场目录
+ * ★ 豁免支撑：库内 tool 消息引用的 execution_log_path → 其所在任务现场目录
  * （tasks/<delegateCallId>）归一化键集合（path.resolve + 小写，Windows 路径归一）。
  * cleanupStaleTasksDirsOnStartup 据此豁免被引用现场的清空重建，保证报错轮日志路径
  * 重启后持续有效（D7 拍板：启动清理对报错保留现场豁免）。
@@ -292,7 +292,7 @@ function collectPreservedTaskDirKeys(): Set<string> {
 }
 
 /**
- * ★ 启动自愈（方案④4.2-4.4/⑥#15）：孤儿 assistant(tool_calls) 检测与补写。
+ * ★ 启动自愈：孤儿 assistant(tool_calls) 检测与补写。
  * 客户端在任务执行中途被关闭（进程终止）时批次末 tool 消息未落库，库内末条为含
  * tool_calls 的 assistant 行（孤儿态）——下次回放（按 seq 直读）将出现 tool_calls 无配对
  * tool 结果。此处逐会话取末条 message：role=assistant 且 payload.tool_calls（双键名兼容
@@ -355,7 +355,7 @@ async function healOrphanToolCallMessages(): Promise<number> {
       writeMainLog('INFO', 'healOrphanToolCallMessages',
         `孤儿 tool_calls 已补记 conversationId=${conversation.id} assistantSeq=${lastMessage.seq} toolCallCount=${rawToolCalls.length}`);
     } catch (err) {
-      // 单会话检测/补写失败仅记日志不阻断启动（含外键极值/脏数据场景，见方案④4.4 外键安全性论证）
+      // 单会话检测/补写失败仅记日志不阻断启动（含外键极值/脏数据场景，）
       writeMainLog('WARN', 'healOrphanToolCallMessages',
         `会话孤儿检测/补写失败，已跳过 conversationId=${conversation.id}`, err);
     }
@@ -432,7 +432,7 @@ app.whenReady().then(async () => {
     writeMainLog('ERROR', 'resetInterruptedRuntimeState', '失败', err);
   }
 
-  // ★ 启动自愈（方案④4.4/⑥#15）：孤儿 assistant(tool_calls) 补写 role=tool 任务取消消息——
+  // ★ 启动自愈：孤儿 assistant(tool_calls) 补写 role=tool 任务取消消息——
   //   紧随 resetInterruptedRuntimeState（同为启动期数据库状态修复，语义聚类）；必须先于
   //   createWindow/registerIpcHandlers（首轮 conv:get-messages 读取与 chat:send 回放/取号要求闭环）。
   try {
@@ -461,7 +461,7 @@ app.whenReady().then(async () => {
     writeMainLog('ERROR', 'ensureScriptToolsDir', '失败（不阻断启动；委派期兜底重建）', err);
   }
 
-  // BUG1 修复：清空各会话 tasks 目录残留快照（必须在 createWindow 之前完成，
+  // 清空各会话 tasks 目录残留快照（必须在 createWindow 之前完成，
   // 防止首次 conv:get-messages 读到残留 snapshot.json 导致会话永久显示"执行任务中"）
   try {
     await cleanupStaleTasksDirsOnStartup();

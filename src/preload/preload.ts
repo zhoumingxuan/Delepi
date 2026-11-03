@@ -1,7 +1,7 @@
 /**
  * Preload 脚本 - contextBridge 安全暴露 API
  *
- * 新版方案：electronAPI.executor.onRecordSignal(callback) / getTaskRecord(params) ——
+ * electronAPI.executor.onRecordSignal(callback) / getTaskRecord(params) ——
  * 订阅任务记录渲染信号（executor:record-signal）+ 增量查询（executor:get-task-record）
  */
 
@@ -50,17 +50,17 @@ const electronAPI = {
     reload: () => ipcRenderer.invoke(IPC_CONFIG.RELOAD),
     /**
      * 列出全部模型档案与当前激活档案 id
-     * 阶段7：可选 { conversationId } → 额外返回该会话的绑定视图 conversationProfile
+     * 可选 { conversationId } → 额外返回该会话的绑定视图 conversationProfile
      * （{boundProfileId, boundProfileName, boundProfileValid, activeProfileId, activeProfileName}）
      */
     listProfiles: (params?: { conversationId?: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_LIST, params),
     /** 另存为模型档案：主进程把当前生效配置（九键+开关/档位）快照为新档案，同名覆盖；blank=true 时创建空白方案（9 文本键空串+开关/档位取默认值） */
     saveProfile: (params: { name: string; blank?: boolean }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_SAVE, params),
-    /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状 */
+    /** 删除模型档案；删除激活方案时激活自动转移至剩余第一个方案并应用其 15 键配置（整体事务，任一键失败整体回滚、方案不删除）；剩余为空则清空 activeProfileId，全局配置键保持现状 */
     deleteProfile: (params: { id: string }) => ipcRenderer.invoke(IPC_CONFIG.PROFILES_DELETE, params),
     /**
      * 切换模型档案：主进程批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId。
-     * 阶段7：带 conversationId 时把该会话绑定到新方案（返回 conversationProfileId），
+     * 带 conversationId 时把该会话绑定到新方案（返回 conversationProfileId），
      * 其他会话的绑定不受影响（会话级隔离）。
      */
     switchProfile: (params: { id: string; conversationId?: string }) =>
@@ -92,7 +92,7 @@ const electronAPI = {
     open: (target: string) => ipcRenderer.invoke(IPC_FILE.OPEN, target),
     /**
      * 上传单个文件到对话 uploads 目录（主进程落盘）
-     * P5 文件上传独立 IPC 通道，对齐 E:\ai_fr app/api/uploads/route.ts POST
+     * P5 文件上传独立 IPC 通道，
      * H1 防御：data 为 Base64 字符串（主进程兼容 ArrayBuffer/Uint8Array/number[] 旧格式）
      * @param params FileUploadParams: { conversationId, name, size, contentType, data }
      * @returns FileUploadResult: { file: ChatUploadedFile }
@@ -100,14 +100,14 @@ const electronAPI = {
     upload: (params: unknown) => ipcRenderer.invoke(IPC_FILE.UPLOAD, params),
     /**
      * 列出对话 uploads/ 目录下全部已上传文件
-     * P5 文件上传独立 IPC 通道，对齐 E:\ai_fr app/api/uploads/route.ts GET（仅列清单部分）
+     * P5 文件上传独立 IPC 通道，）
      * @param params FileListParams: { conversationId }
      * @returns FileListResult: { files: ChatUploadedFile[] }
      */
     list: (params: unknown) => ipcRenderer.invoke(IPC_FILE.LIST, params),
     /**
      * 删除已上传的单个文件（磁盘 + manifest 一并清理）
-     * P5 文件上传独立 IPC 通道，对齐 E:\ai_fr app/api/uploads/route.ts DELETE
+     * P5 文件上传独立 IPC 通道，
      * @param params FileDeleteParams: { conversationId, storageKey }
      * @returns FileDeleteResult: { success: boolean }
      */
@@ -129,7 +129,7 @@ const electronAPI = {
   },
   executor: {
     /**
-     * 订阅任务记录渲染信号（新版方案 §5.2-A5；主→渲染，极小载荷 <200B）
+     * 订阅任务记录渲染信号（主→渲染，极小载荷 <200B）
      * 载荷 ExecutorTaskRecordSignal：{ conversationId, delegateCallId, taskId, latestSeq, status, updatedAt }
      * 信号不携带过程内容——收到后按 latestSeq 增量拉取 getTaskRecord
      * @param listener 回调函数，参数为信号载荷
@@ -144,7 +144,7 @@ const electronAPI = {
       };
     },
     /**
-     * 任务记录增量查询（新版方案 §5.2-B4；渲染→主，invoke）
+     * 任务记录增量查询（渲染→主，invoke）
      * @param params { conversationId, delegateCallId, sinceSeq? }（缺省/0=全量）
      * @returns ExecutorTaskRecordQueryResult（found/taskName/status/latestSeq/entries/reset?）
      */
@@ -206,7 +206,7 @@ const electronAPI = {
      */
     status: () => ipcRenderer.invoke(IPC_WATCH.STATUS),
     /**
-     * 订阅「值守指令已接受，请切到目标会话」事件（主→渲染，阶段7 目标5②）
+     * 订阅「值守指令已接受，请切到目标会话」事件（主→渲染， 目标5②）
      * 载荷 WatchCommandNavigationPayload：{ conversationId, conversationTitle, commandType,
      * requestId, subject, receivedAtIso, createdNewConversation }
      * 仅 send_message / new_conversation 指令会推送；role 过滤/主题过滤/发件人拒绝/非指令四类永不推送
@@ -224,7 +224,7 @@ const electronAPI = {
   log: {
     /**
      * 渲染端日志转发（渲染→主，invoke）：主进程 writeMainLog 写入 userData/logs/main.log
-     * R3 修复配套：渲染端上传失败等异常经此通道落 ERROR 记录（含 err.message/stack）
+     * 渲染端上传失败等异常经此通道落 ERROR 记录（含 err.message/stack）
      * @param params { level, stage, message, err? }
      */
     write: (params: {

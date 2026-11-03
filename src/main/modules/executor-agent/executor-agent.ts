@@ -1,6 +1,6 @@
 /**
  * 执行子智能体核心模块
- * 100%复用自参考项目 E:\ai_fr\lib\chat\executor-agent.ts
+ * 
  *
  * 适配改动：
  * 1. import 路径从 @/lib/* 改为相对路径
@@ -693,7 +693,7 @@ ${errors}
 
 /**
  * 根据文件路径字段名返回对应的 FILE URL 字段名。
- * 设计依据：参考 E:\ai_fr\lib\chat\executor-agent.ts:524-531
+ * 
  *   local_files → can_openfile_url
  *   image_files → image_urls
  * 文件链接复制到 output（源已在 output 内不重复复制、重名自动追加序号），
@@ -982,7 +982,7 @@ function normalizeExecutorToolCalls(rawToolCalls: unknown[]): {
   const toolCalls: NormalizedExecutorToolCall[] = [];
   const prebuiltResults: Array<{ id: string; result: ToolResult }> = [];
 
-  // ★ M20 tool_calls 碎片合并加固：同 id 相邻条目合并（function.arguments 字符串拼接）预处理，
+  // tool_calls 碎片合并：同 id 相邻条目合并（function.arguments 字符串拼接）预处理，
   //   作为 nonStream/历史路径防御层（流式路径已由 openai-client 三级索引解析合并）
   const mergedRawToolCalls: unknown[] = [];
   for (const rawToolCall of rawToolCalls) {
@@ -1097,17 +1097,17 @@ async function completeExecutorTurn(options: {
   signal?: AbortSignal;
   /** 流式思考增量回调：每收到一个 reasoning delta 触发一次（delta 粒度推送） */
   onThinking?: (delta: string) => void;
-  /** ★ M14 重试回调重置协议（可选）：经 init.hooks.onStreamRetry 承载（任务级注册一次） */
+  /** 重试回调重置协议（可选）：经 init.hooks.onStreamRetry 承载（任务级注册一次） */
   onStreamRetry?: () => void;
 }): Promise<{ assistantMessage: OpenAI.Chat.ChatCompletionMessage; content: string }> {
-  // ★ 阶段一接线：L1058 streamChat 调用替换为 adapter.sendMessage——
+  // 模型调用接线：经 adapter.sendMessage——
   //   modelConfig（执行者三键）/tools/thinking（档位 getter 实时重读）并入 init；
   //   reasoning 类 chunk → onThinking 透传链（同源同频，仅 reasoningDelta 非空触发）；
-  //   onStreamRetry 经 init.hooks 承载（M14 复位链时序不变）；executor 链路现状无
-  //   chunk 消费（content/end 信号不接线——方案 §四.2"事件源只替换模型流事件源"）
+  //   onStreamRetry 经 init.hooks 承载（复位链时序不变）；executor 链路无
+  //   chunk 消费（content/end 信号不接线——事件源仅模型流事件）
   options.adapter.onChunk((adapterChunk) => {
     // reasoning 类且 delta 非空才透传（挂靠 reasoning 时 delta=''——end 信号
-    // 跳过，"有值传没值空"语义保持，禁止清单⑩）
+    // 跳过，"有值传没值空"语义保持）
     if (adapterChunk.type === 'reasoning' && !adapterChunk.end && adapterChunk.delta) {
       options.onThinking?.(adapterChunk.delta);
     }
@@ -1153,7 +1153,7 @@ export type RunDelegatedTaskOptions = {
   /** Assistant 运行时配置 */
   assistantConfig: AssistantRuntimeConfig;
   /**
-   * 【F-4·R4】本次 run 的六键配置快照（runMainAgent 透传）：思考档位/协议/压缩阈值/视觉总开关
+   * 本次 run 的六键配置快照（runMainAgent 透传）：思考档位/协议/压缩阈值/视觉总开关
    * 运行期一律读快照，禁止直读 configManager 全局（运行中切换方案不影响本次 run）。
    */
   runtimeSettingsSnapshot: RuntimeSettingsSnapshot;
@@ -1178,18 +1178,18 @@ export type RunDelegatedTaskOptions = {
   /** 思考回调 */
   onThinking?: (text: string, info?: { type: 'thinking' | 'tool-progress'; executorCallId?: string }) => void;
   /**
-   * ★ M14 重试回调重置协议（可选）：底层 streamChat 重试边界触发（M12 onRetry → onStreamRetry），
+   * 重试回调重置协议（可选）：底层 streamChat 重试边界触发（onRetry → onStreamRetry），
    *   main-agent 委派闭包据此复位思考累积器到任务起点基线
    */
   onStreamRetry?: () => void;
   /**
-   * ★ 新版方案 §7.1-1：任务记录会话（双视图宿主）。
+   * 任务记录会话（双视图宿主）。
    * 存在时：runtimeMessages 初始化领养 recordSession.modelMessages（同一数组引用，
    * 真实内容视图与给大模型的上下文共享；executor 循环全部 push 作用在该数组上）。
    */
   recordSession?: ExecutorTaskRecordSession;
   /**
-   * ★ 新版方案 §7.1-3：轮收口回调（每轮 completeExecutorTurn 返回后触发，单点覆盖工具轮/最终输出轮/修复轮）。
+   * 轮收口回调（每轮 completeExecutorTurn 返回后触发，单点覆盖工具轮/最终输出轮/修复轮）。
    * 思考来源=executor 任务级 reasoning（extractAssistantReasoning 权威全文），
    * 与主智能体思考链（chat:thinking）零交集。
    */
@@ -1199,11 +1199,11 @@ export type RunDelegatedTaskOptions = {
    * persistExecutorIntermediate（见 main-agent.ts）。
    * type 字段约定：
    *   - onThinking: 'thinking'（普通思考）或 'tool-progress'（buildExecutorToolProgressText 输出）
-   *   - onToolCall: 固定 'tool-progress'（与 executor-agent.ts:920 行语义对齐）
-   *   - onToolResult: 固定 'tool-progress'（与 executor-agent.ts:975 行语义对齐）
+   *   - onToolCall: 固定 'tool-progress'（buildExecutorToolProgressText 输出）
+   *   - onToolResult: 固定 'tool-progress'（buildExecutorToolProgressText 输出）
    *
-   * ★ 修复 callId 语义错位：onToolCall / onToolResult 第三/第四参数为子智能体工具的
-   *   真实 callId（来自 LLM 返回的 toolCall.id），不再回传主智能体 delegate_executor 的 id。
+   * callId 语义：onToolCall / onToolResult 第三/第四参数为子智能体工具的
+   *   真实 callId（来自 LLM 返回的 toolCall.id），而非主智能体 delegate_executor 的 id。
    *   用于 main-agent.ts 在 onToolCall / onToolResult 回调中 emit 'executor:tool-progress'
    *   事件时携带真实 callId，前端可据此精确路由到子智能体的具体工具调用。
    */
@@ -1298,11 +1298,10 @@ export async function runDelegatedTask(
     inputIssues: parseResult.issues,
   });
 
-  // ★ API 报错保留现场：runDelegatedTask 主体整体包裹 try/catch——
+  // API 报错保留现场：runDelegatedTask 主体整体包裹 try/catch——
   //   任何 throw 路径（含 executor streamChat 抛出的 ModelApiAbortError）先经
   //   saveExecutionLogOnError 复用唯一写盘点生成 executor_messages.json 快照，并把绝对
-  //   路径挂载到 error.executionLogPath 后原样 rethrow（仅包装不吞错，既有上抛语义不变；
-  //   主体语句保持原缩进不动，符合最小变更铁律）。
+  //   路径挂载到 error.executionLogPath 后原样 rethrow（仅包装不吞错，上抛语义不变）。
   try {
   if (!parseResult.input) {
     const message = buildDelegateExecutorInputIssueMessage(parseResult.issues);
@@ -1338,7 +1337,7 @@ export async function runDelegatedTask(
   // executor-registry.executeToolCall）。动态工具全部纳入本禁用名单机制——首期 requiresVision=true
   // 被拒绝注册，动态工具均为非视觉，视觉关闭时保留；空动态表时过滤结果与原硬编码
   // 名单完全一致（等价性约束）。
-  // 【F-4·R4】visionEnabled 改读本次 run 快照（原直读 configManager 全局，运行中他处切方案会实时改变工具集）
+  // visionEnabled 改读本次 run 快照（原直读 configManager 全局，运行中他处切方案会实时改变工具集）
   const executorTools = getExecutorOpenAITools(
     options.runtimeSettingsSnapshot.visionEnabled
       ? undefined
@@ -1388,7 +1387,7 @@ export async function runDelegatedTask(
         : plainExecutorPrompt,
     },
   ];
-  // ★ 新版方案 §7.1-2 领养语义：recordSession 存在时初始消息写入 session.modelMessages
+  // 领养语义：recordSession 存在时初始消息写入 session.modelMessages
   //   并领养该数组引用（真实内容视图与模型上下文同引用共享，零拷贝零漂移）；
   //   无 session 时回退局部数组（签名向后兼容）
   const runtimeMessages = options.recordSession
@@ -1405,10 +1404,10 @@ export async function runDelegatedTask(
   // ============================================================
   // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每任务一实例（非常驻）——
   //   tools 传 delegatedExecutorTools 静态数组（L1285-1287 每任务局部构建，天然最新）；
-  //   档位传 getter：【F-4·R4】getter 内改读本次 run 的六键快照（runSettings.executorThinkingLevel），
+  //   档位传 getter：getter 内改读本次 run 的六键快照（runSettings.executorThinkingLevel），
   //   不再直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义，INV-3）；
-  //   M14 复位链经 init.hooks.onStreamRetry 承载（重试边界时序不变）；
-  //   协议选择：【F-4·R4】子智能体协议经本次 run 快照（runSettings.executorModelProtocol）
+  //   复位链经 init.hooks.onStreamRetry 承载（重试边界时序不变）；
+  //   协议选择：子智能体协议经本次 run 快照（runSettings.executorModelProtocol）
   //   注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定协议
   //   时仅构造并 init 对应适配器，init 失败即抛 ModelApiAbortError（禁止自动降级，用
   //   不了就换一个协议由用户自己换）；未指定时走原探查降级链：先 Responses（探
@@ -1431,11 +1430,11 @@ export async function runDelegatedTask(
     systemMessage: String(initialMessages[0]?.content ?? ''),
     tools: delegatedExecutorTools as unknown as Array<Record<string, unknown>>,
     hooks: {
-      // ★ M14 重试复位：底层重试边界触发 → recordSession.resetThinkingDraft()
+      // 重试复位：底层重试边界触发 → recordSession.resetThinkingDraft()
       onStreamRetry: () => options.onStreamRetry?.(),
     },
   };
-  // 【F-4·R4】协议读本次 run 快照（原直读 configManager 全局）
+  // 协议读本次 run 快照（原直读 configManager 全局）
   const adapterSetup = await initAdapterWithFallback(adapterInitConfig, options.runtimeSettingsSnapshot.executorModelProtocol);
   const adapter = adapterSetup.adapter;
   warnCodingPlanMismatch(adapterSetup.protocol, options.assistantConfig.executorModel.baseUrl);
@@ -1447,7 +1446,7 @@ export async function runDelegatedTask(
 
   // ★ 上下文压缩 runner（executorContextCompressionThreshold 运行时消费）：
   //   门禁(''/中止/服务端驻留/未超限)→slice(2)统计→同步压缩→原位重建→notice 全内聚于模块内；
-  //   阈值 getter：【F-4·R4】改读本次 run 快照（对齐上方 thinkingLevel 快照范式，不直读全局）；
+  //   阈值 getter：改读本次 run 快照（对齐上方 thinkingLevel 快照范式，不直读全局）；
   //   压缩模型=executorModel 三键（任务内冻结）；无 recordSession 时 notice 跳过、重建照常。
   const executorCompressionStep = createExecutorContextCompressionRunner({
     messages: runtimeMessages,
@@ -1481,13 +1480,13 @@ export async function runDelegatedTask(
       tools: delegatedExecutorTools,
       signal: options.signal,
       // 增量推送：reasoning delta 到达即推送（token 级轮内可见）。
-      // 既有两条推送分支语义迁移到流式路径：
+      // 两条推送分支语义：
       //   - 分支2「reasoning 非空才推」→ delta 到达即推理非空的流式形态，逐 delta 推送 type='thinking'；
-      //   - 分支1「reasoning 为空但 content 非空 → content 兜底充当 thinking」→ 已移除：思考流仅推送真实 reasoning，content 不再冒充 thinking。
+      //   - 分支1「reasoning 为空但 content 非空 → content 兜底充当 thinking」不启用：思考流仅推送真实 reasoning，content 不冒充 thinking。
       onThinking: (delta) => {
         options.onThinking?.(delta, { type: 'thinking' });
       },
-      // ★ M14：重试复位回调透传（runDelegatedTask 调用方注入）
+      // 重试复位回调透传（runDelegatedTask 调用方注入）
       onStreamRetry: options.onStreamRetry,
     });
 

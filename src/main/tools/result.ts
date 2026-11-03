@@ -1,6 +1,6 @@
 /**
  * 工具执行结果类型和构建函数
- * 100%复用自参考项目 E:\ai_fr
+ * 
  */
 
 import { MAX_OUTPUT_LENGTH, SUSPECTED_MOJIBAKE_WARNING } from '../constants';

@@ -86,7 +86,7 @@ const getZero = (): number => 0;                                  // 非 active 
 
 
 /**
- * 计算实时耗时（秒），对齐 E:\ai_fr useElapsedSeconds
+ * 计算实时耗时（秒），
  * - 工具完成后：以 finishedAt 为终点
  * - 工具进行中：以当前时间为终点，每秒更新
  */
@@ -101,46 +101,46 @@ export function useElapsedSeconds(options: {
     startedAt: string;
   } | null>(null);
 
-  const getElapsedSeconds = (): number => {
-    const startedAtMs = Date.parse(options.startedAt);
-    const finishedAtMs = options.finishedAt
-      ? Date.parse(options.finishedAt)
-      : Number.NaN;
-
-    if (Number.isNaN(startedAtMs)) {
-      return 0;
-    }
-
-    if (!options.active && !Number.isNaN(finishedAtMs)) {
-      return Math.floor((finishedAtMs - startedAtMs) / SECOND_MS);
-    }
-
-    const currentMs = Date.now();
-    const absoluteElapsedSeconds = Math.floor(
-      (currentMs - startedAtMs) / SECOND_MS,
-    );
-
-    if (!options.active) {
-      return absoluteElapsedSeconds;
-    }
-
-    if (
-      !activeAnchorRef.current ||
-      activeAnchorRef.current.startedAt !== options.startedAt
-    ) {
-      activeAnchorRef.current = {
-        elapsedSeconds: Math.max(0, absoluteElapsedSeconds),
-        localTimeMs: currentMs,
-        startedAt: options.startedAt,
-      };
-    }
-
-    const anchoredElapsedSeconds =
-      activeAnchorRef.current.elapsedSeconds +
-      Math.floor((currentMs - activeAnchorRef.current.localTimeMs) / SECOND_MS);
-
-    return Math.max(absoluteElapsedSeconds, anchoredElapsedSeconds);
-  };
+  const getElapsedSeconds = (): number => {
+    const startedAtMs = Date.parse(options.startedAt);
+    const finishedAtMs = options.finishedAt
+      ? Date.parse(options.finishedAt)
+      : Number.NaN;
+
+    if (Number.isNaN(startedAtMs)) {
+      return 0;
+    }
+
+    if (!options.active && !Number.isNaN(finishedAtMs)) {
+      return Math.floor((finishedAtMs - startedAtMs) / SECOND_MS);
+    }
+
+    const currentMs = Date.now();
+    const absoluteElapsedSeconds = Math.floor(
+      (currentMs - startedAtMs) / SECOND_MS,
+    );
+
+    if (!options.active) {
+      return absoluteElapsedSeconds;
+    }
+
+    if (
+      !activeAnchorRef.current ||
+      activeAnchorRef.current.startedAt !== options.startedAt
+    ) {
+      activeAnchorRef.current = {
+        elapsedSeconds: Math.max(0, absoluteElapsedSeconds),
+        localTimeMs: currentMs,
+        startedAt: options.startedAt,
+      };
+    }
+
+    const anchoredElapsedSeconds =
+      activeAnchorRef.current.elapsedSeconds +
+      Math.floor((currentMs - activeAnchorRef.current.localTimeMs) / SECOND_MS);
+
+    return Math.max(absoluteElapsedSeconds, anchoredElapsedSeconds);
+  };
 
   // ★ P1：active 卡订阅共享 ticker；非 active 卡订阅 noop+常量快照（不重渲染、不占 ticker）
   const tick = useSyncExternalStore(
