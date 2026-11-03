@@ -17,10 +17,10 @@ function isAbsoluteLocalPath(candidate: string): boolean {
 
 /**
  * 把本地绝对路径转换为 file:// URL。
- * - 仅接受绝对路径：相对路径不按主进程 CWD resolve（R5③ 修复，避免解析出错误绝对路径），记录警告并返回 null。
+ * - 仅接受绝对路径：相对路径不按主进程 CWD resolve，记录警告并返回 null。
  * - 绝对路径经 path.resolve() 规范化后调用 pathToFileURL（Node 标准库），
  *   保证 Windows 盘符、空格、中文等转义正确。
- * - 解析失败时返回 null（与 E:\ai_fr buildUserOutputStaticUrl 行为一致）。
+ * - 解析失败时返回 null（与 E:\buildUserOutputStaticUrl 行为一致）。
  * @param absolutePath 本地绝对路径字符串
  * @returns file:// URL 字符串；相对路径或解析失败返回 null
  */

@@ -1,9 +1,9 @@
 /**
- * smtp-client — 纯 Node.js SMTP 发送模块（阶段4 发送侧第一阶段）
+ * smtp-client — 纯 Node.js SMTP 发送模块（）
  *
  * 设计约束：
  * - 零新增 npm 依赖：只使用 node:tls / node:crypto / node:os / node:string_decoder 等内置模块；
- * - 支持两种加密方式（阶段7 目标3：自定义邮箱 provider 需要的加密取舍）：
+ * - 支持两种加密方式（自定义邮箱 provider 需要的加密取舍）：
  *   'ssl'（默认，465 隐式 TLS：tls.connect，rejectUnauthorized: true，servername = host）与
  *   'starttls'（明文建连 → EHLO → STARTTLS → 同 socket 升级 TLS → 再 EHLO，拒绝明文凭据）；
  * - 命令序列：EHLO → AUTH LOGIN（base64 用户名、base64 授权码）→ MAIL FROM →
@@ -114,10 +114,10 @@ export interface MimeMessageResult {
 const DEFAULT_TIMEOUT_MS = 90_000;
 
 /**
- * 进程级默认加密方式（阶段7 目标3 的发信侧 provider 接缝）：
+ * 进程级默认加密方式（ 目标3 的发信侧 provider 接缝）：
  * 值守服务在每次解析邮箱端点时调用 setDefaultSmtpEncryption()，使「未显式传 encryption」
  * 的既有调用方（send_email 工具，本轮改动白名单之外）自动跟随当前邮箱类型；
- * 未注入前恒为 'ssl'，与阶段4~6 的 465 隐式 TLS 行为逐字节一致。
+ * 未注入前恒为 'ssl'，与~6 的 465 隐式 TLS 行为逐字节一致。
  */
 let defaultSmtpEncryption: 'ssl' | 'starttls' = 'ssl';
 

@@ -1,7 +1,7 @@
 /**
- * mail-provider — 邮箱服务商抽象（阶段7 目标3）
+ * mail-provider — 邮箱服务商抽象
  *
- * 背景（阶段2~6 的硬编码事实）：
+ * 背景（~6 的硬编码事实）：
  * - 收信端口径把 QQ 端点写死在 mail-bridge（imap.qq.com:993 / smtp.qq.com:465），
  *   发信端口径写死在 watch-service 的回执发送参数里；
  * - 前端【其他设置】没有任何邮箱类型选择项，只能用于 QQ 邮箱。
@@ -50,7 +50,7 @@ export interface MailProviderDefinition {
   fixedEndpoints: { imap: MailEndpoint; smtp: MailEndpoint } | null;
 }
 
-/** QQ 邮箱（阶段2~6 全部实测结论的载体：993 隐式 TLS / 465 隐式 TLS / AUTH LOGIN） */
+/** QQ 邮箱（~6 全部实测结论的载体：993 隐式 TLS / 465 隐式 TLS / AUTH LOGIN） */
 export const QQ_MAIL_PROVIDER: MailProviderDefinition = {
   id: 'qq',
   label: 'QQ邮箱',
@@ -130,7 +130,7 @@ export function isEndpointUsable(endpoint: MailEndpoint): boolean {
 
 /**
  * 解析生效端点（**收信与发信的唯一端点来源**）。
- * - 'qq'：返回内置常量（与阶段2~6 实测完全一致，行为等价）；
+ * - 'qq'：返回内置常量（与~6 实测完全一致，行为等价）；
  * - 'custom'：读 mailCustomImap 前缀与 mailCustomSmtp 前缀共六个键，逐项归一（host 清洗、port 夹紧、
  *   encryption 归一），不在此处校验必填（校验交给 validateMailEndpoints，便于前端逐字段提示）。
  */

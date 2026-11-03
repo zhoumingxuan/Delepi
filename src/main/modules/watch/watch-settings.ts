@@ -1,5 +1,5 @@
 /**
- * 值守模式配置读取侧归一化（阶段1）
+ * 值守模式配置读取侧归一化
  *
  * 背景：config-manager.reload() 的合并规则为——键不在 DEFAULT_APP_SETTINGS 白名单则静默丢弃；
  * 空字符串被过滤但 false 与 0 不被过滤。因此 watchPollIntervalMinutes=0/非整数等非法值会

@@ -11,4 +11,4 @@ export const HARDCODED_CONFIG: HardcodedConfig = {
 };
 
 /** 默认最大 Token 数 */
-export const DEFAULT_MAX_TOKENS = 16384;
+export const DEFAULT_MAX_TOKENS = 32768;

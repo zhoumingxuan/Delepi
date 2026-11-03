@@ -1,7 +1,7 @@
 /**
- * command-parser — 值守指令邮件解析（阶段5：命令行风格主协议 + 旧 JSON 围栏兼容）
+ * command-parser — 值守指令邮件解析（命令行风格主协议 + 旧 JSON 围栏兼容）
  *
- * 协议总览（正文纯文本，逐行扫描；阶段7 目标4：新增显式 `--type`，并让「只带 --message」新建对话）：
+ * 协议总览（正文纯文本，逐行扫描；显式 `--type`，「只带 --message」即新建对话）：
  * - 查询指令：`--type list`（或旧写法行首 `--list`），可带 `--limit <1-50>`（缺省 20）
  * - 已有对话发消息：`--type send`（可省略）+ `--conversation <编号>` 或 `--conversation-id <UUID>`
  *   + `--message <内容>`
@@ -12,7 +12,7 @@
  * 类型判定顺序（消除参数组合歧义）：
  * 1) 显式 `--type` 优先（list / send / new，兼容 list_conversations / send_message / new_conversation 别名）；
  * 2) 未写 `--type` 时按旧参数组合推断：`--list` → list；`--message` + 会话引用 → send；
- *    仅 `--message`（无会话引用）→ new（阶段7 新增语义，旧版此处报 ERR_WATCH_NO_COMMAND_BLOCK）；
+ *    仅 `--message`（无会话引用）→ new；
  * 3) 矛盾组合（如 `--type new` 同时带 `--conversation`）一律 ERR_WATCH_FIELD_INVALID，不做猜测。
  *
  * 解析规则：
@@ -26,7 +26,7 @@
  * - 必须命中 `--list` 或（`--conversation`/`--conversation-id` 且 `--message`），
  *   否则返回 ERR_WATCH_NO_COMMAND_BLOCK
  * - 旧 JSON 围栏（```delepi-command 或整段 JSON）继续兼容，映射到同一命令模型
- *   （command 取值同样接受 list / send / new 及其全名别名，阶段7 起含 new_conversation）；
+ *   （command 取值同样接受 list / send / new 及其全名别名，含 new_conversation）；
  *   list_conversations 的 limit 保留 1-50 校验；send_message 的 conversation_id
  *   为 36 字符 UUID 时 kind='id'，否则按编号解析规则处理
  *
@@ -35,7 +35,7 @@
  * - requestId 会进入邮件头 X-Delepi-Command-Id，字符集因此限制为 [A-Za-z0-9_-]（防头注入）
  */
 
-/** 正文长度硬上限（防御性上限，与历史实现一致） */
+/** 正文长度硬上限（防御性上限） */
 export const WATCH_COMMAND_BODY_MAX_CHARS = 20_000;
 
 /** `--list` 缺省返回条数 */
@@ -62,7 +62,7 @@ export interface SendMessageCommand {
 }
 
 /**
- * 新建对话并发消息（阶段7 目标4②）：只带 `--message`（不带会话引用）即走本指令。
+ * 新建对话并发消息：只带 `--message`（不带会话引用）即走本指令。
  * 服务端会 createConversation() 新建会话，再在该新会话内注入 message。
  */
 export interface NewConversationCommand {
@@ -114,14 +114,14 @@ const FENCE_TEST_RE = /```delepi-command/i;
 /** 围栏块提取 */
 const FENCE_BLOCK_RE = /```delepi-command\s*([\s\S]*?)```/i;
 
-/** 已知参数名（小写）；type 为阶段7 新增的显式指令类型 */
+/** 已知参数名（小写）；type 为显式指令类型 */
 const KNOWN_KEYS = new Set(['list', 'limit', 'conversation', 'conversation-id', 'message', 'request', 'type']);
 
 /** 显式指令类型（归一后的三值） */
 type ExplicitCommandType = 'list' | 'send' | 'new';
 
 /**
- * `--type` 取值归一（大小写不敏感；同时接受 snake_case 全名，方便旧用户迁移）：
+ * `--type` 取值归一（大小写不敏感；同时接受 snake_case 全名）：
  * - list / list_conversations / list-conversations → 'list'
  * - send / send_message / send-message             → 'send'
  * - new / new_conversation / new-conversation      → 'new'
@@ -342,7 +342,7 @@ function parseCliParams(scan: ScanResult): WatchParseResult {
       warnings.push(`未知参数已忽略：--${param.rawKey}`);
       continue;
     }
-    // D1 修复：重复参数取「第一次出现的值」——用户回复回执邮件时手写指令行位于引用原文
+    // 重复参数取「第一次出现的值」——用户回复回执邮件时手写指令行位于引用原文
     // （含回执 HTML 示例指令行）之前，先出现者即用户真实意图；后出现的示例行不得覆盖取值
     if (byKey.has(param.key)) {
       warnings.push(`参数重复，取第一次出现的值：--${param.rawKey}`);
@@ -363,7 +363,7 @@ function parseCliParams(scan: ScanResult): WatchParseResult {
   const conversationIdParam = byKey.get('conversation-id');
   const messageParam = byKey.get('message');
 
-  // ---- 类型判定：显式 --type 优先，缺省按参数组合推断（阶段7 目标4①）----
+  // ---- 类型判定：显式 --type 优先，缺省按参数组合推断 ----
   const typeParam = byKey.get('type');
   let explicitType: ExplicitCommandType | null = null;
   if (typeParam) {
@@ -501,7 +501,7 @@ function parseCliParams(scan: ScanResult): WatchParseResult {
   return { ok: true, command: { type: 'send_message', requestId, conversationRef, message }, warnings };
 }
 
-/** 旧 JSON 指令对象 → 统一命令模型（阶段2 协议兼容） */
+/** 旧 JSON 指令对象 → 统一命令模型（协议兼容） */
 function mapLegacyJsonObject(obj: Record<string, unknown>, baseWarnings: string[]): WatchParseResult {
   const warnings = [...baseWarnings];
 
@@ -512,7 +512,7 @@ function mapLegacyJsonObject(obj: Record<string, unknown>, baseWarnings: string[
   if (typeof command !== 'string') {
     return fail('ERR_WATCH_FIELD_INVALID', '字段非法：command 必须为字符串');
   }
-  // 旧 JSON 的 command 取值同样接受阶段7 的三种归一（含 new_conversation）
+  // 旧 JSON 的 command 取值同样接受三种归一（含 new_conversation）
   const normalizedCommand = normalizeCommandType(command);
   if (!normalizedCommand) {
     return fail('ERR_WATCH_COMMAND_UNKNOWN', `未知指令：${command.slice(0, 40)}`);

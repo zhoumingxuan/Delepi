@@ -215,7 +215,7 @@ async function completeImageInspection(options: {
     signal: options.signal,
     thinking: isGlmModel
       ? { enableThinking: true, reasoningEffort: 'low' }
-      : { enableThinking: false }
+      : undefined
   });
 
   return {

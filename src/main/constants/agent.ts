@@ -147,9 +147,9 @@ export const FILE_URLS_FIELD_NAME = 'can_openfile_url';
 
 // ============================================================
 // 任务类型 / 交付类型 / 技能标签（统一定义）
-// 同步源：E:\ai_fr\lib\tools\main-registry.ts、
-// E:\ai_fr\lib\chat\task-tags.ts、
-// E:\ai_fr\lib\chat\executor-structured-payload.ts
+// 
+
+
 // ============================================================
 
 /** 主智能体可委派的任务类型 */

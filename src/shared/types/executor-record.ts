@@ -1,7 +1,7 @@
 /**
  * 委派任务执行记录——跨进程共享类型（主进程 record-store 与渲染进程 hook 共同 import）
  *
- * 新版设计方案 §3.2/§3.3：
+ *  §3.2/
  * - 显示视图条目（思考 / 工具 / 通知三类，seq 任务内统一单调递增）
  * - 渲染信号载荷（executor:record-signal，极小信号 <200B）
  * - 增量查询响应（executor:get-task-record，sinceSeq 增量 + running 草稿恒返 + reset 兜底）

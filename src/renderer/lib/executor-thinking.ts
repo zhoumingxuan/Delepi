@@ -1,9 +1,9 @@
 /**
  * 子智能体（ExecutorAgent）工具进度模式识别
- * Phase 3 P0-2 适配层：从 ChatMessageContent 提取为公共模块
- * 对齐 E:\ai_fr\components\chat-message-content.tsx L41-45 + L200-228
+ * 从 ChatMessageContent 提取为公共模块
+ * 
  *
- * ★ M15 切分策略统一：value.split(/\n{2,}/)（与主进程 executor-tool-progress.ts splitExecutorIntermediate
+ * 切分策略统一：value.split(/\n{2,}/)（与主进程 executor-tool-progress.ts splitExecutorIntermediate
  * 完全一致；主进程分类窗已按 \n{2,} 语义标注 type，渲染端统一后与主进程分类逐段一致）
  * 任务验收用例：
  *   输入 "思考内容1\n正在调用read_file工具...\n思考内容2\nread_file工具完成，继续处理..."
@@ -29,8 +29,8 @@ import { EXECUTOR_TOOL_PROGRESS_PATTERNS, isExecutorToolProgressText } from '@sh
 //   尾段以原文留存（不做 trim），仅输出时 trim——保证跨增量追加的字符串拼接无字符丢失
 //   （尾随空白+后续增量场景与全量版逐字一致）。
 //
-// 正确性闸门：输入必须以已处理前缀为前缀（流式追加语义）；否则（M14 accumulated 全量
-//   覆盖 / M13 重试复位回退 / 刷新后快照重建）前缀失配 → 全量重算重建缓存，
+// 正确性闸门：输入必须以已处理前缀为前缀（流式追加语义）；否则（accumulated 全量
+//   覆盖 / 重试复位回退 / 刷新后快照重建）前缀失配 → 全量重算重建缓存，
 //   正确性优先于性能。
 // ============================================================
 
@@ -168,7 +168,7 @@ export function splitLoadingToolContentCached(cacheKey: string, value: string): 
 
 /**
  * ★ P04 latestToolProgressText 增量缓存版（与 splitLoadingToolContentCached 共享同一缓存条目）
- * @returns 最后一条非空进度行；无进度行时返回 ''（与已移除的全量版逐字等价；原实现：progress.split 滤空取末行，行为由本函数保持）
+ * @returns 最后一条非空进度行；无进度行时返回 ''
  */
 export function latestToolProgressTextCached(cacheKey: string, value: string): string {
   const { progress } = splitLoadingToolContentCached(cacheKey, value);

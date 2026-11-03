@@ -1,10 +1,9 @@
 /**
- * 流式中 Assistant 消息内存 Map（P1-C3）
+ * 流式中 Assistant 消息内存 Map
  *
  * 作用：保存当前正在流式生成的 Assistant 消息，避免 conv:get-messages 时丢失
  * 正在累积但尚未落库的 assistant 消息
  *
- * 对齐 E:\ai_fr stream/route.ts 中 tool.message.snapshot + 内存累积
  * 本项目侧实现：
  * - key：conversationId（一个会话同时只允许一个正在流式生成的 assistant 消息）
  * - value：当前正在流式累积的 ChatMessage 副本
@@ -20,7 +19,7 @@
  */
 
 /**
- * 流式 Assistant 消息本地简化类型（P1-C3）
+ * 流式 Assistant 消息本地简化类型
  * 与 renderer ChatMessage 结构兼容：
  * - id / role / content / thinking / toolCalls / status / createdAt
  * - main 进程只需这些字段做内存 Map + 序列化传给 IPC
@@ -50,6 +49,22 @@ export interface RunningAssistantMessage {
     | { id: string; type: 'reasoning'; text: string }
     | { id: string; type: 'tool_call'; toolCallId: string }
   >;
+  /** 执行中非委派直调工具调用占位（批次收口与 finally 清除；undefined/[] = 无执行中占位） */
+  runningToolPlaceholders?: RunningToolPlaceholder[];
+}
+
+/**
+ * 执行中非委派工具调用占位（寄生在流式 Assistant 消息快照条目上；纯内存，不持久化）
+ */
+export interface RunningToolPlaceholder {
+  /** 工具调用 ID（渲染端占位 id = `running-tool:` + callId 的推导依据） */
+  callId: string;
+  /** 工具名（如 fs_list / read_file） */
+  name: string;
+  /** 原始参数 JSON 字符串 */
+  arguments: string;
+  /** 工具启动时刻（ISO；占位计时起点） */
+  startedAt: string;
 }
 
 /**
@@ -107,4 +122,43 @@ export function getRunningAssistantMessage(
  */
 export function deleteRunningAssistantMessage(conversationId: string): void {
   runningAssistantMessages.delete(conversationId);
+}
+
+/**
+ * 登记（upsert）指定会话快照条目的一个执行中工具调用占位
+ * @param conversationId 会话 ID
+ * @param placeholder 占位项
+ */
+export function registerRunningToolPlaceholder(
+  conversationId: string,
+  placeholder: RunningToolPlaceholder,
+): void {
+  const existing = runningAssistantMessages.get(conversationId);
+  if (!existing) {
+    return;
+  }
+  const current = existing.runningToolPlaceholders ?? [];
+  const hitIndex = current.findIndex((item) => item.callId === placeholder.callId);
+  const next = hitIndex !== -1
+    ? current.map((item, index) => (index === hitIndex ? placeholder : item))
+    : [...current, placeholder];
+  runningAssistantMessages.set(conversationId, {
+    ...existing,
+    runningToolPlaceholders: next,
+  });
+}
+
+/**
+ * 清除指定会话快照条目的全部执行中工具调用占位（批次级全清，幂等）
+ * @param conversationId 会话 ID
+ */
+export function clearRunningToolPlaceholders(conversationId: string): void {
+  const existing = runningAssistantMessages.get(conversationId);
+  if (!existing || existing.runningToolPlaceholders === undefined) {
+    return;
+  }
+  runningAssistantMessages.set(conversationId, {
+    ...existing,
+    runningToolPlaceholders: [],
+  });
 }

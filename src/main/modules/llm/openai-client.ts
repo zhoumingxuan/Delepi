@@ -1,8 +1,8 @@
 /**
  * LLMProvider - OpenAI 兼容客户端
  *
- * 服务于 MainAgent（流式 streamChat）和所有非流式调用方（nonStreamChat）
- * 包括 ExecutorAgent、title-generation、context-compression、inspect-media
+ * 服务于 MainAgent、ExecutorAgent（流式 streamChat）和辅助非流式调用方（nonStreamChat/nonStreamChatNoRetry）
+ * 非流式调用方仅 title-generation、context-compression、inspect-media
  * 封装 OpenAI 兼容 SDK，集成重试策略和 SSE 解析。
  *
  * 设计原则（v1.2）：
@@ -50,7 +50,7 @@ export interface StreamChatOptions {
    */
   thinking?: ThinkingIntent;
   /**
-   * ★ M12 重试回调重置协议（可选）：底层 runModelApiWithRetry 即将重放 streamChatOnce 前触发
+   * 重试回调重置协议（可选）：底层 runModelApiWithRetry 即将重放 streamChatOnce 前触发
    *   （retryCount += 1 之后、sleepBeforeRetry 之前），消费者据此复位已累积的增量态
    */
   onStreamRetry?: () => void;
@@ -61,7 +61,7 @@ export interface StreamChatOptions {
  * - 不传（undefined）：零思考参数（请求不携带任何思考键）——标题生成等辅助调用点
  * - { reasoningEffort: string }：主/子智能体（档位分别读 AppSettings.mainThinkingLevel / executorThinkingLevel，空串=不设置）
  * - { enableThinking: true }：上下文压缩/视觉识别·glm*（glm 判定在调用点）
- * - { enableThinking: false }：上下文压缩/视觉识别·非 glm*
+ * - { enableThinking: false }：当前无调用点使用（非 glm 分支已改为不传 thinking；联合成员保留）
  * 翻译收口：本文件 buildThinkingParams（enableThinking→enable_thinking；reasoningEffort 非空→reasoning_effort，空串/未传彻底不写）
  */
 export type ThinkingIntent =
@@ -251,7 +251,7 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
   let reasoning = '';
   const toolCalls: StreamToolCall[] = [];
   let finishReason: string | null = null;
-  let lastEmittedFinishReason: string | null = null;  // ★ Phase 3 P3-7 跟踪上次推送的 finishReason,仅在新值时触发 onChunk
+  let lastEmittedFinishReason: string | null = null;  // ★ 跟踪上次推送的 finishReason,仅在新值时触发 onChunk
   let lastPacketModel = options.modelConfig.model;
 
   for await (const packet of stream) {
@@ -302,9 +302,9 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
             continue;
           }
 
-          // ★ M20 tool_calls 碎片合并加固·三级索引解析：
+          // tool_calls 碎片合并·三级索引解析：
           //   显式 index > 按 chunk.id 匹配既有条目 > 追加新条目
-          //   （修复无 index 的同 id 续片以 toolCalls.length 为下标被拆成多条独立 tool_call）
+          //   （避免无 index 的同 id 续片以 toolCalls.length 为下标被拆成多条独立 tool_call）
           let index =
             'index' in chunk && typeof chunk.index === 'number'
               ? chunk.index
@@ -350,10 +350,9 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
         finishReason = choice.finish_reason;
       }
 
-      // ★ finishReason 变化时也要触发 onChunk 回调
-      //   原实现：仅当 changed=true(文本/推理/工具增量)时触发,finishReason 单独变化时丢失推送
-      //   影响：main-agent 无法通过 onChunk 收到 finishReason,需依赖 streamResult.finishReason 间接获取
-      //   修复：finishReason 从 lastEmittedFinishReason 变化时也触发回调,确保 finishReason 状态对前端可达
+      // finishReason 变化时也触发 onChunk 回调：若仅在 changed=true(文本/推理/工具增量)时触发,
+      //   finishReason 单独变化时会丢失推送,main-agent 需依赖 streamResult.finishReason 间接获取——
+      //   finishReason 从 lastEmittedFinishReason 变化时也触发回调,确保 finishReason 状态对前端可达
       const finishReasonChanged = finishReason !== lastEmittedFinishReason;
 
       // 触发回调
@@ -423,13 +422,13 @@ export async function streamChat(
 ): Promise<StreamChatResult> {
   return runModelApiWithRetry(() => streamChatOnce(options), {
     signal: options.signal,
-    // ★ M12：重试边界回调接线（onRetry → onStreamRetry 透传给调用方）
+    // 重试边界回调接线（onRetry → onStreamRetry 透传给调用方）
     onRetry: () => options.onStreamRetry?.(),
   });
 }
 
 // ============================================================
-// 非流式调用（ExecutorAgent、title-generation、context-compression、inspect-media 使用）
+// 非流式调用（title-generation、inspect-media 经 nonStreamChat 使用；context-compression 走 nonStreamChatNoRetry；ExecutorAgent 走 streamChat 流式通道）
 // ============================================================
 
 async function nonStreamChatOnce(
@@ -445,12 +444,9 @@ async function nonStreamChatOnce(
     messages: options.messages,
     tools: options.tools?.length ? options.tools : undefined,
     ...thinkingParams,
-    reasoning_split: true,
-    parallel_tool_calls: true,
   } as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming & {
     enable_thinking?: boolean;
     reasoning_effort?: 'minimal' | 'low' | 'medium' | 'high' | 'max';
-    reasoning_split?: boolean;
   };
 
   const completion = await openai.chat.completions.create(requestBody, {
@@ -487,7 +483,7 @@ async function nonStreamChatOnce(
 }
 
 /**
- * 非流式对话（ExecutorAgent、title-generation、context-compression、inspect-media 使用）
+ * 非流式对话（title-generation、inspect-media 使用；ExecutorAgent 走 streamChat 流式通道）
  * 带重试策略的非流式 API 调用
  */
 export async function nonStreamChat(
@@ -496,4 +492,18 @@ export async function nonStreamChat(
   return runModelApiWithRetry(() => nonStreamChatOnce(options), {
     signal: options.signal,
   });
+}
+
+/**
+ * 非流式对话·无重试通道（上下文压缩专用）
+ * 单次直调 nonStreamChatOnce，不经过 runModelApiWithRetry：
+ * 压缩调用失败即终态（由调用方删除记录并记录日志），不做任何 API 级重试，
+ * 待下次对话轮触发阈值时再压缩。
+ * 与 nonStreamChat / streamChat 的重试行为完全隔离，互不影响；
+ * 思考参数仍经 buildThinkingParams 统一收口（nonStreamChatOnce 内部逻辑）。
+ */
+export async function nonStreamChatNoRetry(
+  options: NonStreamChatOptions,
+): Promise<NonStreamChatResult> {
+  return nonStreamChatOnce(options);
 }

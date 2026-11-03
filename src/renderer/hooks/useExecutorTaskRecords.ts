@@ -1,10 +1,10 @@
 /**
- * useExecutorTaskRecords —— executor 任务记录渲染侧唯一数据 hook（新版设计方案 M5 / §3.3 / §7.6）
+ * useExecutorTaskRecords —— executor 任务记录渲染侧唯一数据 hook（）
  *
  * 职责：
  * 1. 订阅 executor:record-signal（经 preload；信号不携带内容）；
  * 2. 按信号增量拉取 executor:get-task-record（per-task in-flight/dirty 补偿 + 200ms 去抖，
- *    模式复刻 useChat 旧信号订阅块的 M13 补偿机件）；
+ *    模式复刻 useChat 旧信号订阅块的 补偿机件）；
  * 3. 本地任务记录视图状态（Record<delegateCallId, ExecutorTaskView>，拉取为准合并：reset 整体替换 /
  *    seq 已存在覆盖 / 不存在按 seq 插入）；
  * 4. 兜底对账：5s 心跳（仅存在 running 任务时拉取）/ 切换会话全量对账 / 窗口 focus 重对账 /
@@ -12,7 +12,7 @@
  * 5. 终态双保险：chat:done 最后一次增量对账（仍 running → completed）；chat:aborted 本地
  *    running 视图收敛 aborted。
  *
- * 思考数据来源唯一性（§1.4）：本 hook 只消费 executor:record-signal / executor:get-task-record，
+ * 思考数据来源唯一性：本 hook 只消费 executor:record-signal / executor:get-task-record，
  * 不订阅 chat:thinking，不读取 message.thinking / message.segments（主智能体链路零交集）。
  */
 
@@ -32,13 +32,13 @@ import type {
 } from '@shared/types/executor-record';
 
 /**
- * 显示侧单点回滚开关（新版方案 §11）：置 false 即整体停用新显示侧
+ * 显示侧单点回滚开关：置 false 即整体停用新显示侧
  * （右栏不挂载、任务卡徽标分支短路回既有渲染）；主进程记录与信号不受影响。
  * 该开关为纯显示开关，非交互功能开关。
  */
 export const EXECUTOR_RECORD_PANEL_ENABLED = true;
 
-/** 信号去抖窗口（对齐旧管道 M13 补偿机件的 200ms 模式） */
+/** 信号去抖窗口（对齐旧管道 补偿机件的 200ms 模式） */
 const SIGNAL_DEBOUNCE_MS = 200;
 /** 心跳对账间隔（仅存在 running 任务时启用） */
 const HEARTBEAT_INTERVAL_MS = 5_000;
@@ -219,7 +219,7 @@ export function useExecutorTaskRecords(options: {
 
       const local = taskViewsRef.current[delegateCallId];
       if (local) {
-        // 乱序守卫（§3.3）：迟到信号（latestSeq 严格更小且状态无新信息）忽略，不触发拉取
+        // 乱序守卫：迟到信号（latestSeq 严格更小且状态无新信息）忽略，不触发拉取
         const staleSignal =
           signal.latestSeq < local.latestSeq ||
           (signal.latestSeq === local.latestSeq &&
@@ -390,7 +390,7 @@ export function useExecutorTaskRecords(options: {
         }
       }
     }
-    // 右栏目标不属于新活跃会话 → 自动关闭（§8.2 切换会话规则）
+    // 右栏目标不属于新活跃会话 → 自动关闭（切换会话规则）
     if (activeDelegateCallId) {
       const activeView = taskViewsRef.current[activeDelegateCallId];
       if (!conversationId || !activeView || activeView.conversationId !== conversationId) {

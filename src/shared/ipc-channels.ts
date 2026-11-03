@@ -34,14 +34,14 @@ export const IPC_CHAT = {
   USER_MESSAGE_CREATED: 'chat:user-message-created',
   /**
    * Assistant 消息三态事件（主→渲染）
-   * Phase 3 P1-2 适配层：
+   *  P1-2 适配层：
    * - STARTED: 初始化 assistant message（status='loading'）
    * - DONE: 标记 status='success' 或 'error'
    * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
    */
   ASSISTANT_STARTED: 'chat:assistant-started',
   ASSISTANT_DONE: 'chat:assistant-done',
-  /** Tool 消息创建事件（主→渲染），对齐 ai_fr tool.message.created */
+  /** Tool 消息创建事件（主→渲染）， */
   TOOL_MESSAGE_CREATED: 'tool.message.created',
   /**
    * 对话被中止事件（主→渲染）
@@ -49,7 +49,7 @@ export const IPC_CHAT = {
    * 用于 markRunningMessagesAborted 归一化（任务记录显示态由 executor:* 新链路独立承载）
    */
   ABORTED: 'chat:aborted',
-  /** 批次完成事件（主→渲染），对齐 ai_fr tool.batch.completed */
+  /** 批次完成事件（主→渲染） */
   TOOL_BATCH_COMPLETED: 'tool.batch.completed',
 } as const;
 
@@ -65,7 +65,7 @@ export const IPC_CONFIG = {
   PROFILES_LIST: 'config:profiles-list',
   /** 另存为模型档案：主进程把当前生效配置快照为新档案，同名覆盖（渲染→主，invoke） */
   PROFILES_SAVE: 'config:profiles-save',
-  /** 删除模型档案；删除当前激活档案时仅清空 activeProfileId，九键保持现状（渲染→主，invoke） */
+  /** 删除模型档案；删除激活方案时激活自动转移至剩余第一个方案并应用其 15 键（事务整体成功或整体回滚）（渲染→主，invoke） */
   PROFILES_DELETE: 'config:profiles-delete',
   /** 切换模型档案：批量写九键+开关/档位（部分失败不回滚），成功后写 activeProfileId（渲染→主，invoke） */
   PROFILES_SWITCH: 'config:profiles-switch',
@@ -101,14 +101,14 @@ export const IPC_CONV = {
 // --- 执行子智能体 IPC 通道 ---
 export const IPC_EXECUTOR = {
   /**
-   * 执行子智能体任务记录渲染信号（主→渲染，新版方案 §5.2-A）
+   * 执行子智能体任务记录渲染信号（主→渲染）
    * 由 executor-task-record-store 内建 200ms leading+trailing 节流发射（终态立即冲刷）；
    * 极小载荷（conversationId/delegateCallId/taskId/latestSeq/status/updatedAt，<200B），
    * 不携带过程内容——渲染端收到信号后按 latestSeq 主动增量拉取 GET_TASK_RECORD。
    */
   RECORD_SIGNAL: 'executor:record-signal',
   /**
-   * 执行子智能体任务记录增量查询（渲染→主，invoke，新版方案 §5.2-B）
+   * 执行子智能体任务记录增量查询（渲染→主，invoke）
    * 请求 { conversationId, delegateCallId, sinceSeq? }（缺省/0=全量）；
    * 返回 ExecutorTaskRecordQueryResult（seq>sinceSeq 条目 ∪ running 草稿恒返 + reset 兜底）。
    * 无 isRunning 门禁（终态记录在轮末清理前均可查，供完成后回看）。
@@ -140,7 +140,7 @@ export const IPC_FILE = {
    * 上传单个文件到对话 uploads 目录（主进程落盘）
    * 参数 FileUploadParams：{ conversationId, name, size, contentType, data: string(Base64) | ArrayBuffer | Uint8Array | number[] }
    * 返回 FileUploadResult：{ file: ChatUploadedFile }
-   * 对齐 E:\ai_fr app/api/uploads/route.ts POST（去除鉴权层）
+   * ）
    * - H1 防御：data 优先为 Base64 字符串（IPC 结构化克隆纯字符串传输，规避 ArrayBuffer 序列化断点），
    *   主进程 fileInputToBuffer 同时兼容 Base64 string 与 ArrayBuffer/Uint8Array/number[]（向后兼容）
    * - R5：入口校验 conversationId 非空、name 非空、data 非空；整体 try/catch，
@@ -153,7 +153,7 @@ export const IPC_FILE = {
    * 列出对话 uploads 目录下的所有已上传文件
    * 参数 FileListParams：{ conversationId }
    * 返回 FileListResult：{ files: ChatUploadedFile[] }
-   * 对齐 E:\ai_fr app/api/uploads/route.ts GET（仅列清单部分，不含流式回传）
+   * ）
    * - 扫描 conversations/{conversationId}/uploads/ 目录
    * - 过滤 .json manifest 文件，仅返回实际文件条目
    * - 按文件名解析 {fileId}-{name}.{ext}，从 stat 读取 size/mtime
@@ -163,7 +163,7 @@ export const IPC_FILE = {
    * 删除已上传的单个文件（磁盘 + manifest 一并清理）
    * 参数 FileDeleteParams：{ conversationId, storageKey }
    * 返回 FileDeleteResult：{ success: boolean }
-   * 对齐 E:\ai_fr app/api/uploads/route.ts DELETE（去除鉴权层）
+   * ）
    * - 校验 storageKey 前缀属于当前 conversationId 的 uploads/（防止越权删除）
    * - rm(filePath, force) + rm(metaPath, force)
    */
@@ -172,7 +172,7 @@ export const IPC_FILE = {
    * 读取已上传文件的二进制内容（用于 P7 切换会话时重建 ObjectURL 预览）
    * 参数 FileReadParams：{ conversationId, storageKey }
    * 返回 FileReadResult：{ data: ArrayBuffer, contentType: string, name: string, size: number }
-   * 对齐 E:\ai_fr components/chat-shell.tsx createRemoteUploadedFile (HTTP blob fetch)
+   * 
    * 适配 Delepi 客户端:无 static token 鉴权,直接通过 IPC 读取已上传文件到 ArrayBuffer
    * - 校验 storageKey 前缀属于当前 conversationId 的 uploads/(防越权读取)
    * - 主进程用 readFile 读取磁盘内容,IPC 序列化 ArrayBuffer 回前端
@@ -227,7 +227,7 @@ export const IPC_LOG = {
    * 渲染端日志转发（渲染→主，invoke）
    * 参数：{ level: 'INFO' | 'WARN' | 'ERROR', stage: string, message: string, err?: { message, stack } }
    * 主进程写入 userData/logs/main.log 持久日志（writeMainLog）
-   * R3 修复：渲染端上传失败等异常不再止于 console.error（打包版不可见），统一落主进程持久日志
+   * 渲染端上传失败等异常不再止于 console.error（打包版不可见），统一落主进程持久日志
    */
   RENDERER: 'log:renderer',
 } as const;
@@ -238,12 +238,12 @@ export const IPC_DIALOG = {
   SHOW_OPEN: 'dialog:show-open',
 } as const;
 
-// --- 值守模式 IPC 通道（阶段1：服务骨架，零网络；preload 暴露随阶段2开放） ---
+// --- 值守模式 IPC 通道（：服务骨架，零网络；preload 暴露随开放） ---
 export const IPC_WATCH = {
   /**
    * 开启值守（渲染→主，invoke）
-   * 阶段1：开关在界面置灰，主进程侧为 stub（本地归一化 → 凭据自检 stub → 恒回落关闭）
-   * 阶段2：前置校验 + IMAP/SMTP 真实自检 + 时间游标基线 + 启动轮询；自检在途期间被
+   * ：开关在界面置灰，主进程侧为 stub（本地归一化 → 凭据自检 stub → 恒回落关闭）
+   * ：前置校验 + IMAP/SMTP 真实自检 + 时间游标基线 + 启动轮询；自检在途期间被
    * watch:stop / 应用退出关闭的开启事务经世代化作废（不复活、不写任何终态）
    */
   START: 'watch:start',
@@ -255,7 +255,7 @@ export const IPC_WATCH = {
   STOP: 'watch:stop',
   /**
    * 查询值守运行状态（渲染→主，invoke）
-   * 返回 { status: 'closed'|'starting'|'running'|'suspended', enabled }；阶段1 status 恒 closed
+   * 返回 { status: 'closed'|'starting'|'running'|'suspended', enabled }； status 恒 closed
    */
   STATUS: 'watch:status',
   /**

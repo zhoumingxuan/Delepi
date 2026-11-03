@@ -1,8 +1,8 @@
 /**
  * Sidebar 侧边栏组件
- * 对齐 ai-client Sidebar.tsx 结构
+ * 
  *
- * Phase 1 样式基础：
+ *  样式基础：
  * - 使用 antd theme.useToken() 引用 token
  * - 删除对 var(--color-accent) 的依赖
  */
@@ -54,7 +54,7 @@ interface SidebarProps {
 }
 
 /**
- * 按日期分组（对齐 ai-client conversationGroupByDate）
+ * 按日期分组（）
  */
 function conversationGroupByDate(isoDate: string): string {
   const input = new Date(isoDate);

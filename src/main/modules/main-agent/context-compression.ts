@@ -1,12 +1,12 @@
 /**
  * 上下文压缩模块
- * 100%复用自参考项目 E:\ai_fr
+ * 
  * 适配：import 路径、configManager
  */
 
 import type OpenAI from 'openai';
 import { buildMainAgentTextContent } from './main-agent-message-content';
-import { nonStreamChat, type ModelConfig } from '../llm/openai-client';
+import { nonStreamChatNoRetry, type ModelConfig } from '../llm/openai-client';
 
 function buildContextCompressionInstruction(): string {
   return `
@@ -70,6 +70,7 @@ export async function compressMessagesToContext(
   messages: readonly OpenAI.Chat.ChatCompletionMessageParam[],
   modelConfig: ModelConfig,
   multimodalEnabled: boolean,
+  signal?: AbortSignal,
 ): Promise<string> {
   const requestMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     ...messages.filter((m) => m.role !== 'system'),
@@ -81,14 +82,15 @@ export async function compressMessagesToContext(
       ),
     },
   ];
-  // glm 判定不区分大小写（机制基准 ai_fr）；条件式归调用点侧，封装层不感知模型名
+  // glm 判定不区分大小写；条件式归调用点侧，封装层不感知模型名
   const isGlmModel = modelConfig.model.toLowerCase().startsWith('glm');
-  const result = await nonStreamChat({
+  const result = await nonStreamChatNoRetry({
     modelConfig,
     messages: requestMessages,
+    signal,
     thinking: isGlmModel
       ? { enableThinking: true, reasoningEffort: 'low' }
-      : { enableThinking: false }
+      : undefined
   });
   return extractText(result.content);
 }
@@ -124,6 +126,7 @@ export async function compressMessagesToContextWithInstruction(
   modelConfig: ModelConfig,
   multimodalEnabled: boolean,
   instruction: string,
+  signal?: AbortSignal,
 ): Promise<string> {
   const requestMessages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     ...messages.filter((m) => m.role !== 'system'),
@@ -135,14 +138,15 @@ export async function compressMessagesToContextWithInstruction(
       ),
     },
   ];
-  // glm 判定不区分大小写（机制基准 ai_fr）；条件式归调用点侧，封装层不感知模型名
+  // glm 判定不区分大小写；条件式归调用点侧，封装层不感知模型名
   const isGlmModel = modelConfig.model.toLowerCase().startsWith('glm');
-  const result = await nonStreamChat({
+  const result = await nonStreamChatNoRetry({
     modelConfig,
     messages: requestMessages,
+    signal,
     thinking: isGlmModel
       ? { enableThinking: true, reasoningEffort: 'low' }
-      : { enableThinking: false }
+      : undefined
   });
   return extractText(result.content);
 }

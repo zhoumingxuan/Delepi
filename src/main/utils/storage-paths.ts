@@ -86,7 +86,7 @@ export function buildConversationUploadStorageKey(
 
 /**
  * 判断目标路径是否位于指定目录内(防止越权删除/越权读取)
- * 镜像 E:\ai_fr lib/utils/storage-paths.ts isPathInsideDir
+ * 
  * - 用 path.resolve 规范化两端
  * - targetPath 必须严格位于 rootDir 之内(不等于 rootDir)
  */

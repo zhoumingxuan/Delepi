@@ -1,7 +1,7 @@
 /**
  * 文件 MIME 类型探测工具
  *
- * 从 E:\ai_fr\lib\utils\file-mime.ts 复制实现,适配 Delepi 客户端:
+ * 
  * - 放在 src/shared/utils 目录,供主进程和渲染进程共享使用
  * - IMAGE_SIGNATURES + detectImageContentTypeFromBytes 也放在本文件
  *   (供主进程和渲染进程共用)
@@ -134,7 +134,7 @@ export const CONTENT_TYPE_BY_EXTENSION: Record<string, string> = {
 
 /**
  * 图片字节签名表 - 按 magic number 探测图片类型
- * 对齐 E:\ai_fr 的图片字节签名判断
+ * 
  * - png: 89 50 4E 47 0D 0A 1A 0A (8 字节 PNG magic)
  * - jpeg: FF D8 FF (3 字节 JPEG SOI + marker)
  * - gif: GIF87a / GIF89a (6 字节 ASCII)

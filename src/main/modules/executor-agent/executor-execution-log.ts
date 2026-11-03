@@ -84,12 +84,12 @@ export function setExecutionLogStructuredOutput(
 }
 
 /**
- * 附加（流式化日志粒度声明）：
+ * 日志粒度声明：
  * 执行日志按「任务级最终态」记录——toolCalls 状态机（calling→completed/failed）、
  * finalStructuredOutput、finalResult、errors 均为任务收口时一次性写入
  * （attachExecutionLogPathToResult 唯一出口）；thinking 流式增量推送
- * 不进入本日志、不逐 delta 刷写——思考增量的持久化由 main-agent 侧
- * snapshot.json（thinking 字段随 sendToolSnapshot 覆盖式全量写入）承担。
+ * 不进入本日志、不逐 delta 刷写——思考增量由 executor-task-record-store
+ * 内存记录承载（executor:record-signal 信号驱动渲染端增量拉取），不单独落盘。
  */
 async function writeExecutorExecutionLog(
   log: ExecutorExecutionLog,

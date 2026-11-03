@@ -1,10 +1,10 @@
 /**
- * watch-runtime-flag — 值守运行态标志与值守指令上下文类型（阶段3）
+ * watch-runtime-flag — 值守运行态标志与值守指令上下文类型
  *
- * 职责（v3 §11 原定 watch-runtime-flag.ts，无依赖纯状态/类型模块）：
+ * 职责（ 原定 watch-runtime-flag.ts，无依赖纯状态/类型模块）：
  * - 运行态标志：watch-service 在自检通过/关闭回落时置位与清零；
  *   send-email.ts 执行体经 isWatchRuntimeRunning() 做执行层拦截
- *   （值守未运行 → TOOL_DISABLED_WATCH_OFF，v3 §8.5）；声明层装配判定同源
+ *   （值守未运行 → TOOL_DISABLED_WATCH_OFF，）；声明层装配判定同源
  *   （prompt.ts buildMainTools 以本标志为唯一判定源）。
  *   独立成模块的原因：send-email.ts 不得反向依赖 watch-service
  *   （watch-service → conversation-send-service → runMainAgent → send-email 已成链，

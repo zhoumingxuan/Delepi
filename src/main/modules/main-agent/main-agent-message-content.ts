@@ -1,6 +1,6 @@
 /**
  * 主智能体消息内容构建器
- * 100%复用自参考项目 E:\ai_fr
+ * 
  */
 
 import OpenAI from 'openai';

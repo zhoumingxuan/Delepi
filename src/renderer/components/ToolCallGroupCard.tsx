@@ -1,5 +1,5 @@
 /**
- * ToolCallGroupCard —— 小工具调用折叠分组容器（视觉方案 §2：多小工具调用折叠聚合）
+ * ToolCallGroupCard —— 小工具调用折叠分组容器（多小工具调用折叠聚合）
  *
  * 用途：主智能体单轮内连续 ≥1 个【小工具】调用（tool 消息、非委派）在渲染层聚合为
  *   单一分组容器；折叠态=单行组头（状态图标 + 「工具调用」 + 按工具分项统计 + 展开箭头）；
@@ -160,21 +160,6 @@ export const ToolCallGroupCard = memo(function ToolCallGroupCard({
               executorPanel={executorPanel}
             />
           ))}
-        </div>
-      ) : userToggled === false ? (
-        <div className="chat-tool-group-body">
-          {/* 收起态占位（真实文本节点，非隐藏手段）：每个子工具一行显示名，复用组头 stats 次级文本样式与组头标题区分 */}
-          {messages.map((message) => {
-            const toolName = message.toolCall?.name?.trim();
-            const displayName = toolName
-              ? resolveToolDisplayName(toolName, toolSummaries)
-              : '未知工具';
-            return (
-              <div key={message.id} className="chat-tool-group-stats">
-                {displayName}
-              </div>
-            );
-          })}
         </div>
       ) : null}
     </div>

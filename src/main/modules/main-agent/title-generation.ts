@@ -1,10 +1,10 @@
 /**
  * 对话标题生成模块
- * 适配自参考项目 E:\\ai_fr\\lib\\chat\\openai.ts generateConversationTitle
+ * 
  * 适配：
  *   1. 使用本项目的 ModelConfig 接口（baseUrl/apiKey/model）
  *   2. 简化版：不支持多模态附件（local 模式）
- *   3. title 输出严格遵循 E:\\ai_fr 的 "你是会话标题生成器" prompt 规范
+ *   3. title 输出严格遵循 "你是会话标题生成器" prompt 规范
  */
 
 import { MAX_CONVERSATION_TITLE_LENGTH } from '../../constants';
@@ -14,7 +14,7 @@ import { buildMainAgentTitleUserContent } from './main-agent-message-content';
 
 /**
  * 从原始字符串中提取 JSON 中的 title 字段
- * 适配自 E:\\ai_fr\\lib\\chat\\openai.ts extractConversationTitleFromJson
+ * 
  */
 function extractConversationTitleFromJson(raw: string): string {
   const start = raw.indexOf('{');
@@ -41,7 +41,7 @@ function extractConversationTitleFromJson(raw: string): string {
 
 /**
  * 截断/清理标题为合理长度
- * 适配自 E:\\ai_fr\\lib\\utils.ts truncateConversationTitle
+ * 
  *   - 提取首行非空内容
  *   - 合并多余空白
  *   - 超出 maxLength 截断并加省略号
@@ -70,7 +70,7 @@ export function truncateConversationTitle(text: string, maxLength = MAX_CONVERSA
  * 生成对话标题
  * - 调用 LLM 非流式生成
  * - 失败 fallback 到 DEFAULT_CONVERSATION_TITLE
- * - prompt 与 E:\\ai_fr 完全一致：\"你是会话标题生成器\"
+ * - prompt 
  *
  * @param options.modelConfig - 主模型配置
  * @param options.userMessage - 用户首轮输入（用于生成标题）

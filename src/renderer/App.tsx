@@ -2,9 +2,9 @@
  * 根组件
  * 整合 ChatShell + 单主题 ConfigProvider
  *
- * Phase 1 样式基础：
+ *  样式基础：
  * - 单主题 token 体系（沿用 operation_strategy.md 第 4.2/4.3 节）
- * - 删除双主题切换（Phase 6 完整执行主题移除，本阶段先做基础清理）
+ * - 删除双主题切换（ 完整执行主题移除，本阶段先做基础清理）
  */
 
 import { ConfigProvider, App as AntApp, theme } from 'antd';

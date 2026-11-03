@@ -38,7 +38,7 @@ export type StreamStatus =
   | 'abort';
 
 /**
- * 最小 StreamMessage 结构（对齐 ai_fr lib/types/chat.ts StreamMessage）
+ * 最小 StreamMessage 结构（）
  * 用于 executor snapshot 读取端 / 前端消费统一：
  * - 读取端 ipc-handlers.ts isSnapshotMessage 守卫
  * - 前端 useChat.ts snapshotMessageToToolSnapshot 消费

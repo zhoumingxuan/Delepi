@@ -1,5 +1,5 @@
 /**
- * imap-client — 纯 Node.js IMAP 收信客户端（阶段7 目标2：替换原内嵌解释器脚本桥）
+ * imap-client — 纯 Node.js IMAP 收信客户端（替换原内嵌解释器脚本桥）
  *
  * 能力范围（与被删除的旧桥逐项等价）：
  * - 建连：隐式 TLS（993，tls.connect + servername + rejectUnauthorized:true）
@@ -11,7 +11,7 @@
  * - 收信②：UID SEARCH SINCE <DD-Mon-YYYY> → 取最新至多 N 个 UID → UID FETCH (INTERNALDATE BODY.PEEK[])
  * - 退出：LOGOUT（best effort）
  *
- * 协议解析（阶段6 实测坑位的根治）：
+ * 协议解析（坑位的根治）：
  * - 自实现响应解析器，按「tag + token 树」解析，原生处理 IMAP literal（{n} + CRLF + n 字节），
  *   不再依赖旧桥「tuple + 紧随独立响应项」的解析语义；
  * - INTERNALDATE 在 head 内或在同一响应里独立出现都能取到（见 parseFetchResponses 的合并逻辑），
@@ -323,7 +323,7 @@ export function extractResponseCodeNumber(responses: ImapResponse[], code: strin
 /**
  * FETCH 响应 → 邮件列表。
  * 同一 UID 的多个 FETCH 响应（服务端把 INTERNALDATE 拆成独立响应项时会出现）按 UID 合并：
- * 取更长的 body 与首个非空 INTERNALDATE —— 阶段6 实测坑位在此根治。
+ * 取更长的 body 与首个非空 INTERNALDATE —— 坑位在此根治。
  */
 export function parseFetchResponses(responses: ImapResponse[]): RawImapMessage[] {
   const byUid = new Map<number, RawImapMessage>();

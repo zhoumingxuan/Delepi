@@ -63,7 +63,7 @@ export type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 
 /** 显示视图条目上限（超限逐出最老 thinking 条目） */
 const MAX_RECORDS = 500;
-/** 渲染信号节流窗口（leading+trailing；算法逐字对齐 main-agent 既有 emitSnapshotSignal 模式） */
+/** 渲染信号节流窗口（200ms leading+trailing） */
 const RECORD_SIGNAL_EMIT_MIN_INTERVAL_MS = 200;
 
 /** 单条任务级交互消息长度上限（字符） */
@@ -318,8 +318,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   /**
-   * 信号发射（200ms leading+trailing 节流；immediate 立发并作废挂起 trailing）
-   * 算法逐字对齐 main-agent.ts 既有 emitSnapshotSignal 已验证模式。
+   * 信号发射（200ms leading+trailing 节流；immediate 立发并作废挂起 trailing）。
    */
   private emitSignal(immediate: boolean): void {
     const signal = this.buildSignal();

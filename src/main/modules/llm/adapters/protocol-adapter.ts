@@ -34,7 +34,7 @@ export type AdapterThinkingLevel = '' | 'minimal' | 'low' | 'medium' | 'high' | 
 
 /** 单个流式 chunk（融合签名：{type,delta,cumulative} + end 枚举语义无损融合）：
  *  - delta = 本次增量文本，"有值传没值空"（纯终结信号回调时 delta=''）
- *  - cumulative = 截至本次的本轮累计文本（M13 重试复位全量覆盖通道的载体，
+ *  - cumulative = 截至本次的本轮累计文本（重试复位全量覆盖通道的载体，
  *    对齐现状 StreamChunk L85-100 双粒度）
  *  - end = 可选瞬时流控制标志（S1/S2=end:'segment'；S3=end:'message'；缺省即纯增量）
  *  - finishReason = 可选终结原因视图（仅 finish 时刻的 chunk 携带；CC 侧为现状
@@ -255,7 +255,7 @@ export abstract class ProtocolAdapter {
 
   /**
    * 排水：同步（无 await）排空 insert 队列，FIFO 追加到宿主数组尾部。
-   * 由 sendMessage 在构建协议请求体之前调用（§5.4 硬约束：纯同步代码，
+   * 由 sendMessage 在构建协议请求体之前调用（硬约束：纯同步代码，
    * shift 队列 + 数组 push，不含任何 I/O / Promise 等待 / 事件循环让出）。
    */
   protected drainPendingMessages(messages: Array<Record<string, unknown>>): number {

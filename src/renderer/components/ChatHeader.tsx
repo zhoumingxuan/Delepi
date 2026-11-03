@@ -1,7 +1,6 @@
 /**
  * ChatHeader 顶部栏组件
- * 对齐 ai-client ChatHeader.tsx 样式
- */
+ *  */
 
 import { memo, useState, type ReactElement } from 'react';
 import { Button, Input, Typography, theme } from 'antd';

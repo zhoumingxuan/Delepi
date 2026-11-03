@@ -1,7 +1,7 @@
 /**
  * Electron 环境类型声明
  *
- * 新版方案：executor.onRecordSignal / executor.getTaskRecord（任务记录渲染信号 + 增量查询）
+ * executor.onRecordSignal / executor.getTaskRecord（任务记录渲染信号 + 增量查询）
  */
 
 /** 通过 contextBridge 暴露给渲染进程的 API */
@@ -86,9 +86,9 @@ export interface ElectronAPI {
     cleanupOrphans: (params?: import('./ipc').FileCleanupOrphansParams) => Promise<import('./ipc').FileCleanupOrphansResult>;
   };
   executor: {
-    /** 新版方案 §5.2-A5：订阅任务记录渲染信号（executor:record-signal，极小载荷） */
+    /** 订阅任务记录渲染信号（executor:record-signal，极小载荷） */
     onRecordSignal: (listener: (payload: unknown) => void) => () => void;
-    /** 新版方案 §5.2-B4：任务记录增量查询（sinceSeq 缺省/0=全量；返回 ExecutorTaskRecordQueryResult） */
+    /** 任务记录增量查询（sinceSeq 缺省/0=全量；返回 ExecutorTaskRecordQueryResult） */
     getTaskRecord: (params: {
       conversationId: string;
       delegateCallId: string;
@@ -114,7 +114,7 @@ export interface ElectronAPI {
     saveBuiltinOverride: (params: unknown) => Promise<{ success: boolean; error?: string }>;
   };
   /**
-   * 渲染端日志转发（R3 修复配套）：渲染→主 invoke，主进程 writeMainLog 写入
+   * 渲染端日志转发：渲染→主 invoke，主进程 writeMainLog 写入
    * userData/logs/main.log 持久日志。渲染端上传失败等异常经此通道落 ERROR 记录，
    * 不再止于打包版不可见的 console.error。旧版 preload 未暴露时调用方以 ?. 防御。
    */

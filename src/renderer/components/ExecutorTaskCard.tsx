@@ -1,5 +1,5 @@
 /**
- * ExecutorTaskCard —— 运行中委派任务卡（新版设计方案 M7 / §6.1 视觉规格）
+ * ExecutorTaskCard —— 运行中委派任务卡（ M7 / 视觉规格）
  *
  * 布局（替换现状运行中卡片的 ThinkingBlock×2 内容区）：
  * - 标题行：任务名（无显式文字样式，继承 ThoughtChain item title 默认值——与完成态

@@ -1,7 +1,7 @@
 /**
  * 对话运行时管理
  *
- * 适配自 E:\ai_fr\lib\chat\runtime.ts
+ * 
  * 简化为 Delepi 单用户 Electron 架构：
  * - 进程级 Map 足够（无需 userId 维度）
  * - 仅保留核心功能：beginConversationRun / finishConversationRun / abortConversationRun
@@ -14,7 +14,7 @@ import { ERR_ABORTED } from '../../constants';
  * ★ 闸门生命周期与 run 实例绑定模型：条目在 beginConversationRun 创建后，仅由持有
  *   该控制器实例的 run 在真实 settle 时经 finishConversationRun（实例归属校验）释放；
  *   abortConversationRun 只触发取消、不提前释放条目——保证任意时刻同会话至多一个 run，
- *   且旧 run 的退出不可能删除/覆盖新 run 的 AbortController 与状态。
+ *   且另一 run 的退出不可能删除/覆盖新 run 的 AbortController 与状态。
  */
 const conversationRunMap = new Map<string, AbortController>();
 
@@ -36,8 +36,8 @@ export function beginConversationRun(
 
 /**
  * 结束对话运行（run 真实 settle 的唯一闸门释放出口）
- * ★ 缺陷①根因修复（实例归属校验）：仅当闸门条目仍归属本次 run 的控制器实例时才移除，
- *   旧 run 的退出不得删除/覆盖新 run 的 AbortController（原按键盲删会在取消-settle
+ * 实例归属校验：仅当闸门条目仍归属本次 run 的控制器实例时才移除，
+ *   另一 run 的退出不得删除/覆盖新 run 的 AbortController（否则会在取消-settle
  *   窗口错杀后继 run 的控制器，导致后续任何手动取消因 get 返回 undefined 而失效）。
  * @returns 是否实际移除（false = 条目已不归属该控制器，本 run 无权触碰闸门与状态）
  */
@@ -55,12 +55,12 @@ export function finishConversationRun(
 /**
  * 中止对话运行
  * 触发 AbortController.abort() 并返回是否成功
- * ★ 取消 reason 统一：abort 携带 ERR_ABORTED('ABORTED') 的 Error 形态（对齐 main-agent
- *   taskStopController.abort(new Error(ERR_ABORTED)) 与 executor-task-record-store
- *   stopExecutorTask 既有先例）——中止原因沿 signal.reason 上抛链（model-retry / 适配器
+ * 取消 reason 统一：abort 携带 ERR_ABORTED('ABORTED') 的 Error 形态（与 main-agent
+ *   taskStopController.abort(new Error(ERR_ABORTED)) 及 executor-task-record-store
+ *   stopExecutorTask 一致）——中止原因沿 signal.reason 上抛链（model-retry / 适配器
  *   中止判定 / main-agent 主 catch）统一为 message='ABORTED'，由 ipc-handlers chat:send
  *   catch 的 ERR_ABORTED 精确吞错判定收敛，渲染层不再出现 DOMException 英文错误条。
- * ★ 缺陷①根因修复（闸门生命周期与 run 实例绑定）：abort 只触发控制器取消，不再
+ * 闸门生命周期与 run 实例绑定：abort 只触发控制器取消，不
  *   立即删除闸门条目——条目由该 run 真实 settle（chat:send finally）经
  *   finishConversationRun 实例归属校验后释放。取消-settle 窗口内同会话新 chat:send
  *   仍被 beginConversationRun 并发拒绝（不产生并发双 run，杜绝错杀），渲染层

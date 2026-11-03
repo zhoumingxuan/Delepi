@@ -206,7 +206,7 @@ function resolveLocalOpenPath(target: unknown): string {
  * 启动链/运行期日志：写入 userData/logs/main.log（含时间戳与环节名）。
  * - 同步落盘，保证崩溃/异常场景下日志已写入；
  * - 日志写入失败（目录不可写等）绝不影响应用主流程；
- * - 自 main/index.ts 移入并导出（R3/R5 修复配套）：IPC handler 层错误与
+ * - IPC handler 层错误与
  *   log:renderer 渲染端转发共用同一持久日志出口；detail 提取兼容
  *   Error 实例与 { message, stack } 普通对象（渲染端经 IPC 结构化克隆后无 Error 原型）。
  */
@@ -376,9 +376,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle(IPC_CHAT.SEND, async (_event, params: ChatSendParams): Promise<ChatSendResult> => {
     const conversationId = params.conversationId;
 
-    // 并发控制（适配 E:\\ai_fr beginConversationRun）：
+    // 并发控制：
     //   如果会话正在运行中，拒绝新的 send 请求（返回 CONVERSATION_RUNNING 错误）
-    //   E:\\ai_fr 返回 409 状态码；智蜂通过 throw Error 传递错误信息
+    //   E:\\返回 409 状态码；智蜂通过 throw Error 传递错误信息
     // 使用 conversation-runtime 进行并发控制
     const abortController = beginConversationRun(conversationId);
     if (!abortController) {
@@ -389,18 +389,14 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
     // AbortController 已由 beginConversationRun 创建
 
-    // ★ 缺陷②根因修复（闸门全路径释放）：API Key 校验移入 try——原实现位于
-    //   beginConversationRun 成功之后、try 之前，mainModelApiKey 为空时 throw
-    //   不经过 finally，闸门条目永久泄漏，该会话后续所有发送被
-    //   ERR_CONVERSATION_RUNNING 拒绝（showCancel=false 无停止按钮，仅重启可恢复）。
-    //   移入 try 后该早期退出路径与其余退出路径统一由 finally 的
-    //   finishConversationRun 释放闸门；校验仍先于 ensureConversation /
+    // 闸门全路径释放：API Key 校验位于 try 内——mainModelApiKey 为空时 throw 也经由
+    //   finally 的 finishConversationRun 统一释放闸门；校验仍先于 ensureConversation /
     //   persistUploadedFiles / runMainAgent，可观察语义顺序不变。
     //   注意：begin 与 try 之间禁止再插入任何可抛出的语句（此处仅 null 判定，
     //   防止新的闸门旁路泄漏）。
     try {
-      // 【阶段7 目标1】本次 run 的模型配置快照：会话绑定方案优先；未绑定则懒绑定当前激活方案；
-      // 无任何方案时回落全局 14 键（等价阶段6 行为）。快照语义 → 运行中切换方案不影响本次 run。
+      // 本次 run 的模型配置快照：会话绑定方案优先；未绑定则懒绑定当前激活方案；
+      // 无任何方案时回落全局 14 键。快照语义 → 运行中切换方案不影响本次 run。
       const modelResolution = resolveConversationModelConfig(conversationId);
       for (const warning of modelResolution.warnings) {
         writeMainLog('WARN', 'chat.model-profile', `conversationId=${conversationId} ${warning}`);
@@ -450,7 +446,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         },
         // 视觉识别总开关联动：visionEnabled=false 时主智能体多模态强制关闭（multimodalEnabled = visionEnabled && mainModelMultimodal）
         mainAgentMultimodalEnabled: runSettings.visionEnabled && runSettings.mainModelMultimodal,
-        // 【F-4·R4 运行期快照】六键快照（主/子思考档位、主/子协议、压缩阈值、视觉总开关）随本次
+        // 六键快照（主/子思考档位、主/子协议、压缩阈值、视觉总开关）随本次
         // run 传入；main-agent/executor-agent 运行期一律读该快照，不再直读 configManager 全局——
         // 运行中他处切换方案不影响本次 run（快照语义，INV-3）。与 conversation-send-service 入口同步。
         runtimeSettingsSnapshot: {
@@ -488,7 +484,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
       throw error;
     } finally {
-      // ★ 缺陷①③根因修复：闸门释放与 is_running 复位收敛到 run 真实 settle 出口，
+      // 闸门释放与 is_running 复位收敛到 run 真实 settle 出口，
       //   且以实例归属校验为前置——runMainAgent 返回/抛出（含 ERR_ABORTED）后
       //   finally 才执行，此处即本 run 的真实退出点；finishConversationRun 返回
       //   false = 条目已被替换/释放（本 run 已无闸门所有权），此时不得触碰
@@ -506,7 +502,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    * chat:abort — 中止当前对话
    */
   ipcMain.on(IPC_CHAT.ABORT, (_event, conversationId: string) => {
-    // ★ 缺陷①③根因修复说明：abortConversationRun 现仅触发控制器 abort，不再删除
+    // abortConversationRun 仅触发控制器 abort，不删除
     //   闸门条目（条目由 run 真实 settle 时经实例归属校验释放）——取消-settle 窗口内
     //   同会话新 chat:send 被 beginConversationRun 并发拒绝，杜绝旧 run 退出错杀
     //   新 run 控制器/踩踏其 is_running；渲染层"取消后立刻重发"由取消待收口队列在
@@ -614,8 +610,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }));
 
-  // ★ P0-E3：main-agent:aborted → IPC chat:aborted
-  // 对齐 E:\ai_fr chat.aborted 事件，前端 useChat 的 unsubAborted 监听器负责归一化 abort 状态
+  // main-agent:aborted → IPC chat:aborted
+  // 前端 useChat 的 unsubAborted 监听器负责归一化 abort 状态
   eventBusCleanups.push(eventBus.on(MAIN_AGENT_ABORTED_EVENT, (payload) => {
     if (mainWindow.isDestroyed()) {
       return;
@@ -627,7 +623,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }));
 
-  // ★ P6 历史消息附件回显：user.message.created → IPC chat:user-message-created
+  // 历史消息附件回显：user.message.created → IPC chat:user-message-created
   //   main-agent.ts 在 insertMessage(user) 后 emit,前端 useChat 收到后替换本地乐观 user 消息
   //   payload 含 conversationId + message{id, role, content, attachments, createdAt}
   eventBusCleanups.push(eventBus.on(USER_MESSAGE_CREATED_EVENT, (payload) => {
@@ -676,7 +672,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // ★ S3（M4）：tool.batch.completed → IPC tool.batch.completed
   //   main-agent.ts 批次收口块在全中止判定之前 emit（含全中止批次），
-  //   前端 useChat 按 isError 收口 running 快照（对齐 ai_fr route.ts:973-977 → chat-shell.tsx:2093-2099）
+  //   前端 useChat 按 isError 收口 running 快照
   eventBusCleanups.push(eventBus.on(TOOL_BATCH_COMPLETED_EVENT, (payload) => {
     if (mainWindow.isDestroyed()) {
       return;
@@ -688,7 +684,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }));
 
-  // ★ 新版方案 §5.2-A4：executor:record-signal 白名单转发（主→渲染，极小信号）；
+  // executor:record-signal 白名单转发（主→渲染，极小信号）；
   //   守卫模式与上方既有转发一致（isDestroyed + conversationId 存在性 + send 容错）
   eventBusCleanups.push(eventBus.on(EXECUTOR_RECORD_SIGNAL_EVENT, (data) => {
     if (!data?.conversationId) {
@@ -719,7 +715,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   /**
-   * 【结构性根治·写入目标随数据携带】config:save 扩展参数：在既有 ConfigSaveParams（src/main/types/ipc.ts）
+   * config:save 扩展参数：在既有 ConfigSaveParams（src/main/types/ipc.ts）
    * 基础上增加可选 conversationId / profileId；preload 的 save 通道按 unknown 透传，旧调用方不携带
    * 新字段时全部回落旧行为（向后兼容，INV-6）。profileId = 编辑发起时的上下文方案身份（前端
    * displayProfileId 在保存发起时捕获并随载荷上传），保存到达时直接按该 id 定位目标方案写入，
@@ -734,7 +730,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   };
 
   ipcMain.handle(IPC_CONFIG.SAVE, async (_event, params: ConfigSaveParamsWithContext): Promise<void> => {
-    // 【值守开关守卫（v3 §4.4）】watchEnabled 唯一语义=用户意图，仅允许 watch:start（自检通过）/
+    // 【值守开关守卫】watchEnabled 唯一语义=用户意图，仅允许 watch:start（自检通过）/
     // watch:stop 两个用户动作服务侧出口写回；运行态回落（自检失败/轮询故障）只复位 runtimeStatus
     // 不写本键。config:save 直写该键会造成"意图与运行态不一致"的绕过态，一律拒绝。
     if (params.key === 'watchEnabled') {
@@ -742,13 +738,13 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         'ERR_WATCH_ENABLED_DIRECT_WRITE_FORBIDDEN：watchEnabled 不允许经 config:save 直接写入；请经 watch:start / watch:stop 调整值守开关',
       );
     }
-    // 【结构性根治·链路C】方案键（PROFILE_CONFIG_KEYS 15 键）写入目标 = 编辑发起时随载荷固定的
+    // 方案键（PROFILE_CONFIG_KEYS 15 键）写入目标 = 编辑发起时随载荷固定的
     // profileId，解析优先级：① 载荷 profileId 有效（存在于 modelProfiles）→ 无条件写入该方案
-    // （身份明确，无需「现值===基准」一致性守卫）；② 载荷缺失（旧调用方/防御）→ 按会话绑定
-    // （conversationId）解析；③ 均无 → 回落全局 activeProfileId（旧行为，INV-6 列表态兼容）。
+    // （身份明确，无需「现值===基准」一致性守卫）；② 载荷缺失（兼容旧调用方/防御）→ 按会话绑定
+    // （conversationId）解析；③ 均无 → 回落全局 activeProfileId（列表态兼容）。
     // 全局 15 键运行时单键写入仅在「写入目标 = 当前全局激活方案」时执行（运行时=激活方案的投影）；
     // 写入目标 ≠ 激活方案（迟到保存 / 会话绑定方案非激活）时零全局运行时写入——结构上杜绝
-    // 「把方案 A 上下文的编辑写进方案 B 的运行时」。非方案键（visionEnabled 等）走旧行为。
+    // 「把方案 A 上下文的编辑写进方案 B 的运行时」。非方案键（visionEnabled 等）走全局设置写入。
     // 注：PROFILE_CONFIG_KEYS 在本函数后续定义，handler 回调异步执行时已初始化，无 TDZ 问题。
     if ((PROFILE_CONFIG_KEYS as readonly string[]).includes(params.key)) {
       const s = configManager.getSettings();
@@ -830,7 +826,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // ================================================================
 
   /**
-   * 方案列表结果（阶段7：新增 conversationProfile 只读视图）
+   * 方案列表结果（含 conversationProfile 只读视图）
    * - conversationProfile 仅在调用方带 conversationId 时返回（配置抽屉展示「当前对话使用方案」）
    */
   type ProfileListResult = {
@@ -839,7 +835,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     conversationProfile?: ConversationModelProfileView | null;
   };
   type ProfileListParams = { conversationId?: string } | undefined;
-  // 【F-8·R7 封口】非 blank 分支=以主进程全局当前值为快照覆盖同名方案——在「会话绑定≠全局激活」
+  // 非 blank 分支=以主进程全局当前值为快照覆盖同名方案——在「会话绑定≠全局激活」
   // 错位态下这正是「把全局（可能=A）配置写进 B」的直接串扰形态；当前无任何前端调用方（前端仅
   // blank:true 新建）。封口：非 blank 必须显式携带 mode:'snapshot-overwrite' 才放行，否则拒绝。
   type ProfileSaveParams = { name: string; blank?: boolean; mode?: 'snapshot-overwrite' };
@@ -899,10 +895,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     // 另存为：以主进程当前生效配置（九键+开关/档位/协议）为权威快照源；同名档案覆盖并保留原 id。
     // blank=true：新建空白方案——9 个文本键取空串，开关/档位取 DEFAULT_APP_SETTINGS 默认值
     // （禁止存空串：config-manager reload() 过滤空串，重启后默认值回填会造成方案内容漂移）；
-    // 【F-8】blank 非 true（原"复制全局快照"另存为语义）已封口：必须显式 mode:'snapshot-overwrite'
-    // 才放行（见下方守卫），默认一律拒绝——防止错位态下把全局值写入非上下文方案。
+    // blank 非 true 一律拒绝：必须显式 mode:'snapshot-overwrite' 才放行（见下方守卫）
+    // ——防止错位态下把全局值写入非上下文方案。
     const blank = params.blank === true;
-    // 【F-8·R7 封口】非 blank（全局快照覆盖）分支：未显式携带 mode:'snapshot-overwrite' 一律拒绝
+    // 非 blank（全局快照覆盖）分支：未显式携带 mode:'snapshot-overwrite' 一律拒绝
     if (!blank && params.mode !== 'snapshot-overwrite') {
       throw new Error(
         'PROFILES_SAVE 非 blank 分支已封口：该分支以全局当前值快照覆盖方案存储，在「会话绑定≠全局激活」错位态下会把非上下文方案的内容写入目标方案；确需该语义必须显式传 mode:"snapshot-overwrite"（接入 UI 前须先落地 F-1/F-2 会话上下文对齐）',
@@ -973,38 +969,68 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const profiles = settings.modelProfiles.filter((item) => item.id !== params.id);
     let activeProfileId = settings.activeProfileId;
     // 【模型配置方案使能】删除激活方案后的激活态转移：剩余非空时自动补选第一个为 activeProfileId，
-    // 并在写 activeProfileId 之前按新激活方案以 PROFILES_SWITCH 同语义应用其 14 键
-    //（逐键 if value===undefined continue; saveSetting; setSetting），使「激活方案」与「运行时九键」
-    // 始终一致，杜绝「激活=满配置方案、运行时=旧值」错位态经链路C 污染其他方案存储；
-    // 剩余为空（activeProfileId===''）时不应用任何键，九键保持现状且不报错；
+    // 并在写 activeProfileId 之前按新激活方案以 PROFILES_SWITCH 同语义应用其 15 键，
+    // 使「激活方案」与「运行时配置键」始终一致，杜绝「激活=满配置方案、运行时=旧值」错位态经链路C
+    // 污染其他方案存储；剩余为空（activeProfileId===''）时不应用任何键，全局键保持现状且不报错；
     // 激活 id 为空或悬空（指向已不存在的方案）时同样统一补选，禁止本分支静默失效。
+    // 15 键 + activeProfileId 写入整体包入 getDb().transaction（同 PROFILES_SWITCH
+    // 列表态事务范式）：任一键失败即整体回滚并抛错——此时下方 modelProfiles 落库与绑定清理均不执行
+    // （删除整体失败、可重试），DB 恒为「全成或全不改」，杜绝删除错位态触发的「半个方案」级联污染；
+    // configManager 内存同步统一延后到事务提交成功后回放（内存永不超前于已提交的库状态）。
     if (!profiles.some((item) => item.id === activeProfileId)) {
       activeProfileId = profiles.length > 0 ? profiles[0].id : '';
-      if (activeProfileId) {
-        const nextActiveProfile = profiles[0];
-        for (const key of PROFILE_CONFIG_KEYS) {
-          const value = nextActiveProfile[key];
-          // 协议键/压缩阈值键缺键回填：转移到的档案缺该键时以 DEFAULT_APP_SETTINGS 默认值落库并即时生效，杜绝残留已删档案旧值
-          if (
-            value === undefined &&
-            (key === 'mainModelProtocol' || key === 'executorModelProtocol' || key === 'executorContextCompressionThreshold')
-          ) {
-            const fallbackValue = DEFAULT_APP_SETTINGS[key];
-            saveSetting(key, fallbackValue);
-            configManager.setSetting(key, fallbackValue);
-            continue;
+      const errors: string[] = [];
+      const appliedKv: Array<[string, unknown]> = [];
+      const nextActiveProfile = profiles.length > 0 ? profiles[0] : null;
+      try {
+        getDb().transaction(() => {
+          if (activeProfileId && nextActiveProfile) {
+            for (const key of PROFILE_CONFIG_KEYS) {
+              try {
+                const value = nextActiveProfile[key];
+                // 协议键/压缩阈值键缺键回填：转移到的档案缺该键时以 DEFAULT_APP_SETTINGS 默认值落库并即时生效，杜绝残留已删档案旧值
+                if (
+                  value === undefined &&
+                  (key === 'mainModelProtocol' || key === 'executorModelProtocol' || key === 'executorContextCompressionThreshold')
+                ) {
+                  const fallbackValue = DEFAULT_APP_SETTINGS[key];
+                  saveSetting(key, fallbackValue);
+                  appliedKv.push([key, fallbackValue]);
+                  continue;
+                }
+                if (value === undefined) continue;
+                saveSetting(key, value);
+                appliedKv.push([key, value]);
+              } catch (error) {
+                const msg = error instanceof Error ? error.message : String(error);
+                errors.push(`${key}: ${msg}`);
+              }
+            }
           }
-          if (value === undefined) continue;
-          saveSetting(key, value);
-          configManager.setSetting(key, value);
+          if (errors.length > 0) {
+            // 抛出以触发事务回滚（better-sqlite3：transaction 函数抛错即 ROLLBACK，DB 恢复删除前状态）
+            throw new Error('__PROFILE_DELETE_TX_ROLLBACK__');
+          }
+          saveSetting('activeProfileId', activeProfileId);
+        })();
+      } catch (txError) {
+        if (errors.length > 0) {
+          // 已整体回滚：全局运行时（库+内存）与方案列表均保持删除前状态；重试删除可自愈
+          throw new Error(
+            `删除方案后激活转移「${nextActiveProfile?.name ?? ''}」部分失败（${errors.length}/${PROFILE_CONFIG_KEYS.length} 键写入失败，事务已整体回滚，方案未删除、全局配置保持删除前状态；重试删除可自愈）：${errors.join('；')}`,
+          );
         }
+        throw txError;
       }
-      saveSetting('activeProfileId', activeProfileId);
+      // 事务提交成功：统一同步 configManager 内存（逐键 setSetting，提交后内存态与 PROFILES_SWITCH 列表态一致）
+      for (const [key, value] of appliedKv) {
+        configManager.setSetting(key as keyof AppSettings, value as AppSettings[keyof AppSettings]);
+      }
       configManager.setSetting('activeProfileId', activeProfileId);
     }
     saveSetting('modelProfiles', profiles);
     configManager.setSetting('modelProfiles', profiles);
-    // 【阶段7 目标1】删除方案后清空所有指向它的会话绑定（悬空绑定自愈的主动侧；
+    // 删除方案后清空所有指向它的会话绑定（悬空绑定自愈的主动侧；
     // 运行期 resolver 仍有第二道兜底：绑定失效即清空并回落激活方案）
     const clearedBindings = clearConversationModelProfileBindings(params.id);
     if (clearedBindings > 0) {
@@ -1026,11 +1052,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     const targetConversationId = typeof params?.conversationId === 'string' ? params.conversationId.trim() : '';
 
     if (targetConversationId) {
-      // 【结构性根治·会话级切换 = 纯会话绑定变更】只写 conversations.model_profile_id（单条 UPDATE，
-      // 天然原子），零全局写入——不写全局 15 键运行时、不写 activeProfileId。全局①②从此收缩为
+      // 会话级切换 = 纯会话绑定变更：只写 conversations.model_profile_id（单条 UPDATE，
+      // 天然原子），零全局写入——不写全局 15 键运行时、不写 activeProfileId。全局①②仅承担
       // 「默认方案/列表态」单一语义（仅列表态切换 / PROFILES_DELETE 激活转移 / PROFILES_SAVE 空位
-      // 补位 / reload 补选时写入），会话级切换不再制造「全局运行时 = 非默认方案值」的双状态源错位
-      // （上一轮 F-3 保守变体的无条件全局写入已按根治设计移除）。
+      // 补位 / reload 补选时写入），会话级切换不制造「全局运行时 = 非默认方案值」的双状态源错位。
       // 返回 resolvedSettings（= 全局设置 + 新方案 15 键覆盖，applyProfileToSettings 口径）供前端
       // 会话分支回填表单；activeProfileId 返回当前真实全局激活（本次未改写）。
       if (!getConversationById(targetConversationId)) {
@@ -1052,8 +1077,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
 
     // 列表态（无会话上下文）＝应用默认方案：全局 15 键 + activeProfileId 写入保持旧行为（INV-6）。
-    // 切换流程：逐键「saveSetting 落库」。【F-6·R5】15 键循环 + activeProfileId 写入整体包入
-    // getDb().transaction（参照 conversation.repo.ts deleteConversationGuarded 事务范式）——任一键
+    // 切换流程：逐键「saveSetting 落库」。15 键循环 + activeProfileId 写入整体包入
+    // getDb().transaction（同 conversation.repo.ts deleteConversationGuarded 事务范式）——任一键
     // 失败即整体回滚，DB 恒为「全成或全不改」，杜绝「半个 B」错乱态；configManager 内存同步统一
     // 延后到事务提交成功后回放（内存永不超前于已提交的库状态，回滚后内存/库保持一致）。
     const errors: string[] = [];
@@ -1514,7 +1539,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     //   - 先删 SQLite 记录(deleteConversationRecord)
     //   - 再删磁盘文件(removeConversationUploadDir + removeConversationOutputFiles)
     deleteConversationRecord(id);
-    // ★ 新版方案 §5.2：任务记录会话随会话删除同步清理（幂等；文件侧随会话目录整体删除）
+    // 任务记录会话随会话删除同步清理（幂等；文件侧随会话目录整体删除）
     clearExecutorTaskRecords(id);
     if (lastActiveConversationId === id) {
       lastActiveConversationId = null;
@@ -1609,17 +1634,21 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   /**
    * conv:get-messages — 获取对话的历史消息列表
    * 读取 messages 表，按 seq 升序排列，反序列化 payload_json 为 ChatMessage 数组
-   * ★ P1-C3：若存在 runningAssistantMessages 中正在流式累积的 assistant 消息，
-   *   则附加到返回列表末尾
-   *   确保前端 conv:get-messages 在流式过程中也能拉到正在累积的 assistant 消息
-   * ★ 分时机落库 D8（方案③3.6/⑥#18）：running 恒优先——running 存在时先从已读列表移除
-   *   同 id 库行再附加 running（T-A 落库后库行已含 assistantMessageId，原『id 不在已读行中
-   *   才附加』条件会跳过 running，前端只能读到 T-A 半成品库行，流式窗口内丢失实时视图）
+   * 若存在 runningAssistantMessages 中正在流式累积的 assistant 消息，
+   *   则附加到返回列表末尾，确保前端 conv:get-messages 在流式过程中也能拉到正在累积的 assistant 消息。
+   * running 恒优先——running 存在时先从已读列表移除同 id 库行再附加 running
+   *   （流式窗口内库行可能是半成品，直接读取会丢失实时视图）
    */
   ipcMain.handle(IPC_CONV.GET_MESSAGES, async (_event, conversationId: string) => {
     const list = listRendererMessages(conversationId);
 
-    // ★ P1-C3 + 分时机落库 D8（⑥#18）：running 恒优先替换同 id 库行
+    // running 快照恒优先替换同 id 库行；同一快照条目上的执行中工具占位
+    //   （runningToolPlaceholders）同步合成 status='loading' 的 tool 占位消息追加返回，
+    //   会话切回时恢复执行中工具卡片视图。消息 id 复用渲染端占位契约 `running-tool:` + callId
+    //   （useChat chat:tool-call 幂等复用 / chat:tool-result 与 TOOL_MESSAGE_CREATED 按同 id
+    //   原地推进和精确收口）；批次收口与 runMainAgent 终态出口清除后不再合成，无幽灵 loading。
+    //   类型转换先例：runningMsg as unknown as typeof list[number]（loading 态超出
+    //   RendererChatMessage 字面量联合，仅运行态占位透传，不落库）。
     const runningMsg = getRunningAssistantMessage(conversationId);
     if (runningMsg) {
       for (let index = list.length - 1; index >= 0; index -= 1) {
@@ -1628,6 +1657,29 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         }
       }
       list.push(runningMsg as unknown as typeof list[number]);
+      for (const placeholder of runningMsg.runningToolPlaceholders ?? []) {
+        const runningToolPlaceholderId = `running-tool:${placeholder.callId}`;
+        if (list.some((item) => item.id === runningToolPlaceholderId)) {
+          continue; // 防御：同 id 占位已在列表（幂等跳过）
+        }
+        list.push({
+          id: runningToolPlaceholderId,
+          role: 'tool',
+          content: '',
+          toolCall: {
+            callId: placeholder.callId,
+            name: placeholder.name,
+            arguments: placeholder.arguments,
+            status: 'loading',
+            startedAt: placeholder.startedAt,
+            createdAt: placeholder.startedAt,
+            isDelegatedExecutor: false,
+          },
+          status: 'loading',
+          createdAt: placeholder.startedAt,
+          source: 'main',
+        } as unknown as typeof list[number]);
+      }
     }
 
     return {
@@ -1636,7 +1688,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   /**
-   * executor:get-task-record — 任务记录增量查询（新版方案 §5.2-B3；渲染→主，invoke）
+   * executor:get-task-record — 任务记录增量查询（渲染→主，invoke）
    * 无 isRunning 门禁：终态记录在轮末清理前均可查（完成后回看窗口）。
    * 增量规则：seq > sinceSeq 条目 ∪ 当前 running 思考草稿（恒返最新全文）；
    * 服务端 latestSeq < sinceSeq → reset=true（前端整体重置）。
@@ -1710,11 +1762,11 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   // ===============================================================
   // P5 文件上传独立 IPC 通道
-  // 对齐 E:\ai_fr app/api/uploads/route.ts 三件套（去除鉴权层）
+  // ）
   // ===============================================================
 
   /**
-   * log:renderer — 渲染端日志转发（R3 修复配套）
+   * log:renderer — 渲染端日志转发
    * 渲染端上传失败等异常经此通道落 userData/logs/main.log 持久日志（ERROR 级含 err.message/stack），
    * 不再止于打包版不可见的 console.error。参数做白名单校验，异常不外抛（日志通道自身绝不放大故障）。
    */
@@ -1863,7 +1915,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       });
     }
 
-    // 按 uploadedAt 升序，与 ai_fr readTmpFileManifests 排序行为一致
+    // 按 uploadedAt 升序，与 readTmpFileManifests 排序行为一致
     files.sort((a, b) => a.uploadedAt.localeCompare(b.uploadedAt));
 
     return { files };
@@ -1907,7 +1959,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    * 校验 storageKey 前缀属于当前 conversationId 的 uploads/(防越权)
    * 返回 ArrayBuffer + contentType + name + size,前端用 URL.createObjectURL(new Blob) 重建预览
    * 适配 Delepi 客户端:无 static token 鉴权,直接 IPC 读取已上传文件
-   * 对齐 E:\ai_fr createRemoteUploadedFile (HTTP blob fetch → ObjectURL)
+   * 
    */
   ipcMain.handle(IPC_FILE.READ, async (_event, params: FileReadParams): Promise<FileReadResult> => {
     const conversationId = params.conversationId;
@@ -1938,7 +1990,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
     const buffer = await readFile(filePath);
 
-    // ★ Phase 3 P3-3 后端基于 getFileContentType (扩展名 + magic number 探测) 推断 contentType
+    // ★ 后端基于 getFileContentType (扩展名 + magic number 探测) 推断 contentType
     // 前端可直接使用 readResult.contentType 作为 Blob type,不再依赖 file:list 二次关联
     return {
       data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
@@ -1983,7 +2035,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // ================================================================
-  // 值守模式处理器（阶段2：真实自检 + IMAP 轮询 + list_conversations 查询闭环）
+  // 值守模式处理器（真实自检 + IMAP 轮询 + list_conversations 查询闭环）
   // ================================================================
 
   ipcMain.handle(IPC_WATCH.STATUS, async (): Promise<WatchStatusResult> => {
@@ -1994,7 +2046,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   ipcMain.handle(IPC_WATCH.START, async (): Promise<WatchStartResult> => {
     // 真实自检（IMAP+SMTP）→ 时间游标基线 → 写回 watchEnabled=true（仅用户开启动作）→ 启动递归轮询
     const result = await startWatch();
-    // v3 §4.4：无论成败统一刷新主智能体工具清单（阶段3 send_email 工具可见性随此联动）
+    // ：无论成败统一刷新主智能体工具清单（send_email 工具可见性随此联动）
     refreshMainTools();
     return result;
   });

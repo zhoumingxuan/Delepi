@@ -1,5 +1,5 @@
 /**
- * send-email — 主智能体 send_email 工具执行体（阶段4：Node 原生 SMTP 发送）
+ * send-email — 主智能体 send_email 工具执行体（Node 原生 SMTP 发送）
  *
  * 职责：
  * - 执行层能力拦截：值守运行态标志未置位时返回 TOOL_DISABLED_WATCH_OFF；
@@ -20,7 +20,7 @@
  * - 失败按 stage 分类透传（validate/download/connect/auth/send/timeout），错误文本脱敏；
  *   发送成功后在 run 私有指令上下文对象（context.watchCommandContext）上
  *   直接标记回执已发出（receiptSentByAgent 等观测字段）。
- * - BUG3 登记侧：发送成功后登记出站邮件映射（Message-ID → conversationId → 收件人，
+ * - 出站邮件映射登记侧：发送成功后登记出站邮件映射（Message-ID → conversationId → 收件人，
  *   outbound-mail-map，内存 + 文件缓存）——**不依赖值守指令上下文**，本地对话发起的
  *   run 同样登记，供收信侧把「用户直接回复本邮件」关联回原对话；登记失败不影响发送结果。
  */
@@ -42,7 +42,7 @@ import { isPathInsideDir, resolveConversationDir, resolveMonthlyOutputDir } from
 import { buildToolResult, type ToolResult } from './result';
 import type { ToolRuntimeContext } from './runtime-context';
 
-/** 邮箱格式校验（与 v3 §4.1 / watch-service 一致） */
+/** 邮箱格式校验（与  / watch-service 一致） */
 const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 /** http(s) 远程 URL 附件识别 */
@@ -711,7 +711,7 @@ export async function executeSendEmailTool(
       commandContext.receiptSentMessageId = outcome.declaredMessageId;
       commandContext.receiptAttachmentCount = outcome.attachmentCount;
     }
-    // BUG3 登记侧：出站邮件映射（不依赖指令上下文——本地对话发起的 run 同样登记），
+    // 出站邮件映射登记侧：出站邮件映射（不依赖指令上下文——本地对话发起的 run 同样登记），
     // 供收信侧把「用户直接回复本邮件」关联回原对话；登记失败不影响发送结果（内部已收敛）
     if (conversationId && outcome.declaredMessageId) {
       registerOutboundMail({

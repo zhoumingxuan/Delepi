@@ -47,7 +47,7 @@ export interface MainAgentEvents {
     content: string;
     isThinking: boolean;
     /**
-     * ★ Phase 3 P3-7 finishReason 字段(可选)
+     * ★ finishReason 字段(可选)
      * 由 openai-client.ts 在 finish_reason 变化时附加,转发到 IPC chat:chunk 事件
      * 前端 useChat.ts 据此判断 stream 终止原因(set status=success/length_limited)
      */
@@ -60,7 +60,7 @@ export interface MainAgentEvents {
     name: string;
     arguments: string;
     /**
-     * ★ 修复主/子智能体消息混淆：标识该工具调用为主智能体对执行子智能体的委派
+     * ★ 标识该工具调用为主智能体对执行子智能体的委派
      *   前端可据此把对应 toolCall 渲染为"代理卡片"而非"工具进度"
      *   默认 undefined 时视为普通主智能体工具调用（向后兼容）
      */
@@ -99,7 +99,7 @@ export interface MainAgentEvents {
     error: string;
     errorType: string;
   };
-  /** 对话被中止（★ P0-E3：chat:abort handler 触发，IPC 转发至 chat:aborted） */
+  /** 对话被中止（chat:abort handler 触发，IPC 转发至 chat:aborted） */
   'main-agent:aborted': {
     conversationId: string;
   };
@@ -137,7 +137,7 @@ export interface MainAgentEvents {
     };
   };
   /**
-   * ★ S3 批次完成事件（M4，对齐 ai_fr types/chat.ts:171-177）
+   * ★ S3 批次完成事件（M4，）
    * - 由 main-agent.ts 批次收口块在全中止判定之前 emit（含全中止批次）
    * - 前端 useChat 按 toolCallIds 收口 running 快照（isError → failed / 否则 completed）
    */
@@ -149,13 +149,13 @@ export interface MainAgentEvents {
 
 /**
  * ★ ExecutorAgent 事件（走 IPC 白名单推送）
- * v2.1 D2：executor:thinking / executor:tool-progress 两数据通道维持停用（不复活）；
- * 新版方案：仅保留 executor:record-signal 渲染信号通道（信号与内容彻底解耦，
+ * executor:thinking / executor:tool-progress 两数据通道停用；
+ * 仅保留 executor:record-signal 渲染信号通道（信号与内容彻底解耦，
  * 前端收到信号后主动增量拉取 executor:get-task-record 获取任务记录明细）。
  */
 export interface ExecutorAgentEvents {
   /**
-   * ★ 新版方案 §3.3：executor:record-signal 渲染信号（极小载荷，<200B）
+   * executor:record-signal 渲染信号（极小载荷，<200B）
    * 由 executor-task-record-store 内建 200ms 节流发射；信号只携带对账基准（latestSeq 单调不减），
    * 不携带任何过程内容——内容一律由渲染端按信号主动拉取 executor:get-task-record（拉取为准，丢信号不丢内容）。
    */

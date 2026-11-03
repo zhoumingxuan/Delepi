@@ -1,17 +1,17 @@
 /**
- * conversation-send-service — 值守链路会话发送服务（阶段3）
+ * conversation-send-service — 值守链路会话发送服务
  *
- * 职责（v3 §3.4 复用清单的落地；阶段3回执单轨调整后仍完全适用）：
+ * 职责：
  * - sendUserMessageIntoConversation(conversationId, message, options)：把 message 字符串
  *   【原样】作为单条 role='user' 消息写入目标会话并驱动主智能体——零加工原则
  *   （零前缀/零后缀/零包裹/零拼接，任何程序生成文本不得进入消息本体）；
  *   对大模型而言与用户在界面手动发送这条消息完全不可区分。
- * - 复刻 chat:send（ipc-handlers.ts ipcMain.handle(IPC_CHAT.SEND) 闭包，L347-468）
+ * - 复刻 chat:send（ipc-handlers.ts ipcMain.handle(IPC_CHAT.SEND) 闭包）
  *   的完整时序，但不改道、不复用该闭包（ipcMain.handle 闭包不可直接调用；本服务
  *   与其共用同一把会话闸门，互斥但互不污染）：
  *     1. beginConversationRun 取并发闸门（null → ERR_WATCH_CONVERSATION_RUNNING）
  *     2. 主模型 API Key 非空校验（→ ERR_WATCH_MAIN_MODEL_NOT_CONFIGURED）；
- *        阶段7 起该项与后续模型配置一律取「会话绑定方案优先」的本次 run 快照
+ *        该项与后续模型配置一律取「会话绑定方案优先」的本次 run 快照
  *        （conversation-model-profile.resolveConversationModelConfig）
  *     3. ensureConversation 确保会话存在（指令侧已校验，此处兜底）
  *     4. setConversationRunning(true) + 推送 IPC_CONV.UPDATED（emitConversationUpdated
@@ -22,9 +22,9 @@
  *     6. 取消语义：catch 中 ERR_ABORTED 或 signal.aborted 一律吞错收敛
  *     7. finally：finishConversationRun 实例归属校验通过后 setConversationRunning(false)
  *        + 推送（归属校验失败=条目已不归属本次 run，不得触碰 is_running 与列表态）
- *     8. 30 分钟硬超时（v3 §6.5 ERR_WATCH_EXEC_TIMEOUT）：经 abortConversationRun
+ *     8. 30 分钟硬超时（ERR_WATCH_EXEC_TIMEOUT）：经 abortConversationRun
  *        以同一 signal 触发（复用既有取消链路，runMainAgent 收敛为 ERR_ABORTED）。
- * - 回执单轨（时序1）：本服务只负责注入与执行，runMainAgent 终态后不做任何服务端
+ * - 回执单轨：本服务只负责注入与执行，runMainAgent 终态后不做任何服务端
  *   回执动作；任务回执唯一通道=主智能体经 send_email 工具发送。
  * - 失败分类（供 watch-service 区分注入前协议层失败与执行期失败）：
  *   注入前：ERR_WATCH_CONVERSATION_RUNNING / ERR_WATCH_MAIN_MODEL_NOT_CONFIGURED
@@ -45,7 +45,7 @@ import {
 } from './conversation-runtime';
 import { ERR_ABORTED } from '../../constants';
 
-/** 单轮执行硬超时（v3 §6.5：30 分钟） */
+/** 单轮执行硬超时（30 分钟） */
 const WATCH_EXEC_HARD_TIMEOUT_MS = 30 * 60_000;
 
 /** 值守链路发送结果（watch-service 消费） */
@@ -95,8 +95,8 @@ export async function sendUserMessageIntoConversation(
 
   try {
     // 2. 主模型 API Key 校验（对齐 chat:send：闸门之后、try 内，finally 统一释放）
-    //    阶段7 目标1：按「会话绑定方案优先」解析本次 run 的配置快照；未绑定时懒绑定当前激活方案，
-    //    无任何方案时回落全局 14 键（等价阶段6 行为）。快照语义 → 运行中切方案不影响本次 run。
+    //    按「会话绑定方案优先」解析本次 run 的配置快照；未绑定时懒绑定当前激活方案，
+    //    无任何方案时回落全局 14 键。快照语义 → 运行中切方案不影响本次 run。
     const modelResolution = resolveConversationModelConfig(conversationId);
     const runSettings = modelResolution.settings;
     const mainModelApiKey = runSettings.mainModelApiKey;
@@ -142,7 +142,7 @@ export async function sendUserMessageIntoConversation(
       },
       // 视觉识别总开关联动（对齐 chat:send：visionEnabled=false 时主智能体多模态强制关闭）
       mainAgentMultimodalEnabled: settings.visionEnabled && settings.mainModelMultimodal,
-      // 【F-4·R4 运行期快照】六键快照随本次 run 传入（与 chat:send 入口同步补齐，防两入口行为分叉）；
+      // 六键快照随本次 run 传入（与 chat:send 入口同步补齐，防两入口行为分叉）；
       // main-agent/executor-agent 运行期一律读该快照，运行中他处切换方案不影响本次 run（INV-3）。
       runtimeSettingsSnapshot: {
         mainThinkingLevel: settings.mainThinkingLevel,

@@ -126,7 +126,7 @@ export class ConfigManager {
 
   /** 构建运行时推断的只读配置 */
   private buildComputedConfig(): ComputedConfig {
-    // 阶段1使用默认值，阶段2引入 electron app 对象
+    // 使用静态默认值
     return {
       APP_VERSION: '0.1.0',
       APP_NAME: 'Delepi',

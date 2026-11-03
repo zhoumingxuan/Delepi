@@ -1,41 +1,41 @@
 /**
- * watch-service — 值守模式服务（阶段7：Node 收信桥 + provider 端点 + 三类指令 + 跳转联动 + 重启续期）
+ * watch-service — 值守模式服务（Node 收信桥 + provider 端点 + 三类指令 + 跳转联动 + 重启续期）
  *
  * 职责：
  * - 凭据自检：mailSelfTest（IMAP 登录 + EXAMINE INBOX + SMTP 登录）不变；失败回落关闭仅复位
  *   运行态与 lastError（watchEnabled 唯一语义=用户意图，回落不写回该键，跨重启保留）。
- *   阶段7 起收信桥为纯 Node 实现（imap-client），
+ *   收信桥为纯 Node 实现（imap-client），
  *   端点由 mail-provider 按「邮箱类型」解析后注入，收信/发信共用同一份端点
- * - 时间增量（用户第 8 条）：不再使用数据库 UID 水位，改为纯内存时间游标 sinceTimeMs。
+ * - 时间增量：纯内存时间游标 sinceTimeMs。
  *   开启/恢复时 sinceTimeMs = 启动时刻（首开不处理历史积压）；每轮以
  *   mailImapPollSince(sinceIso=游标) 取候选（IMAP SEARCH SINCE 游标-1天，最新至多 50 封），
  *   再按 INTERNALDATE（空则回退 Date 头，仍为空视为需处理）>= 游标毫秒 过滤，
  *   时间升序、单轮最多 20 封；本轮结束后游标推进为「本轮开始时间戳」
- * - 指令/非指令区分（用户第 6 条）：① X-Delepi-Role 头 ② [Delepi回执] 主题前缀
+ * - 指令/非指令区分：① X-Delepi-Role 头 ② [Delepi回执] 主题前缀
  *   ③ From 头缺失/解析失败 → 跳过（状态沿用 sender_rejected，不再按发件人身份拒绝）
- *   ④ detectCommandMarkers；非指令邮件静默忽略且不发送任何回执（与旧行为的关键差异）
- *   以上 ①~④ 四类一律不推送前端跳转事件（阶段7 目标5②，判定表见 watch-navigation）
+ *   ④ detectCommandMarkers；非指令邮件静默忽略且不发送任何回执。
+ *   以上 ①~④ 四类一律不推送前端跳转事件（判定表见 watch-navigation）
  * - 去重（纯内存）：processedMessageIds（上限 2000，按插入顺序淘汰最旧）挡重复 FETCH；
  *   processedRequestIds（上限 500）挡重复 request_id（不重复执行、不重发缓存回执）
- * - 编号映射（用户第 5 条）：--list 回执按 1..N 重新编号，编号↔GUID 映射以 JSON 附件回执
+ * - 编号映射：--list 回执按 1..N 重新编号，编号↔GUID 映射以 JSON 附件回执
  *   并落 <userData>/watch/conversation-index-map（内存 + 每份文件 + latest.json）；
  *   --conversation N 严格按最新映射解析，缺失/越界即失败回执，绝不猜测或模糊匹配
  * - 回执发送：Node SMTP（smtp-client.sendSmtpMail，HTML 正文 + 可选附件 Buffer），
  *   重试序列 [0s, 2s, 5s, 15s]，auth 阶段立即放弃，X-Delepi-Role: agent 恒加，
  *   In-Reply-To/References = 指令邮件实际 Message-ID，X-Delepi-Command-Id 回带
- * - 单轨回执（BUG2 修复后语义）：send_message 的任务回执优先由主智能体经 send_email 发出；
+ * - 单轨回执：send_message 的任务回执优先由主智能体经 send_email 发出；
  *   服务端直发仅两类：①「注入前协议层失败」（编号不存在/会话不存在/会话运行中/主模型未配置）
  *   ②执行期失败兜底（ERR_WATCH_EXEC_ABORTED/ERR_WATCH_EXEC_FAILED 且模型未发出回执时，
  *   receiptSentByAgent 防重发；模型已发过则不重复直发）
- * - 三类指令（阶段7 目标4）：list_conversations（查询）/ send_message（向已有对话发消息，需编号或
+ * - 三类指令：list_conversations（查询）/ send_message（向已有对话发消息，需编号或
  *   UUID）/ new_conversation（只带 --message 时新建对话并在其中执行）
- * - 指令邮件一律不落库（用户第 7 条）：本模块不 import 任何仓储，不使用任何数据库表
+ * - 指令邮件一律不落库：本模块不 import 任何仓储，不使用任何数据库表
  * - 轮询调度：递归 setTimeout + inFlight 互斥（主进程禁 setInterval），间隔每轮重读；
  *   连接失败指数退避 min(间隔×2^n, 600s)，连续失败 ≥5 次回落关闭
- * - 注入异步化（BUG1 修复）：send_message/new_conversation 注入改 fire-and-forget——
+ * - 注入异步化：send_message/new_conversation 注入为 fire-and-forget——
  *   不阻塞轮询循环与同批后续邮件处理；run 终态经回调登记（读 run 实例私有的指令上下文、
  *   登记结果、触发兜底回执判定）；list_conversations 保持同轮同步快速直发（现状语义）
- * - 出站回复关联（BUG3 修复）：send_email 出站邮件经 outbound-mail-map 登记
+ * - 出站回复关联：send_email 出站邮件经 outbound-mail-map 登记
  *   （Message-ID → conversationId，不依赖指令上下文）；processWatchMail 在非指令判定前，
  *   In-Reply-To 命中映射的回复邮件提取用户手写正文后注入原对话（等同在当前对话输入）
  */
@@ -96,10 +96,10 @@ import { setWatchRuntimeRunning, type WatchCommandContext } from './watch-runtim
 import { normalizeWatchSettings, type NormalizedWatchSettings } from './watch-settings';
 import { maskAuthCode, sendSmtpMail, type SmtpAttachmentInput, type SmtpHeaderInput } from '../mail/smtp-client';
 
-/** 编号映射模块不 import electron：userData 基目录在模块加载时注入（与 mail-bridge 的 baseDir 注入先例一致） */
+/** 编号映射模块不 import electron：userData 基目录在模块加载时注入（与 mail-bridge 的 baseDir 注入方式一致） */
 setConversationIndexMapBaseDirProvider(() => getBridgeBaseDir());
 
-/** 出站邮件映射模块同策略（BUG3）：不 import electron，userData 基目录同样在模块加载时注入 */
+/** 出站邮件映射模块同策略：不 import electron，userData 基目录同样在模块加载时注入 */
 setOutboundMailMapBaseDirProvider(() => getBridgeBaseDir());
 
 /** 值守服务运行状态（closed=关闭 starting=自检中 running=运行中 suspended=异常暂停） */
@@ -134,7 +134,7 @@ export interface WatchStatusResult {
   status: WatchRuntimeStatus;
   enabled: boolean;
   lastError: WatchLastError | null;
-  /** 旧 UID 水位字段：为保证 IPC 契约向后兼容而保留，恒为 null（阶段5 起不再使用） */
+  /** 兼容保留的 UID 水位字段（IPC 契约向后兼容）：恒为 null */
   watermark: { mailbox: string; uidvalidity: number; lastUid: number; updatedAt: string } | null;
   /** 时间增量游标（无基线时为 null） */
   cursor: WatchCursor | null;
@@ -153,7 +153,7 @@ const MAX_MAILS_PER_POLL = 20;
 /** 首轮轮询延迟（watch:start 成功后等窗口就绪） */
 const FIRST_POLL_DELAY_MS = 5_000;
 
-/** 游标推进重叠窗口下限（毫秒）：IMAP 索引存在数十秒级延迟（阶段6 实测约 40s），游标只推进到
+/** 游标推进重叠窗口下限（毫秒）：IMAP 索引存在数十秒级延迟（实测约 40s），游标只推进到
  * 「本轮开始时刻 - 重叠窗口」，窗口内的邮件由后续轮次重复取回（processedMessageIds 去重），
  * 确保「宁可重复不漏信」。实际窗口取 max(本下限, 轮询间隔 + 60s 索引余量)。 */
 const POLL_CURSOR_OVERLAP_MS = 180_000;
@@ -333,7 +333,7 @@ export function setWatchRuntimeStateChangeNotifier(notifier: (() => void) | null
 }
 
 /**
- * 当前生效邮箱端点（阶段7 目标3：**收信与发信的唯一端点来源**）。
+ * 当前生效邮箱端点（**收信与发信的唯一端点来源**）。
  * 每次调用都重新读 settings（provider 类型或自定义 host/port/加密方式改动后即时生效），
  * 并写入 mail-bridge 的生效端点注册表（同时同步 smtp-client 的默认加密方式，
  * 使改动白名单之外的 send_email 工具自动跟随邮箱类型）。
@@ -758,7 +758,7 @@ async function performStart(fromResume: boolean): Promise<WatchStartResult> {
     return makeStartFailure(stage, 'ERR_WATCH_FIELD_MISSING', '邮箱授权码未配置（须为 8-64 字符）');
   }
 
-  // ---- 端点解析与校验（阶段7：邮箱类型/自定义端点在开启前就要确定性判定）----
+  // ---- 端点解析与校验（邮箱类型/自定义端点在开启前就要确定性判定）----
   const endpoints = resolveCurrentMailEndpoints();
   const endpointCheck = validateMailEndpoints(endpoints);
   if (!endpointCheck.ok) {
@@ -795,7 +795,7 @@ async function performStart(fromResume: boolean): Promise<WatchStartResult> {
 
   // ---- 时间游标基线：以启动时刻为基线，不处理历史积压 ----
   resetMemoryState();
-  // 缺陷②修复（阶段6 实测）：IMAP INTERNALDATE 只有秒级精度，若基线取毫秒则「同一秒内但晚于基线毫秒」
+  // IMAP INTERNALDATE 只有秒级精度，若基线取毫秒则「同一秒内但晚于基线毫秒」
   // 到达的邮件会被 filterMailsAtOrAfterCursor 永久跳过（漏信）。基线对齐到整秒，宁可重复由去重集合兜底。
   baselineTimeMs = Math.floor(Date.now() / 1000) * 1000;
   sinceTimeMs = baselineTimeMs;
@@ -821,7 +821,7 @@ async function performStart(fromResume: boolean): Promise<WatchStartResult> {
   // ---- 启动递归定时器（首轮延迟 5 秒）----
   scheduleNextPoll(FIRST_POLL_DELAY_MS);
 
-  // ---- 阶段7 目标5①：客户端重启且值守开关为开 → 重建编号映射并发送续期邮件 ----
+  // ---- 客户端重启且值守开关为开 → 重建编号映射并发送续期邮件 ----
   // 仅在自动恢复路径（fromResume=true，等价「客户端重启」）触发；手动开启不重复发信。
   if (fromResume) {
     void publishResumeIndexMapMail(settings).catch((err) => {
@@ -979,7 +979,7 @@ async function runPollOnce(): Promise<PollOnceOutcome> {
 
     consecutiveFailures = 0;
     // 游标推进为本轮开始时间戳：本轮期间到达的邮件留待下一轮（去重集合兜底，不丢不重）
-    // 缺陷②修复（同上）：游标对齐到整秒，且只推进到「本轮开始时刻 - 重叠窗口」，
+    // 游标对齐到整秒，且只推进到「本轮开始时刻 - 重叠窗口」，
     // 覆盖 IMAP 索引延迟造成的「已投递但暂不可见」情形；下限为本轮运行基线（首开不处理历史积压）。
     const overlapMs = Math.max(POLL_CURSOR_OVERLAP_MS, settings.watchPollIntervalMinutes * 60_000 + 60_000);
     const advancedMs = Math.max(baselineTimeMs, pollStartedMs - overlapMs);
@@ -1008,7 +1008,7 @@ async function runPollOnce(): Promise<PollOnceOutcome> {
 interface MailHandlingResult {
   /** role_filtered / subject_filtered / sender_rejected / non_command / duplicate_mail /
    *  duplicate_request / parse_failed / executing / executed / execution_failed / receipt_failed
-   *  （executing=BUG1 注入已受理、run 异步执行中；终态由 fire-and-forget 回调另行登记） */
+   *  （executing=注入已受理、run 异步执行中；终态由 fire-and-forget 回调另行登记） */
   status: string;
   requestId: string;
   level: 'INFO' | 'WARN' | 'ERROR';
@@ -1082,10 +1082,10 @@ async function processWatchMail(
     return { status: 'role_filtered', requestId: '', level: 'WARN', detail: `X-Delepi-Role=${mail.delepiRole}` };
   }
 
-  // ② 回执环特征二：主题前缀（BUG2 并列候选修复：客户端回复未改写主题、主题仍以回执前缀开头时，
-  //    原实现会静默拦截——增加二次判定：正文命中指令标记、或 In-Reply-To 命中出站邮件映射
-  //    （BUG3 回复关联），且 From 非空且≠值守邮箱自身的邮件放行至后续处理；值守邮箱自身的
-  //    出站回执仍被拦截（防自环；①的 X-Delepi-Role 头为第一道保险））
+  // ② 回执环特征二：主题前缀——客户端回复未改写主题、主题仍以回执前缀开头时执行二次判定：
+  //    正文命中指令标记、或 In-Reply-To 命中出站邮件映射（出站回复关联），
+  //    且 From 非空且≠值守邮箱自身的邮件放行至后续处理；值守邮箱自身的
+  //    出站回执仍被拦截（防自环；①的 X-Delepi-Role 头为第一道保险）
   if (mail.subject.startsWith(RECEIPT_SUBJECT_PREFIX)) {
     const selfMailbox = (settings.watchMailboxAddress || '').trim().toLowerCase();
     const fromSelf = Boolean(mail.fromAddress) && mail.fromAddress.trim().toLowerCase() === selfMailbox;
@@ -1105,7 +1105,7 @@ async function processWatchMail(
     return { status: 'sender_rejected', requestId: '', level: 'WARN', detail: 'From 头为空或解析失败' };
   }
 
-  // ③.5 出站回复关联（BUG3 修复）：In-Reply-To 命中出站邮件映射 → 提取用户手写正文注入
+  // ③.5 出站回复关联：In-Reply-To 命中出站邮件映射 → 提取用户手写正文注入
   //     原对话（等同在当前对话输入该消息）；未命中映射则继续 ④ 指令判定（非指令正文
   //     维持 non_command 静默忽略，防误注入）
   if (mail.inReplyTo) {
@@ -1285,7 +1285,7 @@ async function executeListCommand(
   }
 }
 
-/** 推送「指令已接受 → 请切到目标会话」事件（阶段7 目标5②） */
+/** 推送「指令已接受 → 请切到目标会话」事件 */
 function emitCommandNavigation(payload: WatchCommandNavigationPayload): void {
   try {
     const windows = BrowserWindow.getAllWindows();
@@ -1307,7 +1307,7 @@ function emitCommandNavigation(payload: WatchCommandNavigationPayload): void {
 }
 
 /**
- * 注入执行参数（injectAndClassifyRun 与 BUG3 出站映射命中分支共用）
+ * 注入执行参数（injectAndClassifyRun 与出站映射命中分支共用）
  */
 interface InjectRunParams {
   conversationId: string;
@@ -1361,10 +1361,10 @@ function launchInjectRunInBackground(params: InjectRunParams): void {
 }
 
 /**
- * 注入 run 终态回调（BUG1/BUG2）：读清指令上下文、登记终态结果、兜底回执判定。
+ * 注入 run 终态回调：读清指令上下文、登记终态结果、兜底回执判定。
  * - 成功：登记 executed（receiptChannel 观测语义保留）
- * - 注入前协议层失败（会话运行中/主模型未配置）：直发失败回执（原语义移至异步回调）
- * - 执行期失败（ERR_WATCH_EXEC_ABORTED 含 30 分钟硬超时 / ERR_WATCH_EXEC_FAILED，BUG2 修复）：
+ * - 注入前协议层失败（会话运行中/主模型未配置）：直发失败回执（在异步回调中执行）
+ * - 执行期失败（ERR_WATCH_EXEC_ABORTED 含 30 分钟硬超时 / ERR_WATCH_EXEC_FAILED）：
  *   模型未发出回执（receiptSentByAgent !== true）→ 服务端兜底直发失败回执（主题保持
  *   [Delepi回执] 前缀防环、内容含失败码）；模型已发过回执则不重复直发（防重发）
  * commandContext 为 launchInjectRunInBackground 创建的 run 私有对象（闭包直传），
@@ -1429,7 +1429,7 @@ async function finalizeInjectRunOutcome(
     return;
   }
 
-  // 执行期失败（run 已启动：异常/中止/30 分钟硬超时）——BUG2 修复：兜底回执判定
+  // 执行期失败（run 已启动：异常/中止/30 分钟硬超时）——兜底回执判定
   const agentReceiptSent = commandContext.receiptSentByAgent === true;
   if (agentReceiptSent) {
     // 模型已发过回执：不重复直发，仅记日志（防重发）
@@ -1471,7 +1471,7 @@ async function finalizeInjectRunOutcome(
 
 /**
  * 注入消息并立即返回受理结果（send_message 与 new_conversation 共用；单轨语义集中在此）。
- * BUG1 修复：不 await 注入终态（fire-and-forget），轮询循环与同批后续邮件处理不被阻塞；
+ * 不 await 注入终态（fire-and-forget），轮询循环与同批后续邮件处理不被阻塞；
  * run 终态由 finalizeInjectRunOutcome 异步登记；list_conversations 不走本函数（保持同轮
  * 同步快速直发，现状语义）。
  */
@@ -1485,14 +1485,14 @@ async function injectAndClassifyRun(params: InjectRunParams): Promise<MailHandli
   };
 }
 
-/** BUG3：主流客户端引用块标记（分隔行 / 「在xxx写道：」 / Outlook 头块）——保守匹配，
+/** 主流客户端引用块标记（分隔行 / 「在xxx写道：」 / Outlook 头块）——保守匹配，
  * 宁可少剥离不可误删用户正文；行首「>」引用前缀在 extractHandwrittenReplyBody 内逐行判定 */
 const REPLY_QUOTE_SEPARATOR_RE = /^\s*-{2,}\s*(原始邮件|回复邮件|转发邮件|Original Message|Forwarded message|Forwarded Message)\s*-{2,}\s*$/i;
 const REPLY_QUOTE_ATTRIBUTION_RE = /^.{0,120}?(写道|wrote)\s*[:：]\s*$/i;
 const REPLY_OUTLOOK_HEADER_RE = /^\s*(发件人|From)\s*[:：]/i;
 
 /**
- * BUG3：从回复邮件正文提取用户手写内容（保守策略）。
+ * 从回复邮件正文提取用户手写内容（保守策略）。
  * 顺序：① 剥离引用块（首个引用标记行之前的全部内容；无引用标记则全文）；
  * ② 剥离后的手写部分可解析出 --message 指令（parseWatchCommand 成功且类型带 message）
  * → 取指令消息值（用户按指令格式回复）；否则返回剥离后的手写全文。
@@ -1529,12 +1529,12 @@ function extractHandwrittenReplyBody(bodyText: string): string {
 }
 
 /**
- * BUG3：出站映射命中的回复邮件 → 注入原对话（等同在当前对话输入该消息）。
+ * 出站映射命中的回复邮件 → 注入原对话（等同在当前对话输入该消息）。
  * - 正文含 --message 指令时取其值；否则剥离引用取全文；空正文静默跳过（不注入不回执）
  * - 目标会话已删除：静默跳过（本分支无指令请求语义，不产生回执噪音）
  * - 随 run 传递指令上下文（run 私有对象，requestId 自动生成）：后续 run 中模型调用 send_email
  *   可回带 In-Reply-To=本回复邮件 Message-ID（邮件线程闭环；新出站邮件同样登记映射，用户再回复仍可命中）
- * - 注入走 fire-and-forget（与 BUG1 注入类指令同策略，不阻塞轮询循环）
+ * - 注入走 fire-and-forget（与注入类指令同策略，不阻塞轮询循环）
  */
 async function executeReplyMappedInjection(
   mail: FetchedWatchMail,
@@ -1694,7 +1694,7 @@ async function executeSendCommand(
       + `messageChars=${command.message.length}（消息原文零加工注入）`,
   );
 
-  // 阶段7 目标5②：解析成功且目标会话确定 → 推送跳转（四类过滤邮件在 ①~④ 步已返回，永不至此）
+  // 解析成功且目标会话确定 → 推送跳转（四类过滤邮件在 ①~④ 步已返回，永不至此）
   emitCommandNavigation(buildCommandNavigationPayload({
     conversationId,
     conversationTitle: targetConversation.title,
@@ -1720,7 +1720,7 @@ async function executeSendCommand(
 }
 
 /**
- * 新建对话指令执行（阶段7 目标4②）：createConversation() 新建会话 → 推送跳转（前端切到新会话）
+ * 新建对话指令执行：createConversation() 新建会话 → 推送跳转（前端切到新会话）
  * → 在新会话内注入消息。新会话无模型方案绑定，注入时按 resolver 懒绑定当前激活方案。
  */
 async function executeNewConversationCommand(
@@ -1765,7 +1765,7 @@ async function executeNewConversationCommand(
 }
 
 // ---------------------------------------------------------------------------
-// 阶段7 目标5①：重启续期（重建编号映射 + 发送带 JSON 附件的新邮件）
+// 重启续期（重建编号映射 + 发送带 JSON 附件的新邮件）
 // ---------------------------------------------------------------------------
 
 /** 续期邮件正文（HTML）：只做说明与表格提示，**不写以 -- 行首的示例行**，避免用户整段引用回复时误触指令 */
