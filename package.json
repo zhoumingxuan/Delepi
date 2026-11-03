@@ -17,6 +17,8 @@
     "build:preset-python-win10": "npx tsx scripts/build-preset-python.ts --win10",
     "verify:preset-python-win10": "npx tsx scripts/build-preset-python.ts --win10 --verify-only",
     "pack:win10": "node -e \"require('fs').rmSync('release-win10',{recursive:true,force:true})\" && npm run build && npm run build:preset-python-win10 && npx electron-builder --config electron-builder-win10.yml",
+    "release:win10-intranet": "node scripts/release-win10.cjs intranet",
+    "release:win10-internet": "node scripts/release-win10.cjs internet",
     "build:preset-python-mac": "npx tsx scripts/build-preset-python.ts --mac",
     "verify:preset-python-mac": "npx tsx scripts/build-preset-python.ts --mac --verify-only",
     "pack:mac": "node -e \"require('fs').rmSync('release-mac',{recursive:true,force:true})\" && npm run build && npm run build:preset-python-mac && npx electron-builder --config electron-builder-mac.yml",
