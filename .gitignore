@@ -16,6 +16,7 @@ release-linux/
 /resources/python-linux/*
 scripts/cache/
 scripts/.build/
+scripts/release-win10.cjs
 
 # Database
 data/*.db

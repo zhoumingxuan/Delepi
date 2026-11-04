@@ -1,14 +1,14 @@
 /**
  * 客户端自动更新：地址与授权码解析链的纯函数部分（无 Electron / Node 依赖，可独立实测）
  *
- * 解析优先级（地址）：L1 运行时设置 > L2 构建期环境变量 > L3 yml extraMetadata > L4 源码常量。
+ * 解析优先级（地址）：L1 运行时设置 > 构建期默认值（L3 yml extraMetadata > L4 源码常量=发布脚本构建期注入）。
+ * 原 L2 构建期环境变量地址覆盖通道已废弃：双版本发布由 scripts/release-win10.cjs 统一注入 L4。
  * 解析优先级（授权码）：L2 构建期环境变量 > L3 yml extraMetadata > L4 源码常量（v1 不提供运行时输入）。
  */
 
 import {
   UPDATE_ACCESS_KEY_SOURCE_DEFAULT,
   UPDATE_BASE_URL_SOURCE_DEFAULT,
-  UPDATE_BASE_URL_LEGACY_DEFAULTS,
 } from '@shared/update-constants';
 
 export type UpdateValueSource = 'env' | 'yml' | 'source';
@@ -60,14 +60,12 @@ export function isAllowedUpdateBaseUrl(raw: string): boolean {
 }
 
 /**
- * 构建期默认地址（L2 → L3 → L4）。
- * L2/L3 的值非法时静默跳过（不把错误地址烧进运行期）。
+ * 构建期默认地址（L3 → L4）。
+ * L3 的值非法时静默跳过（不把错误地址烧进运行期）。
+ * L4 = 发布脚本构建期注入的 UPDATE_BASE_URL_SOURCE_DEFAULT（不过 isAllowedUpdateBaseUrl，
+ * 内网 http 地址由此通道生效；define 替换发生在构建期，此处运行时读取已是字面量）。
  */
-export function resolveDefaultUpdateBaseUrl(envBaseUrl: string, ymlBaseUrl: string): ResolvedBaseUrl {
-  const env = normalizeUpdateBaseUrl(envBaseUrl);
-  if (env && isAllowedUpdateBaseUrl(env)) {
-    return { baseUrl: env, source: 'env' };
-  }
+export function resolveDefaultUpdateBaseUrl(ymlBaseUrl: string): ResolvedBaseUrl {
   const yml = normalizeUpdateBaseUrl(ymlBaseUrl);
   if (yml && isAllowedUpdateBaseUrl(yml)) {
     return { baseUrl: yml, source: 'yml' };
@@ -77,7 +75,7 @@ export function resolveDefaultUpdateBaseUrl(envBaseUrl: string, ymlBaseUrl: stri
 
 /**
  * 当前生效地址（L1 → 默认地址）。
- * 空串 与 恰好等于源码默认值 / 任一历史默认地址 都视为「用户未自定义」，跟随构建期注入值。
+ * 空串 与 恰好等于源码默认值（=构建期注入值）都视为「用户未自定义」，跟随构建期默认。
  */
 export function resolveEffectiveUpdateBaseUrl(
   settingsBaseUrl: string | null | undefined,
@@ -88,10 +86,7 @@ export function resolveEffectiveUpdateBaseUrl(
     return defaultBaseUrl;
   }
   const normalizedDefault = normalizeUpdateBaseUrl(UPDATE_BASE_URL_SOURCE_DEFAULT);
-  if (
-    settings === normalizedDefault ||
-    UPDATE_BASE_URL_LEGACY_DEFAULTS.some((legacy) => settings === legacy)
-  ) {
+  if (settings === normalizedDefault) {
     return defaultBaseUrl;
   }
   if (!isAllowedUpdateBaseUrl(settings)) {

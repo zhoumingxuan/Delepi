@@ -6,13 +6,12 @@
  * - 任何日志、界面文案、报告都不得出现完整授权码，只允许 **** + 末 4 位指纹。
  */
 
-/** 默认更新地址（与 UI / 服务端契约一致的无尾斜杠形态；如需变更只改本行——全工程唯一允许出现该 URL 字面量的位置） */
-export const UPDATE_BASE_URL_SOURCE_DEFAULT = 'https://update.ai-cnlab.com';
+/** 构建期注入标识符：由 vite define 替换为发布脚本（scripts/release-win10.cjs）注入的真实地址；源码内禁止出现任何真实环境地址字面量 */
+declare const __DELEPI_UPDATE_BASE_URL_DEFAULT__: string;
 
-/** 历史默认地址（均按无尾斜杠归一）：与当前默认一起，运行时判「未自定义」时等同处理 */
-export const UPDATE_BASE_URL_LEGACY_DEFAULTS: readonly string[] = [
-  'https://update.ai-cnlab.com',   // 0.8.4 之前常量带尾斜杠形态的归一化等价值
-];
+/** 默认更新地址（构建期注入；typeof 守卫在 define 缺失时降级为空串；内网 http 地址依赖 L4 层不校验特性生效） */
+export const UPDATE_BASE_URL_SOURCE_DEFAULT: string =
+  typeof __DELEPI_UPDATE_BASE_URL_DEFAULT__ === 'string' ? __DELEPI_UPDATE_BASE_URL_DEFAULT__ : '';
 
 /** 开发占位默认授权码（32 字符 base64url 无填充；可被 L2 环境变量 / L3 yml 覆盖） */
 export const UPDATE_ACCESS_KEY_SOURCE_DEFAULT = 'delepi_update_K7mQ3vTz9LpW4aB2cD';
