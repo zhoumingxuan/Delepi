@@ -21,7 +21,7 @@ export const ASSISTANT_MESSAGE_DONE_EVENT = 'assistant.message.done';
 export const TOOL_MESSAGE_CREATED_EVENT = 'tool.message.created';
 
 /**
- * P6 用户消息创建事件（主进程内部事件总线 → ipc-handlers 转发给渲染）
+ * 用户消息创建事件（主进程内部事件总线 → ipc-handlers 转发给渲染）
  * - 由 main-agent.ts 在 insertMessage(user) 后 emit
  * - ipc-handlers.ts eventBus.on 监听后转发 IPC_CHAT.USER_MESSAGE_CREATED 给 renderer
  * - payload 含 conversationId + message{id,role,content,attachments,createdAt}
@@ -30,7 +30,7 @@ export const TOOL_MESSAGE_CREATED_EVENT = 'tool.message.created';
 export const USER_MESSAGE_CREATED_EVENT = 'user.message.created';
 
 // ============================================================
-// ★ S3 批次完成事件（M4）：批内全部工具调用结束（含失败/中止）后于批次收口点发出
+// 批次完成事件：批内全部工具调用结束（含失败/中止）后于批次收口点发出
 //   
 // ============================================================
 

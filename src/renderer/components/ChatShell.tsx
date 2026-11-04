@@ -2,12 +2,12 @@
  * ChatShell 主聊天容器（编排层）
  * 组合 ChatHeader + ChatArea + SenderBox + Sidebar + ConfigDrawer
  *
- * 适配 Delepi 后端实现（替换 Next.js + SSE → Delepi Electron IPC）：
- * - 数据获取：fetchWithAuth('/api/...') + useRouter → window.electronAPI.* IPC 调用
- * - 事件流：parseSseJsonStream → useChat hook 内置 IPC 事件订阅
- * - 状态管理：自维护 messages/toolSnapshots/conversations → useChat 统一管理
- * - 文件上传：内置 /api/uploads → useFileUpload 本地预览
- * - 用户认证：fetchWithAuth + MissingStoredAuthError + router → Delepi 单窗口无需登录态路由
+ * 数据与状态：
+ * - 数据获取：window.electronAPI.* IPC 调用
+ * - 事件流：useChat hook 内置 IPC 事件订阅
+ * - 状态管理：useChat 统一管理消息与会话状态
+ * - 文件上传：useFileUpload 本地预览
+ * - 用户认证：Delepi 单窗口无需登录态路由
  *
  * 样式对齐：
  * - 侧边栏 280px 固定宽度（borderRight: 1px solid）
@@ -43,9 +43,9 @@ import { CleanupConversationsModal } from './CleanupConversationsModal';
 import { useConfigReadiness } from '../hooks/useConfigReadiness';
 
 /**
- * 值守指令跳转载荷（ 目标5②；preload watch.onCommandNavigate 原样透传）。
- * 全局 electron.d.ts 未声明 watch 分组（该文件不在 改动白名单内），
- * 沿用 ConfigDrawer/OtherSettingsTab 的局部类型 + 断言访问先例。
+ * 值守指令跳转载荷（preload watch.onCommandNavigate 原样透传）。
+ * 全局 electron.d.ts 未声明 watch 分组，
+ * 沿用 ConfigDrawer/OtherSettingsTab 的局部类型 + 断言访问方式。
  */
 interface WatchCommandNavigationPayloadLite {
   conversationId: string;
@@ -69,7 +69,6 @@ export function ChatShell() {
 
   const {
     messages,
-    /** ★ ） */
     messageLoading,
     conversationId,
     conversations,
@@ -80,10 +79,10 @@ export function ChatShell() {
     deleteConversation,
     cleanupConversations,
     switchConversation,
-    /**  P1 + P3：守卫 + 状态相关 */
+/** 守卫 + 状态相关 */
     isConversationSending,
     isConversationRunning,
-    /** ★ 当前会话 error 状态（sendMessage catch 活跃会话命中时写入），错误条消费 */
+/** 当前会话 error 状态（sendMessage catch 活跃会话命中时写入），错误条消费 */
     error,
     clearError,
     /** 滚动状态相关 */
@@ -103,9 +102,9 @@ export function ChatShell() {
   const { config, loading: configLoading, saveConfig, saveAllConfig, reloadConfig } =
     useSettings();
   // ============================================================
-  // ★ 上传链路直通重构（粘贴即落盘）：无会话粘贴前置建会话 + 批次级用户反馈注入
+// 无会话粘贴前置建会话 + 批次级用户反馈注入（粘贴即落盘）
   // ============================================================
-  // 无会话粘贴 → 前置创建会话（复用 useChat.createConversation：在途去重/R2 基准判定均沿用）
+// 无会话粘贴 → 前置创建会话（复用 useChat.createConversation：在途去重/基准判定均沿用）
   const ensureConversationForUpload = useCallback(async (): Promise<string | null> => {
     const conv = await createConversation();
     return conv?.id ?? null;
@@ -142,7 +141,7 @@ export function ChatShell() {
   const handleSendRef = useRef<((senderTextOrQueued?: string | { text: string; conversationId: string | null }) => Promise<void>) | null>(null);
 
   const [inputValue, setInputValue] = useState('');
-  // ★ R1 草稿会话级隔离：按会话 ID 缓存未发送草稿（键 null = 无会话列表态）
+// 草稿会话级隔离：按会话 ID 缓存未发送草稿（键 null = 无会话列表态）
   const draftsRef = useRef<Map<string | null, string>>(new Map());
   // 草稿保存/恢复的切换边界判定基准（上一会话 ID）
   const prevDraftConversationIdRef = useRef<string | null>(conversationId);
@@ -182,7 +181,7 @@ const { check, canCheck } = useConfigReadiness({
   );
 
   // ============================================================
-  // ★ R1 草稿会话级隔离：conversationId 变化 = 会话切换边界 ——
+// 草稿会话级隔离：conversationId 变化 = 会话切换边界 ——
   //   离开会话：保存当前输入草稿到 draftsRef[离开会话ID]（空草稿不落 Map）
   //   进入会话：恢复 draftsRef[进入会话ID]（无草稿 → 空串）
   //   useLayoutEffect（paint 前换装）：避免旧会话草稿闪现一帧
@@ -205,7 +204,7 @@ const { check, canCheck } = useConfigReadiness({
   }, [conversationId, inputValue, conversations]);
 
   // ============================================================
-  // P5 适配：useFileUpload 需要知道当前会话 ID 才能调用 file:upload
+// useFileUpload 需要知道当前会话 ID 才能调用 file:upload
   // conversationId 变化（包括新建会话、切换会话）时同步给 useFileUpload；
   // 切会话清理由 hook 内 setConversationId 规则承担（A→B/A→null 清空本地列表，
   // 磁盘文件保留；已随消息发送的文件不再拉回输入框）
@@ -245,8 +244,8 @@ const { check, canCheck } = useConfigReadiness({
   }, [messageApi, switchConversation]);
 
   // ============================================================
-  // P5 适配：落盘窗口中的文件数取自 useFileUpload.savingCount
-  // 避免出现「useChat 的 uploadingCount 始终为 0 + useFileUpload 直通落盘中」的不一致
+// 落盘窗口中的文件数取自 useFileUpload.savingCount
+// 避免出现「useChat 的上传计数始终为 0 + useFileUpload 直通落盘中」的不一致
   // ============================================================
   const uploading = fileSavingCount > 0;
 
@@ -261,7 +260,7 @@ const { check, canCheck } = useConfigReadiness({
   // ============================================================
   const activeConversationRunning = isConversationRunning(conversationId);
   const activeConversationSending = isConversationSending(conversationId);
-  // ★ P5 适配：uploading 已通过 useEffect 块从 useFileUpload.fileSavingCount 计算
+// uploading 经 useEffect 块从 useFileUpload.fileSavingCount 计算
   const showCancel = activeConversationSending || activeConversationRunning;
   // ============================================================
   //  配置完成性校验
@@ -277,9 +276,9 @@ const { check, canCheck } = useConfigReadiness({
   }, [config.mainModelApiKey, config.mainModelName, configLoading]);
 
   // ============================================================
-  // ★ P0-B 渲染范围收敛：6 个低频内联回调 useCallback 化（引用稳定，
+// 6 个低频内联回调 useCallback 化（引用稳定，
   //   流式期间 ChatHeader/Sidebar/SenderBox/ConfigDrawer/ConfigCheckModal
-  //   的 memo 不再被内联新引用击穿；依赖见各行，行为与原内联闭包一致）
+//   的 memo 不被内联新引用击穿；依赖见各行）
   // ============================================================
   const handleMenuClick = useCallback(() => setSidebarOpen((v) => !v), []);
   const handleSettingsClick = useCallback(() => setSettingsOpen(true), []);
@@ -311,7 +310,7 @@ const { check, canCheck } = useConfigReadiness({
   // - handleAbort：转发到 useChat.abortChat
   // ============================================================
   // ============================================================
-  // P5 适配：仅发送已落盘就绪的文件（uploadStatus === 'ready'）
+// 仅发送已落盘就绪的文件（uploadStatus === 'ready'）
   // - 落盘窗口内的文件（saving）由场景c 拦截发送；error 项不随消息发送（场景d 提示）
   // - sendMessage 第二参数为 SendAttachment[]（来自 file:upload 已落盘元数据，粘贴时已产生）
   // ============================================================
@@ -376,11 +375,11 @@ const { check, canCheck } = useConfigReadiness({
     }
     sendInFlightConversationIdsRef.current.add(flightKey);
     try {
-      // ★ R3：目标会话解析结果提升到 try 顶部（粘贴即落盘后不再有发送时建会话/补传分支）
+// 目标会话解析结果提升到 try 顶部（无发送时建会话/补传分支）
       const resolvedConversationId = targetConversationId;
       const readyItems = pendingFiles.filter((i) => i.uploadStatus === 'ready' && i.uploadedFile);
       const errorItems = pendingFiles.filter((i) => i.uploadStatus === 'error');
-      // ── 场景d：上传失败文件 → 明确提示，不随消息发送（）──
+// ── 场景d：上传失败文件 → 明确提示，不随消息发送 ──
       if (errorItems.length > 0) {
         messageApi.warning(`${errorItems.length} 个文件上传失败，将不随消息发送`);
       }
@@ -391,15 +390,15 @@ const { check, canCheck } = useConfigReadiness({
         contentType: item.uploadedFile!.contentType,
         storageKey: item.uploadedFile!.storageKey,
       }));
-      // 发送即清空输入框附件（clearLocalOnly 仅清本地 state，不触发 file:delete，保留磁盘文件）——原 L232-233 语义原样保留
+      // 发送即清空输入框附件（clearLocalOnly 仅清本地 state，不触发 file:delete，保留磁盘文件）
       clearLocalOnly();
-      setInputValue(''); // ★修复：
-      // +M3/R3：第三参显式传入已解析的目标会话 ID（进入时捕获值；粘贴即落盘后发送流程不再建会话/补传）——
+      setInputValue('');
+// 第三参显式传入已解析的目标会话 ID（进入时捕获值；发送流程不建会话/不补传）——
       //   sendMessage 内部五重守卫与 IPC 投递均按该 ID 判定/路由，不再依赖 await 后的 conversationIdRef.current
-      // ：发送文本统一取 sendText（queued 重发=原文本快照，正常= inputValue 不变）
+// 发送文本统一取 sendText（queued 重发=原文本快照，正常= inputValue 不变）
       const sent = await sendMessage(sendText, attachments, resolvedConversationId);
       if (!sent && !queued) {
-        // ★ 受理失败（守卫拦截 / 创建在途去重 / 投递失败）：恢复草稿，杜绝文本静默丢失
+// 受理失败（守卫拦截 / 创建在途去重 / 投递失败）：恢复草稿，杜绝文本静默丢失
         //   （替代原 creatingConversation 在途拦截对输入文本的隐式保护副作用）
         setInputValue(sendText);
       }
@@ -481,7 +480,7 @@ const { check, canCheck } = useConfigReadiness({
 
   const handleRemoveConversation = useCallback(
     (id: string) => {
-      draftsRef.current.delete(id); // ★ R1：删除会话同步清理其草稿（非活跃删除无切换边界，须显式清理）
+      draftsRef.current.delete(id); // 删除会话同步清理其草稿（非活跃删除无切换边界，须显式清理）
       void deleteConversation(id);
     },
     [deleteConversation],
@@ -493,7 +492,7 @@ const { check, canCheck } = useConfigReadiness({
       try {
         const result = await cleanupConversations(options);
         for (const id of result.deletedIds) {
-          draftsRef.current.delete(id); // ★ R1 同款：清理命中的会话同步清理其草稿
+          draftsRef.current.delete(id); // 清理命中的会话同步清理其草稿
         }
         const { deletedCount, skippedRunningIds, failedItems } = result;
         if (deletedCount === 0 && failedItems.length > 0) {
@@ -526,7 +525,7 @@ const { check, canCheck } = useConfigReadiness({
     setHoveredConversationId(id);
   }, []);
 
-  // 标题副标题（）
+// 标题副标题
   const headerTitle = activeConversation?.title ?? 'Delepi';
   const headerSubtitle = configLoading
     ? ''
@@ -600,7 +599,7 @@ const { check, canCheck } = useConfigReadiness({
           onSettingsClick={handleSettingsClick}
         />
 
-        {/* ★ D3 修复：error state 可见出口（当前会话错误条）
+        {/* error state 可见出口（当前会话错误条）
             仅当存在错误且处于具体会话（error 生命周期：仅 sendMessage catch 活跃会话写入，
             切换/新建会话时 setError(null) 清空）时显示；chat:error 事件路径经 messageApi
             toast 单点提示（useChat 已抑制其 setError），不与本错误条重复双弹 */}
@@ -629,8 +628,8 @@ const { check, canCheck } = useConfigReadiness({
           <ChatArea
             messages={messages}
             /**
-             * 数据源切换为 executor 任务记录虚拟消息（旧 toolSnapshots 停传）；
-             * 受 EXECUTOR_RECORD_PANEL_ENABLED 控制——置 false 即整体停用新显示侧（回滚开关）
+              * 数据源为 executor 任务记录虚拟消息；
+              * 受 EXECUTOR_RECORD_PANEL_ENABLED 控制——置 false 即整体停用（回滚开关）
              */
             executorTaskMessages={
               EXECUTOR_RECORD_PANEL_ENABLED ? executorRecords.executorTaskMessages : undefined
@@ -646,7 +645,6 @@ const { check, canCheck } = useConfigReadiness({
             showScrollToBottom={showScrollToBottom}
             onShowScrollToBottomChange={setShowScrollToBottom}
             isStreaming={isStreaming}
-            /** ★ ） */
             messageLoading={messageLoading}
           />
           <SenderBox

@@ -2,7 +2,7 @@
  * IPC 处理器注册
  * 实现核心 IPC 通道：chat:send、chat:abort
  *
- * 事件流（v1.2）：
+ * 事件流：
  * MainAgent 事件 → EventBus → IPC → 前端
  * ExecutorAgent 事件 → EventBus → IPC（executor 三通道）→ 前端
  */
@@ -242,7 +242,7 @@ function fileInputToBuffer(file: {
 }): Buffer {
   const data = file.data;
 
-  // H1 防御：渲染端改传 Base64 字符串（IPC 结构化克隆纯字符串，规避 ArrayBuffer 序列化断点）
+// 防御：渲染端改传 Base64 字符串（IPC 结构化克隆纯字符串，规避 ArrayBuffer 序列化断点）
   if (typeof data === 'string') {
     return Buffer.from(data, 'base64');
   }
@@ -352,15 +352,15 @@ let eventBusCleanups: (() => void)[] = [];
 let updateIpcDispose: (() => void) | null = null;
 
 export function registerIpcHandlers(mainWindow: BrowserWindow): void {
-  // P1-02: 精确清理上次注册的 EventBus 监听器
+// 精确清理上次注册的 EventBus 监听器
   for (const cleanup of eventBusCleanups) {
     cleanup();
   }
   eventBusCleanups = [];
-  // 方向2：启动链中 configManager.reload() 先于本函数执行（index.ts），此处刷新一次
+// 启动链中 configManager.reload() 先于本函数执行（index.ts），此处刷新一次
   // MAIN_TOOLS 使主智能体 query_skill enum 含已持久化的启用自定义标签（live binding，main-agent 零改动）。
   refreshMainTools();
-  // 方向5：启动扫描注册动态工具（userData/dyn-tools/<tool_name>/{manifest.json,main.py}）。
+// 启动扫描注册动态工具（userData/dyn-tools/<tool_name>/{manifest.json,main.py}）。
   // 异步 fire-and-forget：单目录校验失败仅告警不阻塞启动（A5-2 启动扫描语义；
   // 重载入口=tools:dyn-reload，运行期任意时刻可手动触发补扫）。
   void loadDynamicTools().catch((error: unknown) => {
@@ -448,7 +448,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         mainAgentMultimodalEnabled: runSettings.visionEnabled && runSettings.mainModelMultimodal,
         // 六键快照（主/子思考档位、主/子协议、压缩阈值、视觉总开关）随本次
         // run 传入；main-agent/executor-agent 运行期一律读该快照，不再直读 configManager 全局——
-        // 运行中他处切换方案不影响本次 run（快照语义，INV-3）。与 conversation-send-service 入口同步。
+// 运行中他处切换方案不影响本次 run（快照语义）。与 conversation-send-service 入口同步。
         runtimeSettingsSnapshot: {
           mainThinkingLevel: runSettings.mainThinkingLevel,
           mainModelProtocol: runSettings.mainModelProtocol,
@@ -469,7 +469,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
 
-      // ★ 取消态统一吞错（同机制补齐）：本 run 的 abortController.signal.aborted=true 时，
+// 取消态统一吞错（同机制补齐）：本 run 的 abortController.signal.aborted=true 时，
       //   runMainAgent 抛出的一切错误一律按取消收敛（取消提示已由 chat:abort →
       //   MAIN_AGENT_ABORTED_EVENT 先行时序 + 渲染层归一化气泡单独承担）——覆盖取消+API
       //   错误竞态（取消瞬间恰逢 ModelApiAbortError，如重试耗尽/探查降级链失败并发取消：
@@ -670,7 +670,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     }
   }));
 
-  // ★ S3（M4）：tool.batch.completed → IPC tool.batch.completed
+// tool.batch.completed → IPC tool.batch.completed
   //   main-agent.ts 批次收口块在全中止判定之前 emit（含全中止批次），
   //   前端 useChat 按 isError 收口 running 快照
   eventBusCleanups.push(eventBus.on(TOOL_BATCH_COMPLETED_EVENT, (payload) => {
@@ -717,10 +717,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   /**
    * config:save 扩展参数：在既有 ConfigSaveParams（src/main/types/ipc.ts）
    * 基础上增加可选 conversationId / profileId；preload 的 save 通道按 unknown 透传，旧调用方不携带
-   * 新字段时全部回落旧行为（向后兼容，INV-6）。profileId = 编辑发起时的上下文方案身份（前端
+ * 新字段时全部回落旧行为（向后兼容）。profileId = 编辑发起时的上下文方案身份（前端
    * displayProfileId 在保存发起时捕获并随载荷上传），保存到达时直接按该 id 定位目标方案写入，
    * 不读到达时刻的任何可变状态（activeProfileId / 会话绑定）——迟到的保存天然写回其发起时的
-   * 上下文方案，无需 prevValue 双通道守卫与切换窗口丢弃。
+ * 上下文方案。
    */
   type ConfigSaveParamsWithContext = ConfigSaveParams & {
     /** 发起编辑的会话 id（兜底通道：profileId 缺失时按该会话当前绑定解析写入目标） */
@@ -765,9 +765,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         const profiles = [...s.modelProfiles];
         const idx = profiles.findIndex((item) => item.id === targetId);
         if (idx >= 0) {
-          // 无条件写入目标方案：写入身份由载荷固定（随数据携带），旧「目标方案现值 === 运行时旧值/
-          // 前端基准」双通道一致性守卫随双状态源错位一起移除——写入目标不再取自到达时刻的可变
-          // 全局状态，守卫失去存在前提（结构性替代，非拦截式放宽）。
+          // 无条件写入目标方案：写入身份由载荷固定（随数据携带），不取自到达时刻
           const next = { ...profiles[idx] } as ModelProfile & Record<string, unknown>;
           next[params.key] = params.value;
           profiles[idx] = next as ModelProfile;
@@ -817,7 +815,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
   ipcMain.handle(IPC_CONFIG.RELOAD, async (): Promise<void> => {
     configManager.reload();
-    // 方向2：reload 可能恢复/变更 customSkillTags，同步刷新主智能体 query_skill enum
+// reload 可能恢复/变更 customSkillTags，同步刷新主智能体 query_skill enum
     refreshMainTools();
   });
 
@@ -840,7 +838,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // blank:true 新建）。封口：非 blank 必须显式携带 mode:'snapshot-overwrite' 才放行，否则拒绝。
   type ProfileSaveParams = { name: string; blank?: boolean; mode?: 'snapshot-overwrite' };
   type ProfileDeleteParams = { id: string };
-  /** 切换参数：conversationId 存在时只把该会话绑定到新方案（不再只写全局 14 键） */
+   /** 切换参数：conversationId 存在时只把该会话绑定到新方案 */
   type ProfileSwitchParams = { id: string; conversationId?: string };
   type ProfileSwitchResult = {
     activeProfileId: string;
@@ -848,9 +846,9 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     /** 切换后该会话的绑定方案 id（未传 conversationId 时为 ''） */
     conversationProfileId: string;
     /**
-     * 带 conversationId 分支返回的新方案合成配置（= 全局设置 + 新方案 15 键覆盖，
-     * applyProfileToSettings 口径），供前端会话分支回填表单（不再 onReload 回灌全局值）；
-     * 未带 conversationId 时不返回该字段（列表态全局切换，旧行为）。
+     * 带 conversationId 分支返回的方案合成配置（= 全局设置 + 方案 15 键覆盖，
+     * 供前端会话分支回填表单；
+     * 未带 conversationId 时不返回该字段（列表态全局切换）。
      */
     resolvedSettings?: AppSettings;
   };
@@ -1076,7 +1074,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       };
     }
 
-    // 列表态（无会话上下文）＝应用默认方案：全局 15 键 + activeProfileId 写入保持旧行为（INV-6）。
+// 列表态（无会话上下文）＝应用默认方案：全局 15 键 + activeProfileId 写入。
     // 切换流程：逐键「saveSetting 落库」。15 键循环 + activeProfileId 写入整体包入
     // getDb().transaction（同 conversation.repo.ts deleteConversationGuarded 事务范式）——任一键
     // 失败即整体回滚，DB 恒为「全成或全不改」，杜绝「半个 B」错乱态；configManager 内存同步统一
@@ -1121,7 +1119,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       }
       throw txError;
     }
-    // 事务提交成功：统一同步 configManager 内存（逐键 setSetting，提交后内存态与旧版一致）
+// 事务提交成功：统一同步 configManager 内存（逐键 setSetting，保持内存态一致）
     for (const [key, value] of appliedKv) {
       configManager.setSetting(key as keyof AppSettings, value as AppSettings[keyof AppSettings]);
     }
@@ -1329,7 +1327,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
     return { ok: true, profile: newProfile, profiles, activeProfileId, importedCount, skippedCount, renamed };
   });
   // ================================================================
-  // 自定义技能处理器（方向2：skills 五通道；内置12标签（主3+执行9）只读锁定，自定义标签/模板管理）
+  // 自定义技能处理器（skills 五通道；内置12标签（主3+执行9）只读锁定，自定义标签/模板管理）
   // ================================================================
 
   type SkillBuiltinItem = { name: string; title: string; description: string; fileName: string; owner: 'main' | 'executor' };
@@ -1509,7 +1507,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   );
 
   // ================================================================
-  // 动态工具处理器（方向5：tools:dyn-reload / tools:dyn-list 两通道；内置3工具锁定）
+  // 动态工具处理器（tools:dyn-reload / tools:dyn-list 两通道；内置3工具锁定）
   // ================================================================
 
   ipcMain.handle(IPC_TOOLS.DYN_RELOAD, async (): Promise<DynToolsLoadResult> => {
@@ -1525,7 +1523,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   // 对话管理处理器
   // ================================================================
 
-  // ★ 方向3：listConversations 已聚合 conversation_tags（既有五字段不动，叠加 tags 字段）
+// listConversations 已聚合 conversation_tags（既有五字段不动，叠加 tags 字段）
   ipcMain.handle(IPC_CONV.LIST, async (): Promise<Array<ConversationListItem & { tags: string[] }>> => {
     return listConversations();
   });
@@ -1570,7 +1568,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   );
 
   // ================================================================
-  // 方向3：对话重命名 + 标签（自定义标题安全关闭 / conversation_tags）
+  // 对话重命名 + 标签（自定义标题安全关闭 / conversation_tags）
   // ================================================================
 
   type ConvRenameParams = { id: string; title: string };
@@ -1704,7 +1702,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    * 双防线校验（session 存在且 running 且 controller 未 aborted）通过后：
    * 同步写入停止文案条目 → 冻结 → 收敛任务终态 → abort 任务级 controller（仅目标任务）。
    *
-   * ★ 整体执行收尾判定（右侧任务面板停止入口专属；仅在本会话本次执行内生效）：
+ *   整体执行收尾判定（右侧任务面板停止入口专属；仅在本会话本次执行内生效）：
    *   - 停止成功后统计同一 conversationId 内仍处于 running 的任务数（stopExecutorTask 已把
    *     被停止任务 markTerminal('aborted')，故该值 = 本次整体执行内剩余未终态任务数）；
    *   - 归零才收尾：经会话级终态通道 abortConversationRun（仅本会话控制器）+
@@ -1761,7 +1759,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   // ===============================================================
-  // P5 文件上传独立 IPC 通道
+// 文件上传独立 IPC 通道
   // ）
   // ===============================================================
 
@@ -1798,7 +1796,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
    */
   ipcMain.handle(IPC_FILE.UPLOAD, async (_event, params: FileUploadParams): Promise<FileUploadResult> => {
     try {
-      // R5：入口非空校验（对齐 ipc-channels.ts 注释承诺；可预期错误带稳定错误码）
+// 入口非空校验（对齐 ipc-channels.ts 注释承诺；可预期错误带稳定错误码）
       const conversationId =
         typeof params?.conversationId === 'string' ? params.conversationId.trim() : '';
       const originalName =
@@ -1829,7 +1827,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       const uploadedAt = new Date().toISOString();
 
       // 先转 buffer；客户端上传按原始文件内容落盘，不做图片压缩。
-      // H1 防御：data 为 Base64 字符串时在此解码（兼容旧 ArrayBuffer/Uint8Array/number[] 入参）。
+// 防御：data 为 Base64 字符串时在此解码（兼容旧 ArrayBuffer/Uint8Array/number[] 入参）。
       const rawBuffer = fileInputToBuffer({
         name: originalName,
         data,
@@ -1868,7 +1866,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
         },
       };
     } catch (err) {
-      // R5：任何一层失败均写入主进程持久日志（ERROR 级）后 rethrow，杜绝静默失败
+// 任何一层失败均写入主进程持久日志（ERROR 级）后 rethrow，杜绝静默失败
       writeMainLog(
         'ERROR',
         'file:upload',
@@ -1915,7 +1913,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       });
     }
 
-    // 按 uploadedAt 升序，与 readTmpFileManifests 排序行为一致
+    // 按 uploadedAt 升序排列
     files.sort((a, b) => a.uploadedAt.localeCompare(b.uploadedAt));
 
     return { files };
@@ -1955,10 +1953,10 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   /**
-   * file:read — 读取已上传文件的二进制内容(P7 切换会话恢复待发送文件)
+   * file:read — 读取已上传文件的二进制内容(切换会话恢复待发送文件)
    * 校验 storageKey 前缀属于当前 conversationId 的 uploads/(防越权)
    * 返回 ArrayBuffer + contentType + name + size,前端用 URL.createObjectURL(new Blob) 重建预览
-   * 适配 Delepi 客户端:无 static token 鉴权,直接 IPC 读取已上传文件
+   * 本客户端无 static token 鉴权,直接 IPC 读取已上传文件
    * 
    */
   ipcMain.handle(IPC_FILE.READ, async (_event, params: FileReadParams): Promise<FileReadResult> => {
@@ -1990,8 +1988,8 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
 
     const buffer = await readFile(filePath);
 
-    // ★ 后端基于 getFileContentType (扩展名 + magic number 探测) 推断 contentType
-    // 前端可直接使用 readResult.contentType 作为 Blob type,不再依赖 file:list 二次关联
+// 后端基于 getFileContentType (扩展名 + magic number 探测) 推断 contentType
+    // 前端可直接使用读取结果的 contentType 作为 Blob type,无需 file:list 二次关联
     return {
       data: buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
       contentType: meta.contentType,
@@ -2001,7 +1999,7 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
   });
 
   /**
-   * file:cleanup-orphans — P9 手动触发孤儿清理
+   * file:cleanup-orphans — 手动触发孤儿清理
    * 扫描 bin/conversations/ 目录,与 SQLite conversations 表比对
    * 删除 SQLite 中无引用的会话目录(含 uploads/ + tasks/ + manifest.json)
    */

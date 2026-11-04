@@ -1,14 +1,14 @@
 /**
- * mime-parser — 纯 Node.js MIME 解析（收信桥 Node 化的解析层）
+ * mime-parser — 纯 Node.js MIME 解析
  *
- * 覆盖范围（与被替换的旧桥解析实现对齐）：
+ * 覆盖范围：
  * - 头部折行（RFC 5322 folding / unfolding）
  * - RFC 2047 编码字（=?UTF-8?B?...?= / =?GBK?Q?...?=），支持 B 与 Q 两种编码
  * - multipart/alternative、multipart/mixed、multipart/related 递归展开
  * - Content-Transfer-Encoding：base64 / quoted-printable / 7bit / 8bit / binary
  * - 字符集解码：UTF-8、GB18030（含 GB2312/GBK 别名）、Big5、ISO-8859-1、windows-1252、
  *   UTF-16LE；全部经 TextDecoder（Electron 自带 ICU），不支持的标签逐级回落 UTF-8 → latin1
- * - 正文取值优先级与旧桥一致：优先 text/plain，缺失时取 text/html 去标签，正文截断 25000 字符
+ * - 正文取值优先级：优先 text/plain，缺失时取 text/html 去标签，正文截断 25000 字符
  * - 明确跳过 Content-Disposition: attachment 的部件（附件正文不能进指令解析）
  *
  * 设计约束：
@@ -16,7 +16,7 @@
  * - 纯函数、无 IO、无 electron 依赖，可直接在受控 harness 中加载断言。
  */
 
-/** 正文文本硬上限（与被替换的旧桥 BODY_TEXT_LIMIT 完全一致） */
+/** 正文文本硬上限 */
 export const MAX_BODY_TEXT_CHARS = 25_000;
 
 /** MIME 部件（头部 + 原始 body 字节） */
@@ -307,7 +307,7 @@ export function splitMultipart(body: Buffer, boundary: string): MimePart[] {
   return parts;
 }
 
-/** HTML → 纯文本：去 script/style 内容、去标签、实体解码、空白归一（与旧桥「标签替换为空格」等价） */
+/** HTML → 纯文本：去 script/style 内容、去标签（标签替换为空格）、实体解码、空白归一 */
 export function htmlToText(html: string): string {
   const withoutScripts = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
@@ -367,7 +367,7 @@ function collectTextParts(headers: Record<string, string>, body: Buffer, collect
 
 /**
  * 解析整封邮件：返回小写头映射、正文文本（≤25000 字符）与顶层 Content-Type。
- * 与旧桥 build_mail_entry 的取值顺序保持一致：plain 优先，其次 html 去标签。
+ * 取值顺序：plain 优先，其次 html 去标签。
  */
 export function parseMimeMessage(raw: Buffer): ParsedMailMessage {
   const root = splitHeaderBlock(raw);
@@ -390,7 +390,7 @@ export function parseMimeMessage(raw: Buffer): ParsedMailMessage {
 }
 
 /**
- * 提取首个邮箱地址（等价旧桥 parseaddr(From)[1].strip().lower()）：
+ * 提取首个邮箱地址：
  * - `"姓名" <a@b.com>` / `<a@b.com>` / `a@b.com`
  * - 带注释 `a@b.com (姓名)` 时取注释前的地址
  * - 解析失败返回空串（调用方按空 From 处理为 sender_rejected）

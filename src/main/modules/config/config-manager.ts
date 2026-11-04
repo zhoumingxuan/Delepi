@@ -65,7 +65,7 @@ export class ConfigManager {
       }
     }
 
-    // P1-05: 过滤空字符串值，避免覆盖非空默认值
+// 过滤空字符串值，避免覆盖非空默认值
     const filtered: Partial<AppSettings> = {};
     for (const [key, value] of Object.entries(saved)) {
       if (value !== '' && value !== null && value !== undefined) {
@@ -116,7 +116,7 @@ export class ConfigManager {
   }
 
   /**
-   * 检查是否已配置（对齐参考项目 GET /api/config 的 configured 字段）
+   * 检查是否已配置（configured 字段语义）
    * 至少一个模型的 API Key 已设置即视为已配置
    */
   isConfigured(): boolean {

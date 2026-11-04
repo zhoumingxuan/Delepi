@@ -31,7 +31,7 @@ export function formatElapsedTime(totalSeconds: number): string {
 }
 
 // ============================================================
-// ★ P1 模块级共享 ticker（单定时器，引用计数生命周期）：
+// 模块级共享 ticker（单定时器，引用计数生命周期）：
 //   N 个 loading 态工具卡从 N 个每秒定时器合并为 1 个共享 ticker，
 //   每秒同步广播一次（React 18+ 自动批处理为单次 render pass）；
 //   全部订阅者退订后自动停表（空闲期零开销）。
@@ -142,13 +142,13 @@ export function useElapsedSeconds(options: {
     return Math.max(absoluteElapsedSeconds, anchoredElapsedSeconds);
   };
 
-  // ★ P1：active 卡订阅共享 ticker；非 active 卡订阅 noop+常量快照（不重渲染、不占 ticker）
+// active 卡订阅共享 ticker；非 active 卡订阅 noop+常量快照（不重渲染、不占 ticker）
   const tick = useSyncExternalStore(
     options.active ? subscribeTick : subscribeNoop,
     options.active ? getTickSecond : getZero,
   );
 
-  // ★ 非 active 分支必须 useMemo 冻结：现状语义是 clearInterval 后 elapsedSeconds 冻结在最后值
+// 非 active 分支必须 useMemo 冻结：语义为 clearInterval 后 elapsedSeconds 冻结在最后值
   //   （父级重渲染不改变显示）；若每次渲染重算 Date.now() 会造成异常态卡（active=false 且无
   //   finishedAt）的读数随父级渲染漂移——行为不等价，故记忆化。
   const inactiveSeconds = useMemo(() => {
@@ -160,7 +160,7 @@ export function useElapsedSeconds(options: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [options.startedAt, options.finishedAt]);
 
-  // tick 每秒 +1 触发重渲染并重算（等价原每秒 setElapsedSeconds(getElapsedSeconds())）；
+// tick 每秒 +1 触发重渲染并重算；
   // 非 active 时 tick 恒 0 → 不触发重渲染 → 显示冻结值（≡ 现状 clearInterval 冻结语义）
   void tick;
   const current = options.active ? getElapsedSeconds() : inactiveSeconds;

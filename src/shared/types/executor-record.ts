@@ -1,7 +1,6 @@
 /**
  * 委派任务执行记录——跨进程共享类型（主进程 record-store 与渲染进程 hook 共同 import）
  *
- *  §3.2/
  * - 显示视图条目（思考 / 工具 / 通知三类，seq 任务内统一单调递增）
  * - 渲染信号载荷（executor:record-signal，极小信号 <200B）
  * - 增量查询响应（executor:get-task-record，sinceSeq 增量 + running 草稿恒返 + reset 兜底）
@@ -10,7 +9,7 @@
  * 跨进程以结构化 JSON 传输（IPC 结构化克隆），不含任何主进程内部对象。
  */
 
-/** 显示视图条目：思考类（思考草稿 running → 轮界 seal completed，规则 R-draft-1~7） */
+/** 显示视图条目：思考类（思考草稿 running → 轮界 seal completed） */
 export interface ExecutorThinkingRecord {
   kind: 'thinking';
   /** 会话内单调递增序号（任务维度），跨思考/工具统一编号（= 右栏时间线序号） */
@@ -163,18 +162,12 @@ export interface ExecutorTaskRecordQueryResult {
   taskName: string;
   status: ExecutorTaskRecordStatus;
   latestSeq: number;
-  /** seq > sinceSeq 的条目 ∪ 当前 running 思考草稿（恒返最新全文，R-draft-3） */
+/** seq > sinceSeq 的条目 ∪ 当前 running 思考草稿（恒返最新全文） */
   entries: ExecutorRecordEntry[];
   /** 服务端 latestSeq < 请求 sinceSeq（会话已清理重建）→ 前端整体重置 */
   reset?: boolean;
 }
 
-/** executor:send-task-message 请求参数（渲染→主，invoke） */
-export interface ExecutorTaskMessageSendParams {
-  conversationId: string;
-  delegateCallId: string;
-  message: string;
-}
 
 /** executor:send-task-message 受理失败原因（后端主进程产生；unavailable/ipc-error 为渲染层自产） */
 export type ExecutorTaskMessageSendFailReason =

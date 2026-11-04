@@ -64,7 +64,7 @@ const OUTBOUND_MAIL_MAP_FILE = 'latest.json';
 /** 文件结构版本（结构演进时递增；不匹配的旧文件按无映射处理） */
 const OUTBOUND_MAIL_MAP_VERSION = 1;
 
-/** userData 基目录提供者（由 watch-service 注入，与 conversation-index-map 先例一致） */
+/** userData 基目录提供者（由 watch-service 注入，与 conversation-index-map 同方式） */
 let baseDirProvider: (() => string) | null = null;
 
 /** 内存缓存（messageId 归一化键 → 条目；Map 迭代顺序 = 插入顺序，用于淘汰最旧） */

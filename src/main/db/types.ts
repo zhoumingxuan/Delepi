@@ -14,9 +14,9 @@ export type MessageRole = 'user' | 'assistant' | 'tool';
 // ============================================================
 // Assistant 消息 segments 分段结构
 //   - reasoning：推理段（累积在 onThinking 回调中）
-//   - tool_call：工具调用段（由独立 upsertToolCallSegment 插入）
-// 此处使用本地类型别名（与 main-agent.ts L118-128 保持一致），
-//   repository.ts 在主进程，无法直接引用 renderer/lib/message-filter 的类型。
+//   - tool_call：工具调用段（含 toolCallId 字段，索引 toolCalls 数组条目）
+// 此处使用本地类型别名（与 main-agent.ts 的 AssistantMessageSegment 定义保持一致），
+//   message-filter.ts 位于渲染端，主进程无法直接引用其类型。
 // ============================================================
 export type AssistantMessageSegment =
   | { id: string; type: 'reasoning'; text: string }
@@ -57,8 +57,8 @@ export interface RendererChatMessage {
   /** 持久化稳定次序键（messages.seq，同批 created_at 同值时排序依据） */
   seq?: number;
   thinking?: string;
-  // ★ F5 新增：Assistant 消息分段结构（）
-  //   持久化在 messages.payload_json.segments 中，由 insertMessage（F3）写入，
+// Assistant 消息分段结构
+//   持久化在 messages.payload_json.segments 中，由 insertMessage 写入，
   //   由 listRendererMessages（本函数）读出
   segments?: AssistantMessageSegment[];
   /**

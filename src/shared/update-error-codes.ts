@@ -36,5 +36,3 @@ export const UPDATE_ERROR_CODES = {
   /** 用户取消（内部流转，不写入 lastError） */
   CANCELLED: 'ERR_UPDATE_CANCELLED',
 } as const;
-
-export type UpdateErrorCode = (typeof UPDATE_ERROR_CODES)[keyof typeof UPDATE_ERROR_CODES];

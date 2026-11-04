@@ -50,7 +50,7 @@ process.on('uncaughtException', (err) => {
 let mainWindow: BrowserWindow | null = null;
 
 /**
- * 单窗口运行·旧实例清理（用户裁决的绝对正确逻辑）：
+ * 单窗口运行·旧实例清理：
  * 找到【相同进程名称】&&【进程ID不同（非自身）】&&【对应启动路径相同】的进程 → kill 掉。
  * - 进程名称与启动路径均以当前进程 process.execPath 为基准比对，
  *   天然区分本项目 dev 态 electron（E:\work\Delepi\node_modules\electron\dist\electron.exe）
@@ -218,7 +218,7 @@ function createWindow(): void {
  * 同构）；uploads/output 等其余目录不受影响。
  */
 async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
-  // ★ 豁免：库内 tool 消息
+// 豁免：库内 tool 消息
   //   execution_log_path 引用的任务现场目录（tasks/<delegateCallId>/，运行期 apiErrorHit
   //   豁免保留的磁盘现场）不参与启动清空重建——保证报错轮日志路径重启后持续有效；
   //   未被引用的残留照常清理。
@@ -275,10 +275,10 @@ async function cleanupStaleTasksDirsOnStartup(): Promise<void> {
 }
 
 /**
- * ★ 豁免支撑：库内 tool 消息引用的 execution_log_path → 其所在任务现场目录
+ * 豁免支撑：库内 tool 消息引用的 execution_log_path → 其所在任务现场目录
  * （tasks/<delegateCallId>）归一化键集合（path.resolve + 小写，Windows 路径归一）。
  * cleanupStaleTasksDirsOnStartup 据此豁免被引用现场的清空重建，保证报错轮日志路径
- * 重启后持续有效（D7 拍板：启动清理对报错保留现场豁免）。
+ * 重启后持续有效（启动清理对报错保留现场豁免）。
  */
 function collectPreservedTaskDirKeys(): Set<string> {
   const keys = new Set<string>();
@@ -292,12 +292,12 @@ function collectPreservedTaskDirKeys(): Set<string> {
 }
 
 /**
- * ★ 启动自愈：孤儿 assistant(tool_calls) 检测与补写。
+ * 启动自愈：孤儿 assistant(tool_calls) 检测与补写。
  * 客户端在任务执行中途被关闭（进程终止）时批次末 tool 消息未落库，库内末条为含
  * tool_calls 的 assistant 行（孤儿态）——下次回放（按 seq 直读）将出现 tool_calls 无配对
  * tool 结果。此处逐会话取末条 message：role=assistant 且 payload.tool_calls（双键名兼容
  * toolCalls）为非空数组时，逐 tool_call 补一条 role='tool' 的『任务取消』消息闭环配对
- * （补写 payload 逐键对齐 B15 结构，读侧零适配）。
+ * （补写 payload 逐键对齐 tool 消息结构，读侧零适配）。
  * 必须先于 createWindow / registerIpcHandlers（首轮 conv:get-messages 读取与 chat:send
  * 回放/取号均要求孤儿已补写）；insertMessage 单条写入不动 conversations.updated_at（会话
  * 列表排序不变）；异常仅记日志不阻断启动（对齐启动链既有容错惯例）。
@@ -355,7 +355,7 @@ async function healOrphanToolCallMessages(): Promise<number> {
       writeMainLog('INFO', 'healOrphanToolCallMessages',
         `孤儿 tool_calls 已补记 conversationId=${conversation.id} assistantSeq=${lastMessage.seq} toolCallCount=${rawToolCalls.length}`);
     } catch (err) {
-      // 单会话检测/补写失败仅记日志不阻断启动（含外键极值/脏数据场景，）
+// 单会话检测/补写失败仅记日志不阻断启动（含外键极值/脏数据场景）
       writeMainLog('WARN', 'healOrphanToolCallMessages',
         `会话孤儿检测/补写失败，已跳过 conversationId=${conversation.id}`, err);
     }
@@ -432,7 +432,7 @@ app.whenReady().then(async () => {
     writeMainLog('ERROR', 'resetInterruptedRuntimeState', '失败', err);
   }
 
-  // ★ 启动自愈：孤儿 assistant(tool_calls) 补写 role=tool 任务取消消息——
+// 启动自愈：孤儿 assistant(tool_calls) 补写 role=tool 任务取消消息——
   //   紧随 resetInterruptedRuntimeState（同为启动期数据库状态修复，语义聚类）；必须先于
   //   createWindow/registerIpcHandlers（首轮 conv:get-messages 读取与 chat:send 回放/取号要求闭环）。
   try {
@@ -442,7 +442,7 @@ app.whenReady().then(async () => {
     writeMainLog('ERROR', 'healOrphanToolCallMessages', '失败', err);
   }
 
-  // 【重装不覆盖治本】script-tools 旧载体一次性迁移：必须位于 ensureScriptToolsDir（下方）之前执行——
+// script-tools 旧载体一次性迁移：必须位于 ensureScriptToolsDir（下方）之前执行——
   // 迁移触发条件为“userData 目标不存在”，若先 ensureDir 创建空目标目录会导致迁移永远被跳过。
   // 旧源存在且含条目、目标不存在才执行全量复制；只增不删、源保留；失败仅记日志绝不阻断启动。
   try {
@@ -452,7 +452,7 @@ app.whenReady().then(async () => {
     writeMainLog('ERROR', 'migrateScriptToolsDirOnce', '失败（不阻断启动；随后的 ensureScriptToolsDir 仍保证新载体目录创建）', err);
   }
 
-  // 经验库根目录启动检查创建（script-tools 方案 R2）：不存在则创建；
+// 经验库根目录启动检查创建（script-tools）：不存在则创建；
   // try-catch 包裹，失败仅记日志不阻断启动（委派期 use_script_tool 执行内核另有兜底重建，双层防护）。
   try {
     await ensureDir(SCRIPTS_TOOLS_DIR);
@@ -496,7 +496,7 @@ app.whenReady().then(async () => {
   } else {
     writeMainLog('INFO', 'pythonManager.init', '跳过（useBuiltinPython=false）');
   }
-  // ★ v2恢复方案：先注册IPC处理器（含get-last-active-conversation handler），
+// 先注册IPC处理器（含get-last-active-conversation handler），
   //   确保preload在页面加载期间通过ipcRenderer.invoke调用时handler已就绪。
   //   createWindow() 创建 BrowserWindow 并触发异步页面加载（loadURL/loadFile），
   //   registerIpcHandlers() 是同步函数紧随其后执行，

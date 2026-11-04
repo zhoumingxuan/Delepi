@@ -2,31 +2,30 @@
  * ResponsesAdapter - 智谱 /api/v1/responses 端点适配器（完整翻译层）
  *
  * 翻译封闭原则：在自有缓冲内完成全部翻译；对宿主数组只读；未知字段一律不透传
- * （白名单机制，结构性免疫服务端 400）。协议事实来源：取证 45 条 + 实测 14 轮
- * （G1-G6 形态固化）。
+ * （白名单机制，结构性免疫服务端 400）。
  *
  * 终结判定双锚定：
  *  1. 权威锚 = 终结事件全集（response.completed / response.failed / response.incomplete /
  *     独立 error 事件——承载 incomplete_details/usage/error 载荷，不可替代）；
- *  2. 冗余帧锚 = data:[DONE]（实测所有终结路径流末恒发，8/8；到达即停止 SSE 读取）；
- *  3. 严禁依赖连接关闭（EOF）——实测服务器 [DONE] 后不关闭连接（12s socket 超时）；
+ *  2. 冗余帧锚 = data:[DONE]（所有终结路径流末恒发；到达即停止 SSE 读取）；
+ *  3. 严禁依赖连接关闭（EOF）——服务器 [DONE] 后不关闭连接（12s socket 超时）；
  *  4. 流耗尽无终结事件兜底 → onFinished{failed, 'protocol-error: stream exhausted...'}；
- *  5. HTTP 200 不作轮次成败判据（实测失败轮 HTTP 仍 200、首个事件即 response.failed）。
+ *  5. HTTP 200 不作轮次成败判据（失败轮 HTTP 仍 200、首个事件即 response.failed）。
  *
- * SSE 事件分发（§三.3.4 表，G3/G4/G6 已取证形态固化）+ 信号映射：
- *  - 权威锚 = reasoning item 的 output_item.done（9/9 到达；reasoning_text.done 仅纠偏不触发）；
+ * SSE 事件分发 + 信号映射：
+ *  - 权威锚 = reasoning item 的 output_item.done（恒到达；reasoning_text.done 仅纠偏不触发）；
  *  - 同刻同源 = message item 的 output_item.done → 单回调 end:'message'；
  *  - onToolCall 铁律 = 仅 function_call item 的 output_item.done（完整快照）触发，
  *    绝不以 added/delta 中间态触发；
- *  - 纯工具轮无 message item → 缺席（G4 实证，不对称论证）。
+ *  - 纯工具轮无 message item → 缺席（不对称论证）。
  *
- * 自有重试器（§三.3.8）：不依赖 runModelApiWithRetry 的 CC 错误形态判定；重试节律对齐
- * 现状工程惯例（1s，MODEL_API_BAD_REQUEST_RETRY_DELAY_MS）；重试边界调用
- * init.hooks.onStreamRetry（红线 R7 复位协议等价承载——契约 R7：end 信号态随思考
+ * 自有重试器：不依赖 runModelApiWithRetry 的 CC 错误形态判定；重试节律对齐
+ * 工程惯例（1s，MODEL_API_BAD_REQUEST_RETRY_DELAY_MS）；重试边界调用
+ * init.hooks.onStreamRetry（复位协议等价承载——end 信号态随思考
  * 增量态一并复位）；上限 5 次，耗尽抛 ModelApiAbortError（宿主 catch 分类链兼容）。
  *
- * 有状态模式（§三.3.1）：previous_response_id + store=true；内部恒 stateful=true 起步
- * （宿主侧不再外放接线，判断全部 adapter 内自适应）；instructions 每轮重传
+ * 有状态模式：previous_response_id + store=true；内部恒 stateful=true 起步
+ * （宿主侧不外放接线，判断全部 adapter 内自适应）；instructions 每轮重传
  * （官方明文不随 previous_response_id 继承）；首轮响应回显验证——response.completed 的
  * response 对象 store===true 才缓存 lastResponseId 续接，store===false/字段缺失判端点不支持
  * → 本实例内禁用 stateful 后续全量重传（防增量静默丢历史）；服务端指明 id 失效 → 自动回退
@@ -51,7 +50,7 @@ const RESPONSES_RETRY_DELAY_MS = 1_000;
 /** 客户端超时：沿用现状 600s 风格起步（openai-client.ts L149） */
 const RESPONSES_REQUEST_TIMEOUT_MS = 600_000;
 
-/** 可重试错误码（智谱字符串错误码分类表，§三.3.8） */
+/** 可重试错误码（智谱字符串错误码分类表） */
 const RETRYABLE_ERROR_CODES = new Set([
   'rate_limit_exceeded',
   'slow_down',
@@ -59,7 +58,7 @@ const RETRYABLE_ERROR_CODES = new Set([
   'server_is_overloaded',
 ]);
 
-/** HTTP 状态级可重试（SSE 未建立时的传输层分类；C-5 处置） */
+/** HTTP 状态级可重试（SSE 未建立时的传输层分类） */
 const RETRYABLE_HTTP_STATUS = new Set([429, 500, 502, 503, 504]);
 
 /** Responses input item 白名单（智谱仅支持 message/function_call/function_call_output/reasoning 四种） */
@@ -87,7 +86,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
   private stateful = false;
   /** 有状态：上一轮 response.id 缓存（7 天有效期；失效自动降级；仅 response.store===true 回显后缓存） */
   private lastResponseId: string | null = null;
-  /** 有状态：宿主数组已消费长度快照（本轮新 item = messages[lastConsumed:]） */
+/** 有状态：宿主数组已消费长度快照（本轮新 item 为该长度之后的数组段） */
   private lastConsumedMessageCount = 0;
 
   /** reasoning item 接受性降级：端点 400 校验指纹判『期望 input_text 实得
@@ -118,7 +117,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
 
   /** init 扩展（非静默偏离）：stateful 内聚——init 不再
    *  接收 stateful 扩展键（类型交集同步收敛），内部恒以 stateful=true 起步，端点是否真支持
-   *  经首轮 store 回显验证自动判定（不支持自动禁用）；成败化契约（目标一/二）：基类校验/
+    *  经首轮 store 回显验证自动判定（不支持自动禁用）；成败化契约：基类校验/
    *  快照成功后 POST 探查 {baseUrl}/responses——HTTP 404 = 协议不存在 = 初始化失败（智谱
    *  Coding 端点预期 404 → 降级链换 CC）；任何其他 HTTP 状态 = 协议存在 = 探查通过；
    *  网络层失败/超时 = 探查未通过。 */
@@ -185,7 +184,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
       this.lastConsumedMessageCount = messages.length;
     }
 
-    // ---- 请求体构造（§三.3.7 表） ----
+    // ---- 请求体构造 ----
     const buildBody = (): Record<string, unknown> => {
       const body: Record<string, unknown> = {
         model: this.apiConfig!.model,
@@ -304,7 +303,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
           continue;
         }
         // reasoning input item 被拒检测：端点 400 校验指纹『期望 input_text
-        // 实得 reasoning_text』（vllm/pydantic loc ResponseInputTextParam.type 形态）→ 本
+        // 实得 reasoning_text』（vllm/pydantic 校验错误 loc 指向 input item type 字段的形态）→ 本
         // 实例永久禁用 reasoning item 回传（真实+占位都不发，后续轮 translateMessages 剥离）
         // 并去除后幂等重发一次（标志置位防重发死循环）；重发仍失败按原错误正常失败。
         // DeepSeek 官方 must-be-passed-back 400 与该指纹严格互斥（不含 input_text，首门即
@@ -420,7 +419,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
   }
 
   // ============================================================
-  // 翻译层（§三.3.2 / §三.3.5，白名单，宿主数组只读）
+  // 翻译层（白名单，宿主数组只读）
   // ============================================================
 
   private translateMessages(
@@ -504,7 +503,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
     return { inputItems, systemFromMessages, itemStartByHostIndex };
   }
 
-  /** 工具定义转换：OpenAI Chat 嵌套形态 → Responses 扁平形态（§三.3.5） */
+/** 工具定义转换：OpenAI Chat 嵌套形态 → Responses 扁平形态 */
   private translateTools(
     tools: Array<Record<string, unknown>> | undefined,
   ): Array<Record<string, unknown>> | undefined {
@@ -557,7 +556,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
         signal: controller.signal,
       });
     } catch (error) {
-      // 传输层错误归一化为带 name/code 的 Error 交分类器（C-5）
+// 传输层错误归一化为带 name/code 的 Error 交分类器
       if (signal?.aborted) {
         throw signal.reason ?? new Error('ABORTED');
       }
@@ -632,7 +631,7 @@ export class ResponsesAdapter extends ProtocolAdapter {
           newlineIdx = buffer.indexOf('\n');
         }
       }
-      // 流耗尽兜底：无终结事件 → protocol-error（§三.3.6-4；禁 EOF 判定——到达此点
+// 流耗尽兜底：无终结事件 → protocol-error（禁 EOF 判定——到达此点
       // 意味着连接关闭而未收到终结事件/[DONE]，属协议完整性违例）
       if (!state.terminalFired) {
         state.finishAsExhausted();
@@ -784,7 +783,7 @@ class ResponsesStreamState {
     }
 
     switch (eventType) {
-      // ---- reasoning item 生命周期（G6 已实测顺序化） ----
+// ---- reasoning item 生命周期 ----
       case 'response.output_item.added': {
         const item = event.item ?? {};
         const itemType = typeof item.type === 'string' ? item.type : '';
@@ -825,7 +824,7 @@ class ResponsesStreamState {
         const item = event.item ?? {};
         const itemType = typeof item.type === 'string' ? item.type : '';
         if (itemType === 'reasoning') {
-          // ★ 权威锚点：reasoning item 的 output_item.done（9/9 到达；恒先于后继 item added）
+// 权威锚点：reasoning item 的 output_item.done（恒先于后继 item added）
           if (this.s1OpenReasoning) {
             adapter.emitChunk({
               type: 'reasoning',
@@ -838,7 +837,7 @@ class ResponsesStreamState {
           return false;
         }
         if (itemType === 'message') {
-          // ★ 同刻同源：message item done → 单回调 end:'message'（重合合一；
+// 同刻同源：message item done → 单回调 end:'message'（重合合一；
           //   空 message item 亦发一次——每条实际存在的 message 恰一次）
           adapter.emitChunk({
             type: 'content',
@@ -849,7 +848,7 @@ class ResponsesStreamState {
           return false;
         }
         if (itemType === 'function_call') {
-          // ★ onToolCall 触发铁律：仅 output_item.done 完整快照（绝不以 added/delta 中间态触发）
+// onToolCall 触发铁律：仅 output_item.done 完整快照（绝不以 added/delta 中间态触发）
           const callId = typeof item.call_id === 'string' ? item.call_id : '';
           const name = typeof (item as { name?: unknown }).name === 'string'
             ? (item as { name: string }).name : '';
@@ -857,7 +856,7 @@ class ResponsesStreamState {
             ? (item as { arguments: string }).arguments : '';
           if (callId && name) {
             const toolCall: AdapterToolCall = {
-              id: callId, // call_id ↔ 宿主 id 恒等直传（§三.3.5）
+              id: callId, // call_id ↔ 宿主 id 恒等直传
               type: 'function',
               function: { name, arguments: args },
             };
@@ -868,7 +867,7 @@ class ResponsesStreamState {
         }
         return false; // 未知 item 类型：安全忽略（白名单）
       }
-      // ---- message item 增量（G3 已固化：response.output_text.delta/.done） ----
+// ---- message item 增量（response.output_text.delta/.done） ----
       case 'response.output_text.delta': {
         const delta = typeof event.delta === 'string' ? event.delta : '';
         if (delta) {
@@ -885,7 +884,7 @@ class ResponsesStreamState {
       }
       case 'response.content_part.done':
         return false;
-      // ---- function_call 增量（G4 序列；中间态零触发） ----
+// ---- function_call 增量（中间态零触发） ----
       case 'response.function_call_arguments.delta':
       case 'response.function_call_arguments.done':
         return false; // 可选增量缓存：完整快照以 output_item.done 为准
@@ -948,7 +947,7 @@ class ResponsesStreamState {
         return true;
       }
       case 'error': {
-        // 独立 error 事件（type 字面 error）：分发层独立处理（不依赖 response.failed 先行，C-3）
+// 独立 error 事件（type 字面 error）：分发层独立处理（不依赖 response.failed 先行）
         this.outcome = {
           kind: 'failed',
           content: this.contentAcc,
@@ -1001,7 +1000,7 @@ class ResponsesStreamState {
     if (toolCalls.length) this.toolCalls = toolCalls;
   }
 
-  /** 流耗尽兜底（无终结事件/[DONE] 而连接关闭——协议完整性守卫，§三.3.6-4） */
+/** 流耗尽兜底（无终结事件/[DONE] 而连接关闭——协议完整性守卫） */
   finishAsExhausted(): void {
     this.outcome = {
       kind: 'failed',
@@ -1044,7 +1043,7 @@ type ResponsesTurnOutcome = {
   assistantMessage?: Record<string, unknown>;
 };
 
-/** user 消息翻译（§三.3.2 表；image_url→input_image 平铺剔除 detail；multimodal=false 含图 fail-fast） */
+/** user 消息翻译（image_url→input_image 平铺剔除 detail；multimodal=false 含图 fail-fast） */
 function translateUserMessage(
   message: Record<string, unknown>,
   multimodal: boolean,
@@ -1067,7 +1066,7 @@ function translateUserMessage(
     }
     if (record.type === 'image_url') {
       if (!multimodal) {
-        // fail-fast：宿主 bug 优于服务端 400（§三.3.5）
+// fail-fast：宿主侧非法输入优于服务端 400 报错
         throw new Error('[responses-adapter] multimodal=false 但消息含 image part（fail-fast 拒绝）');
       }
       const imageUrl = record.image_url as { url?: unknown } | undefined;
@@ -1082,7 +1081,7 @@ function translateUserMessage(
   return [{ type: 'message', role: 'user', content: parts }];
 }
 
-/** assistant 消息翻译拆解（§三.3.2 表：reasoning_content→InputReasoning 文本态 + function_call 清单
+/** assistant 消息翻译拆解（reasoning_content→InputReasoning 文本态 + function_call 清单
  *  + output_text 回放）。仅负责项构造；fc/fco 逐调用配对相邻发射由 translateMessages 编排。 */
 function buildAssistantItems(message: Record<string, unknown>): {
   reasoning: ResponsesInputItem[];
@@ -1230,7 +1229,7 @@ function errorCode(error: unknown): string {
   return '';
 }
 
-/** 错误分类（§三.3.8 分类表：未列枚举默认不可重试——保守策略） */
+/** 错误分类（未列枚举默认不可重试——保守策略） */
 function classifyError(error: unknown): { retryable: boolean } {
   const code = errorCode(error);
   if (code && RETRYABLE_ERROR_CODES.has(code)) {
@@ -1244,7 +1243,7 @@ function classifyError(error: unknown): { retryable: boolean } {
   const name = error instanceof Error ? error.name : '';
   if (name === 'TypeError' || name === 'APIConnectionError' || name === 'APIConnectionTimeoutError') {
     // fetch 网络层失败（TypeError: fetch failed 等）：可重试（对齐现状网络错误 10s 档——
-    // 统一 1s 节律为保守收敛，§三.3.8 节律对齐工程惯例）
+// 统一 1s 节律为保守收敛，对齐工程惯例）
     return { retryable: true };
   }
   return { retryable: false };
@@ -1296,7 +1295,7 @@ function isReasoningItemRejectedError(error: unknown): boolean {
 /** DeepSeek 官方 thinking+tools 强校验指纹（must-be-passed-back，端点实测原文）：
  *  『The `reasoning_text` in the thinking mode must be passed back to the API
  *  (request_id: <UUID>)』/ type invalid_request_error / code invalid_request_error——
- *  含 reasoning_text + must be passed back 双关键词（全量版/续接版错误体逐字段同构）。
+ *  含 reasoning_text + must be passed back 双关键词（全量重传/续接两种错误体逐字段同构）。
  *  与 vllm 三重门指纹（isReasoningItemRejectedError）天然互斥：vllm 形态必含 input_text
  *  （其互斥首门要求 input_text+reasoning_text 双关键词齐备），本指纹形态不含 input_text
  *  且 vllm 形态不含 must be passed back——两指纹无交集，识别互不误伤。 */

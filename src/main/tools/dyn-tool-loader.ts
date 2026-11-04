@@ -44,8 +44,8 @@ export interface DynToolManifest {
   /**
    * 动态工具描述：直接取 manifest.description 字符串（内置工具保留求值后字符串，
    * 两形态在合并视图统一为字符串）。
-   * P-5（保守方案）：子智能体系统提示词中按工具名硬编码的约束条款保持不泛化，
-   * 动态工具的行为约束通过 manifest.description 自身承担。【待用户定稿：P-5泛化决策】
+    * 子智能体系统提示词中按工具名硬编码的约束条款不泛化，
+    * 动态工具的行为约束通过 manifest.description 自身承担。
    */
   description: string;
   /** JSON Schema（与内置 parameters 同构：type='object'+properties）；properties 含 context 键被拒绝 */

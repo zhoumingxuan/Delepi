@@ -1,25 +1,22 @@
 /**
  * 消息内容渲染分发组件
  * 处理 user / assistant / tool 三种角色消息
- * 执行子智能体进度模式 + 任务标题提取（）
+ * 执行子智能体进度模式 + 任务标题提取
  *
- * 适配 Delepi 后端实现（替换 Next.js StreamMessage → Delepi ChatMessage）：
- * - 数据模型：StreamMessage (payload.content/reasoning/toolCalls) → ChatMessage (content/thinking/toolCalls)
- * - 工具调用：AssistantToolCall (function.name/arguments, id) → ToolCallInfo (name/arguments, callId)
- * - 附件渲染：实现（Delepi ChatMessage 现在携带 attachments 字段，P6 历史消息附件回显）
+ * - 工具调用：ToolCallInfo (name/arguments, callId)（协议 function.name/arguments/id 字段映射，见 useChat chat:tool-call）
+ * - 附件渲染：实现（Delepi ChatMessage 携带 attachments 字段，历史消息附件回显）
  *   - Image.PreviewGroup + Image lazy loading，单图 320px，多图 152px
  *   - Flex + FileOutlined + 文件名 + size 文件条
- *   - 仅附件无文本：仅显示附件（不渲染「已发送 N 张图片 / N 个附件」摘要气泡，）
- * - 渲染组件：AssistantContentRenderer → RichMarkdown
+ *   - 仅附件无文本：仅显示附件（不渲染「已发送 N 张图片 / N 个附件」摘要气泡）
+ * - 渲染组件：RichMarkdown
  *
  * 适配层：
- * - EXECUTOR_TOOL_PROGRESS_PATTERNS / isExecutorToolProgressText / splitLoadingToolContent
- *   提取到 lib/executor-thinking.ts 共享，ToolCallCard 同步使用
+ * - EXECUTOR_TOOL_PROGRESS_PATTERNS / isExecutorToolProgressText 共享定义于 @shared/utils/executor-patterns；
+ *   切分函数（splitLoadingToolContentCached / latestToolProgressTextCached）位于 lib/executor-thinking.ts，ToolCallCard 同步使用
  *
  * 适配层：
  * - assistant 空泡过滤（isEmptyAssistantBubble）：当 content.trim() === '' 且无 thinking / toolCalls
  *   且 status !== 'loading' 时直接返回 null，避免渲染空 bubble
- * - 完整 filter 函数 filterEmptyAssistantBubbles 由 lib/message-filter.ts 提供
  */
 
 import { Button, Flex, Image, Space, Spin, Typography } from 'antd';
@@ -34,7 +31,7 @@ import type { ChatMessage } from '../hooks/useChat';
 import type { ChatAttachment } from '@shared/types/chat';
 import { isImageContentType } from '@shared/utils/image-type';
 import type { AssistantMessageSegment } from '../lib/message-filter';
-// ★ P04: 切分函数改用增量缓存版（cacheKey=callId 级），输出与全量版逐字一致；原全量函数保留导出（零回归底线）
+// executor 进度切分（增量缓存版，cacheKey=callId 级）：thinking/progress 拆分与最新进度行提取
 import { latestToolProgressTextCached, splitLoadingToolContentCached } from '../lib/executor-thinking';
 import { isEmptyAssistantBubble } from '../lib/message-filter';
 import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
@@ -48,7 +45,7 @@ import type { ExecutorTaskChatMessage } from '../lib/executor-record-messages';
 /**
  * 工具摘要（用于把 toolCall.name 解析为 displayName）
  * 
- * - 由调用方传入（参考项目 chat-shell.tsx L2684-2738 传 config?.tools）
+ * - 由调用方传入（config?.tools）
  */
 export interface ToolSummary {
   name: string;
@@ -191,8 +188,8 @@ function renderToolResultContent(
   return value;
 }
 
-// ★ P04: 追加第三参 cacheKey（必传，流标识级缓存键），切分改走增量缓存（根因 R4）
-// ★ 追加第四参 progressOverride（= options.progressText / message.progress，
+// cacheKey（必传，流标识级缓存键）：增量缓存切分键
+// progressOverride（= options.progressText / message.progress，
 //   快照级进度行）——优先于缓存提取，接通 完成分支删除后失连的
 //   '工具调用'块渲染出口（子工具原始 result 不匹配进度正则致缓存提取恒空的场景由该参兜住）
 function renderLoadingToolContent(
@@ -202,7 +199,6 @@ function renderLoadingToolContent(
   progressOverride?: string,
 ) {
   const { thinking: thinkingFromResult } = splitLoadingToolContentCached(cacheKey, value);
-  // ★ 项9：
   const thinking = thinkingOverride?.trim() || thinkingFromResult;
   const progressContent = progressOverride?.trim()
     || latestToolProgressTextCached(cacheKey, value)
@@ -211,12 +207,12 @@ function renderLoadingToolContent(
   return (
     <Space direction="vertical" size={8} style={{ width: '100%' }}>
       {thinking ? (
-        // S1-4 统一折叠策略：思考块改用 ThinkingBlock（超长折叠/字数摘要/摘要头/滚动上限），
+// 统一折叠策略：思考块用 ThinkingBlock（超长折叠/字数摘要/摘要头/滚动上限），
         //   loading={<span />} 与 title 保持既有视觉语义
         <ThinkingBlock content={thinking} loading={<span />} title="思考内容" defaultExpanded />
       ) : null}
       {progressContent ? (
-        // S1-4 统一折叠策略：进度块改用 ThinkingBlock（与思考块/ToolCallCard 兜底路径同源），
+// 统一折叠策略：进度块用 ThinkingBlock（与思考块/ToolCallCard 兜底路径同源），
         //   超长进度获得滚动上限 + 尾部自动滚动 + 字数摘要，避免流式累积无限撑高消息流
         <ThinkingBlock content={progressContent} loading={<span />} title="工具调用" defaultExpanded />
       ) : null}
@@ -278,7 +274,7 @@ function resolveTaskDisplayTitle(options: {
 }
 
 /**
- * ★ 主智能体直接工具内置中文显示名兜底映射（read_file / fs_search 为主智能体直接调用；
+ * 主智能体直接工具内置中文显示名兜底映射（read_file / fs_search 为主智能体直接调用；
  *   当前渲染端无 toolSummaries 数据源——全树仅消费侧引用、无提供方，ChatShell 未向
  *   ChatArea 传参——无匹配摘要时经本映射兜底显示中文名）。
  *   文案与主进程 src/main/constants/agent.ts 的 EXECUTOR_TOOL_PROGRESS_NAMES
@@ -387,10 +383,10 @@ function renderToolResultSegment(
   ) : (
     title
   );
-  // ★ 项9 + M17（D3 两态覆盖历史）：thinking/进度仅执行中（loading 分支）渲染；完成态仅渲染 Result
+// thinking/进度仅执行中（loading 分支）渲染；完成态仅渲染 Result
   const thinkingText = options?.thinkingText?.trim() || '';
-  // ★ 本次修复：运行中（loading）不再把 toolCall.result（=末项子工具结果 JSON）作为渲染输入，
-  //   改用 options.content（=message.content=快照 payload.result：思考全量/最新进度文本）——
+// 运行中（loading）不把 toolCall.result（=末项子工具结果 JSON）作为渲染输入，
+//   使用 options.content（=message.content=快照 payload.result：思考全量/最新进度文本）——
   //   彻底移除「工具调用任务调用结果（Result 内容）」混入运行中 tool 显示区域；
   //   完成态（loading=false）仍仅渲染 Result（既有正确行为，零回归）
   const content = loading
@@ -399,13 +395,13 @@ function renderToolResultSegment(
         includeStructuredFilePreview: options?.includeStructuredFilePreview,
       });
   const renderedContent = loading ? (
-    // ★ 接通 options.progressText（=message.progress，消息级进度文本）
+// 接通 options.progressText（=message.progress，消息级进度文本）
     //   作为'工具调用'块内容——运行中可见且内容可追溯；完成分支不受影响
     //   （loading=false 不进本调用，仅渲染 Result，零回归）；
     //   executor 任务卡已由徽标分支短路（ExecutorTaskCard），本路径仅服务主智能体链路
     renderLoadingToolContent(content, thinkingText, toolCall.callId, options?.progressText)
   ) : (
-    // （D3 两态覆盖历史）：完成分支仅渲染 Result（RichMarkdown）；思考块/工具调用块移除
+// 完成分支仅渲染 Result（RichMarkdown）；思考块/工具调用块移除
     <div style={{ maxHeight: TOOL_RESULT_EXPANDED_MAX_HEIGHT_PX, overflowY: 'auto' }}>
       <RichMarkdown content={content} />
     </div>
@@ -440,7 +436,7 @@ function renderToolResultSegment(
 }
 
 /**
- * ★ P6 辅助函数：生成附件摘要文本
+ * 辅助函数：生成附件摘要文本
  * 
  * - 全部为图片：「已发送 N 张图片」
  * - 包含其他类型：「已发送 N 个附件」
@@ -459,7 +455,7 @@ function renderUserAttachmentSummary(attachments: ChatAttachment[]): string {
 }
 
 /**
- * ★ P6 辅助函数：渲染附件区域（Image.PreviewGroup + FileOutlined 文件条）
+ * 辅助函数：渲染附件区域（Image.PreviewGroup + FileOutlined 文件条）
  * 
  *
  * 实现要点：
@@ -490,9 +486,8 @@ function renderUserAttachments(attachments: ChatAttachment[]) {
             <Image
               key={attachment.id || attachment.storageKey}
               // previewUrl 缺失时不渲染 Image 显示占位图
-              //   原实现：用 attachment.storageKey 兜底,但 storageKey 不是合法 src,
-              //   会触发 404。现在改为：previewUrl 缺失时显示占位气泡,
-              //   不再 fallback 到 storageKey(用户能直观看到预览失效,而非看到损坏图)
+//   previewUrl 缺失时显示占位气泡（storageKey 不是合法 src，直接兜底会触发 404；
+//   占位图使用户直观看到预览失效，而非看到损坏图）
               src={
                 (attachment as ChatAttachment & { previewUrl?: string }).previewUrl ||
                 FALLBACK_IMAGE_PLACEHOLDER
@@ -516,7 +511,7 @@ function renderUserAttachments(attachments: ChatAttachment[]) {
               align="center"
               gap={8}
               onClick={() => {
-                // ★ P6 点击历史文件触发 IPC_FILE.OPEN 走 shell.openPath
+// 点击历史文件触发 IPC_FILE.OPEN 走 shell.openPath
                 if (window.electronAPI?.file?.open) {
                   void window.electronAPI.file.open(attachment.storageKey).catch((err: unknown) => {
                     // eslint-disable-next-line no-console
@@ -549,7 +544,7 @@ function renderUserAttachments(attachments: ChatAttachment[]) {
 }
 
 /**
- * ★ P6 辅助函数：格式化文件大小(B/KB/MB)
+ * 辅助函数：格式化文件大小(B/KB/MB)
  */
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -608,11 +603,11 @@ export const ChatMessageContent = memo(function ChatMessageContent({
   /**
    * 工具摘要列表（用于把 toolCall.name 解析为 displayName）
    * 
-   * 调用方传入（参考 chat-shell.tsx L2684-2738 传 config?.tools）
+    * 调用方传入（config?.tools）
    */
   toolSummaries?: ToolSummary[];
   /**
-   * ★ P6 当前会话 ID（用于附件图片异步 file:read 时的前缀校验）
+    * 当前会话 ID（用于附件图片异步 file:read 时的前缀校验）
    * 来自 ChatArea 传入,缺失时降级：仅使用已有 previewUrl/storageKey fallback
    */
   conversationId?: string | null;
@@ -625,7 +620,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     activeDelegateCallId: string | null;
   };
 }) {
-  // ★ P6 异步获取图片 attachment 的 blob URL
+// 异步获取图片 attachment 的 blob URL
   //   历史消息的图片 attachment 没有 previewUrl 字段,需要从主进程 readFile 后 URL.createObjectURL
   //   - 已有 previewUrl 的不重复请求
   //   - 非图片不处理
@@ -648,7 +643,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
         next[att.storageKey] = existing;
       }
     }
-    // ★ 合并语义：异步获取的 previewUrl 不能被同步覆盖清空
+// 合并语义：异步获取的 previewUrl 不能被同步覆盖清空
     setPreviewUrls((prev) => ({ ...prev, ...next }));
   }, [imageAttachments]);
   // blobURL 过早撤销: previewUrls 变化时同步镜像到 ref, 供下方加载 effect 的 needed 判断读取
@@ -711,11 +706,11 @@ export const ChatMessageContent = memo(function ChatMessageContent({
 
   // 用户消息
   if (message.role === 'user') {
-    // ★ P6 历史消息附件回显：从 message.attachments 读取附件列表
+// 历史消息附件回显：从 message.attachments 读取附件列表
     //   来源：本地乐观插入（useChat.sendMessage）+ chat:user-message-created 替换
     //        + conv:get-messages 从 SQLite 读出（由 listRendererMessages 填入）
     const rawAttachments: ChatAttachment[] = message.attachments ?? [];
-    // ★ P6 用异步获取的 previewUrls 覆盖到 attachments
+// 用异步获取的 previewUrls 覆盖到 attachments
     const attachments: ChatAttachment[] = rawAttachments.map((att) => {
       const url = previewUrls[att.storageKey];
       if (url) {
@@ -728,7 +723,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
     // 渲染附件区域(Image.PreviewGroup + FileOutlined 文件条)
     const attachmentContent = renderUserAttachments(attachments);
 
-    // 情况 1：仅附件无文本 → 仅显示附件（）
+// 情况 1：仅附件无文本 → 仅显示附件
     if (!text && attachments.length > 0) {
       return (
         <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
@@ -737,7 +732,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
       );
     }
 
-    // 情况 2：文本 + 附件 → 显示附件 + 文本（）
+// 情况 2：文本 + 附件 → 显示附件 + 文本
     if (text && attachmentContent) {
       return (
         <Flex vertical align="flex-end" gap={8} style={{ width: '100%' }}>
@@ -840,14 +835,14 @@ export const ChatMessageContent = memo(function ChatMessageContent({
   return (
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
       {segments.map((segment, index) => {
-        // ★ A-1 修复：元素级结构防御（先判结构后读字段）——null/非对象元素跳过渲染，
-        //   保证 render 期永不因 segments 元素结构抛 TypeError（畸形数据经读库净化 A-2 /
-        //   渲染组装净化 A-3 后理论不可达，此处为最终消费兜底防御，二者并存）
+// 元素级结构防御（先判结构后读字段）——null/非对象元素跳过渲染，
+//   保证 render 期永不因 segments 元素结构抛 TypeError（畸形数据经读库净化 /
+//   渲染组装净化后理论不可达，此处为最终消费兜底防御，二者并存）
         if (!segment || typeof segment !== 'object') {
           return null;
         }
         if (segment.type === 'reasoning') {
-          // ★ A-1 修复：reasoning 段 text 非 string（缺失/null/数字等旧数据）归一 '' 再 trim
+// reasoning 段 text 非 string（缺失/null/数字等旧数据）归一 '' 再 trim
           const text =
             typeof segment.text === 'string' ? segment.text.trim() : '';
 
@@ -859,7 +854,7 @@ export const ChatMessageContent = memo(function ChatMessageContent({
             message.status === 'loading' && index === segments.length - 1;
 
           return (
-            // S1-4 统一折叠策略：reasoning 段改用 ThinkingBlock（与 renderLoadingToolContent 思考块同源），
+// 统一折叠策略：reasoning 段用 ThinkingBlock（与 renderLoadingToolContent 思考块同源），
             //   超长内容非 loading 默认收起 + 字数摘要 + 摘要头 + 展开态滚动上限
             <ThinkingBlock
               key={`${segment.id}-${isActive ? 'active' : 'done'}`}

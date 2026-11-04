@@ -8,7 +8,7 @@ import { SettingOutlined, MenuOutlined, EditOutlined } from '@ant-design/icons';
 
 const { Title } = Typography;
 
-/** 方向3：标题编辑入口配置（提供时标题旁显示编辑按钮，点击进入编辑态） */
+/** 标题编辑入口配置（提供时标题旁显示编辑按钮，点击进入编辑态） */
 export interface ChatHeaderEditable {
   /** 当前会话 ID（供提交侧定位会话） */
   conversationId: string;
@@ -23,7 +23,7 @@ interface ChatHeaderProps {
   showMenuButton?: boolean | undefined;
   onMenuClick?: (() => void) | undefined;
   onSettingsClick?: (() => void) | undefined;
-  /** 方向3：可选编辑入口（未提供时保持现状渲染，零差异） */
+/** 可选编辑入口（未提供时保持现状渲染，零差异） */
   editable?: ChatHeaderEditable | undefined;
 }
 
@@ -38,7 +38,7 @@ export const ChatHeader = memo(function ChatHeader({
 }: ChatHeaderProps): ReactElement {
   const { token } = theme.useToken();
 
-  // 方向3：标题编辑态（点击编辑图标进入；回车/失焦提交，Esc 取消）
+// 标题编辑态（点击编辑图标进入；回车/失焦提交，Esc 取消）
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
 

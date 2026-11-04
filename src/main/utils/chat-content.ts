@@ -1,6 +1,6 @@
 /**
  * Chat content 共享工具
- * 100% 抽取自 repository.ts 和 main-agent-message-content.ts 的重复 contentPartsToText 实现
+ * contentPartsToText 共享实现（与 main-agent-message-content.ts 同构）
  */
 
 import type { ChatContentPart } from '@shared/types/chat';

@@ -1,7 +1,6 @@
 /**
  * messages 表操作
- * 从 repository.ts 拆分
- * 批量入口 insertMessages = 批次末配对写入专用（）
+ * 批量入口 insertMessages = 批次末配对写入专用
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -235,9 +234,8 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
         ? payload.toolCalls
         : undefined;
 
-    // ★ F5 新增：从 payload 提取 segments 字段
-    //   ）
-    //   持久化在 messages.payload_json.segments 中（由 insertMessage/F3 写入）
+// 从 payload 提取 segments 字段
+//   持久化在 messages.payload_json.segments 中（由 insertMessage 写入）
     const rawSegments = Array.isArray((payload as Record<string, unknown>).segments)
       ? ((payload as Record<string, unknown>).segments as AssistantMessageSegment[])
       : undefined;
@@ -278,8 +276,8 @@ export function listRendererMessages(conversationId: string): RendererChatMessag
         ? { attachments: payloadAttachments(payload) }
         : {}),
       thinking: typeof payload.thinking === 'string' ? payload.thinking : '',
-      // ★ F5 新增：返回 segments 字段（与 RendererChatMessage.segments 对齐）
-      //   前端 ChatMessageContent 优先使用 message.segments，不再走 buildLegacySegments 兜底
+// 返回 segments 字段（与 RendererChatMessage.segments 对齐）
+      //   前端 ChatMessageContent 优先使用 message.segments（仅无 segments 旧数据走其私有 buildLegacySegments 兜底）
       // 返回净化后的 segments（元素级结构校验，null/非对象/未知 type 已剔除，
       //   reasoning text 归一为空字符串，tool_call 段与 toolCalls 关联校验后透传）
       segments: sanitizedSegments,
@@ -328,8 +326,8 @@ export function getLastStoredMessage(conversationId: string): StoredMessageRecor
 
 /**
  * API 报错保留现场豁免支撑：列出库内 tool 消息结果文本中引用的全部
- * execution_log_path（current_task_execution_result.data.execution_log_path，读侧解析
- * 逻辑同 extractExecutionLogPathFromToolResultText）。启动清理 cleanupStaleTasksDirsOnStartup
+ * execution_log_path（current_task_execution_result.data.execution_log_path，读侧直接
+ * 读取 data.execution_log_path 字段）。启动清理 cleanupStaleTasksDirsOnStartup
  * 据此跳过被库内引用的任务现场目录，保证报错轮 execution_log_path 重启后持续有效。
  */
 export function listStoredExecutionLogPaths(): string[] {

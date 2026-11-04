@@ -5,7 +5,7 @@
  * 非流式调用方仅 title-generation、context-compression、inspect-media
  * 封装 OpenAI 兼容 SDK，集成重试策略和 SSE 解析。
  *
- * 设计原则（v1.2）：
+ * 设计原则：
  * - LLMProvider 对两个 Agent 对称，不区分主从
  * - 不感知调用方身份（无 Agent 概念）
  * - 不持久化业务状态，只返回结果
@@ -251,7 +251,7 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
   let reasoning = '';
   const toolCalls: StreamToolCall[] = [];
   let finishReason: string | null = null;
-  let lastEmittedFinishReason: string | null = null;  // ★ 跟踪上次推送的 finishReason,仅在新值时触发 onChunk
+  let lastEmittedFinishReason: string | null = null;  // 跟踪上次推送的 finishReason,仅在新值时触发 onChunk
   let lastPacketModel = options.modelConfig.model;
 
   for await (const packet of stream) {
@@ -375,7 +375,7 @@ async function streamChatOnce(options: StreamChatOptions): Promise<StreamChatRes
           options.onThinking?.(lastReasoningDelta);
         }
 
-        // ★ 更新上次推送的 finishReason
+// 更新上次推送的 finishReason
         lastEmittedFinishReason = finishReason;
       }
     }

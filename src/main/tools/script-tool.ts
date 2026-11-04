@@ -1,7 +1,7 @@
 /**
  * use_script_tool 内置门面工具执行内核（经验库 script-tools 的查看协议/调用两分支）
  *
- * 职责（6.3）：
+ * 职责：
  * - 分支一【查看协议】：根目录检查（含兜底重建）→ 扫描 → 聚合清单（省略 tool_name）/返回单个工具协议全文+摘要（填写 tool_name）；
  * - 分支二【调用】七步：根目录检查 → 定位工具目录（目录名精确等值）→ 读校验协议 → 校验 params string →
  *   将 params string（CLI/argparse 风格，--key value）直接作为启动命令 CLI 参数携带（不再落地 input.json、不再 --input 传参）

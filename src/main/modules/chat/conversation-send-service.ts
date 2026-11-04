@@ -143,7 +143,7 @@ export async function sendUserMessageIntoConversation(
       // 视觉识别总开关联动（对齐 chat:send：visionEnabled=false 时主智能体多模态强制关闭）
       mainAgentMultimodalEnabled: settings.visionEnabled && settings.mainModelMultimodal,
       // 六键快照随本次 run 传入（与 chat:send 入口同步补齐，防两入口行为分叉）；
-      // main-agent/executor-agent 运行期一律读该快照，运行中他处切换方案不影响本次 run（INV-3）。
+// main-agent/executor-agent 运行期一律读该快照，运行中他处切换方案不影响本次 run。
       runtimeSettingsSnapshot: {
         mainThinkingLevel: settings.mainThinkingLevel,
         mainModelProtocol: settings.mainModelProtocol,
@@ -160,11 +160,11 @@ export async function sendUserMessageIntoConversation(
     });
 
     // 终态即返回（runMainAgent 返回值 MainAgentResult.content 是回执正文唯一可靠来源，
-    // B27/B42：不能以 ASSISTANT_MESSAGE_DONE_EVENT 判完成）——服务端不做任何回执动作（单轨）
+//   不能以 ASSISTANT_MESSAGE_DONE_EVENT 判完成）——服务端不做任何回执动作（单轨）。
     return { ok: true, content: result.content, messageId: result.messageId, durationMs: result.durationMs };
   } catch (error) {
     // 6. 取消语义：ERR_ABORTED 或 signal.aborted 一律吞错收敛（对齐 chat:send catch；
-    //    30 分钟硬超时同样经此路径收敛为中止）
+//    30 分钟硬超时同样经此路径转为中止）
     const errMsg = error instanceof Error ? error.message : String(error);
     if (errMsg === ERR_ABORTED || abortController.signal.aborted) {
       return { ok: false, code: 'ERR_WATCH_EXEC_ABORTED', message: '执行已中止（含 30 分钟硬超时触发），本轮未产生最终回复' };

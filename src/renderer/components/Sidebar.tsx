@@ -37,7 +37,7 @@ export interface SidebarConversation {
   isRunning?: boolean;
   createdAt: string;
   updatedAt?: string;
-  /** 方向3：会话标签（ChatShell 映射不透传时由 Sidebar 内部自治拉取兜底） */
+/** 会话标签（ChatShell 映射不透传时由 Sidebar 内部自治拉取兜底） */
   tags?: string[];
 }
 
@@ -54,7 +54,7 @@ interface SidebarProps {
 }
 
 /**
- * 按日期分组（）
+ * 按日期分组
  */
 function conversationGroupByDate(isoDate: string): string {
   const input = new Date(isoDate);
@@ -93,9 +93,9 @@ export const Sidebar = memo(function Sidebar({
   const { token } = theme.useToken();
 
   // ============================================================
-  // 方向3：重命名 + 标签（内部自治实现——ChatShell 不在方向3白名单内，
+  // 重命名 + 标签（内部自治实现——ChatShell 未透传相关 props，
   // 无法新增 props 接线，故直接消费 preload 暴露的 conversations API；
-  // electron.d.ts 类型墙用局部断言，方向4同款先例）
+  // electron.d.ts 类型墙用局部断言，同款方式）
   // ============================================================
 
   const convExtApi = (window.electronAPI?.conversations ?? {}) as Partial<{
@@ -283,7 +283,7 @@ export const Sidebar = memo(function Sidebar({
                 hoveredConversationId === conversation.id ||
                 activeConversationId === conversation.id;
 
-              // 方向3：重命名 / 标签管理 / 删除（既有删除项保持不动）
+// 重命名 / 标签管理 / 删除（既有删除项保持不动）
               const menuItems: MenuProps['items'] = [
                 {
                   key: 'rename',
@@ -394,7 +394,7 @@ export const Sidebar = memo(function Sidebar({
         </div>
       )}
 
-      {/* 方向3：重命名弹窗（乐观覆盖 + conv:rename，主进程安全关闭在途标题生成） */}
+      {/* 重命名弹窗（乐观覆盖 + conv:rename，主进程安全关闭在途标题生成） */}
       <Modal
         title="重命名对话"
         open={renameTarget !== null}

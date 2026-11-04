@@ -188,7 +188,7 @@ function buildDelegateExecutorDescription(): string {
 }
 
 // ============================================================
-// ★ 主智能体直接工具声明（read_file / fs_search / fs_list / fs_stat）——用户既定要求：声明可直接照抄【执行者】实现。
+// 主智能体直接工具声明（read_file / fs_search / fs_list / fs_stat）——声明内容与【执行者】实现逐字对应（见下方维护注记）。
 //   来源：src/main/modules/executor-agent/prompt.ts 的 buildReadFileDescription（L47-59）、
 //   buildFsSearchDescription（L61-72）、EXECUTOR_TOOLS.fs_search（L137-166）、
 //   EXECUTOR_TOOLS.read_file（L167-206）。
@@ -491,7 +491,7 @@ export function buildMainTools() {
     buildMainFsListTool(),
     buildMainFsStatTool(),
   ];
-  // （）：仅值守运行中（isWatchRuntimeRunning）send_email 进入主智能体工具清单
+// 仅值守运行中（isWatchRuntimeRunning）send_email 进入主智能体工具清单
   // ——判定源与执行层拦截（send-email.ts 入口）完全同源；watch:start/stop 与运行期回落关闭经
   // setWatchRuntimeStateChangeNotifier → refreshMainTools() 联动，经 MAIN_TOOLS live-binding 即时生效。
   if (isWatchRuntimeRunning()) {

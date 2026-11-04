@@ -11,13 +11,13 @@
  *   不存在「等待会话」的挂起中间态（hook 侧在途 promise 去重；创建期间用户切走则
  *   本批丢弃并 toast）
  * - 唯一上传触发点：addPendingFiles 内同步循环逐项 performSave（不依赖任何 state
- *   提交时序 —— R1-safe：全部要素在更新器外派生、更新器只做纯合并、触发遍历使用
+ *   提交时序 —— 全部要素在更新器外派生、更新器只做纯合并、触发遍历使用
  *   更新器外部的数组）
  * - saving 期间被用户点 × 的项经 removedWhileSavingRef 显式登记，settle 成功后
  *   最佳努力 file:delete 孤儿回收（按构造安全：该 storageKey 在项被移除前从未达到
  *   ready，消息只消费 ready 项，物理上不可能被任何消息引用）
  * - 卸载清理仅 revokeObjectURL（渲染端在卸载时刻无法权威判定文件是否已被消息引用，
- *   完全退出 file:delete 消费；孤儿处置归 R6 搁置口径 + 会话级 cleanup-orphans 兜底）
+ *   完全退出 file:delete 消费；孤儿处置由会话级 cleanup-orphans 兜底）
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -62,7 +62,7 @@ export interface UseFileUploadReturn {
   pendingFiles: UploadPendingFile[];
   addPendingFiles: (files: File[]) => void;
   removePendingFile: (localKey: string) => void;
-  /** 仅清空本地 pendingFiles state（revoke + 清空），不触发 file:delete（磁盘保留，R6 口径） */
+  /** 仅清空本地 pendingFiles state（revoke + 清空），不触发 file:delete（磁盘保留） */
   clearLocalOnly: () => void;
   /** 当前落盘物理窗口内的文件数量（ChatShell 场景c 守卫与 canSend 派生使用） */
   savingCount: number;
@@ -93,7 +93,7 @@ async function fileToArrayBuffer(file: File): Promise<ArrayBuffer> {
 }
 
 /**
- * ArrayBuffer → Base64 字符串（H1 防御核心）
+ * ArrayBuffer → Base64 字符串（IPC 防御核心）
  * - file:upload 通道 IPC 传输数据由 ArrayBuffer 改为 Base64 字符串：
  *   纯字符串经结构化克隆传输不存在二进制序列化断点；主进程 fileInputToBuffer
  *   以 Buffer.from(data, 'base64') 解码，并兼容旧 ArrayBuffer 入参（向后兼容）；
@@ -133,7 +133,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
   }, [pendingFiles]);
 
   // 卸载清理：仅释放 ObjectURL（不再触发 file:delete —— 卸载时刻渲染端无法权威判定
-  // 文件是否已被消息引用，任何卸载期删除都携带误删已发送附件的风险；孤儿归 R6 口径）
+  // 文件是否已被消息引用，任何卸载期删除都携带误删已发送附件的风险；孤儿不在此处置）
   useEffect(() => {
     return () => {
       for (const item of pendingFilesRef.current) {
@@ -165,7 +165,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
   }, [ensureConversationFn]);
 
   /**
-   * 唯一上传路径：saving → file:upload IPC → ready / error（纯更新器，R1-safe）
+   * 唯一上传路径：saving → file:upload IPC → ready / error（纯更新器）
    * - settle 更新使用纯 prev.map（项已被移除则 map 不命中即 no-op）；
    * - 失败三层反馈：error 态 + uploadError（附件条 title）、console、log:renderer ERROR 转发；
    * - saving 期间被点 × 的项（removedWhileSavingRef 显式登记）settle 成功后最佳努力
@@ -178,7 +178,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
       setSavingCount((c) => c + 1);
       try {
         const arrayBuffer = await fileToArrayBuffer(file);
-        const dataBase64 = arrayBufferToBase64(arrayBuffer);   // H1：IPC 传输数据为 Base64 字符串
+        const dataBase64 = arrayBufferToBase64(arrayBuffer);   // IPC 传输数据为 Base64 字符串
         if (!window.electronAPI?.file?.upload) {
           throw new Error('file:upload 通道不可用');
         }
@@ -255,7 +255,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
 
   /**
    * 直通入口：粘贴/拖拽/+按钮收集的文件 → 预筛 → 会话就绪 → saving 入列 → 逐项 performSave
-   * R1-safe 四段：①prepare 在更新器外派生；②预筛基于渲染闭包快照 pendingFiles 判断；
+   * 四段：①prepare 在更新器外派生；②预筛基于渲染闭包快照 pendingFiles 判断；
    * ③更新器只做纯合并 + 基于 prev 的权威去重/上限兜底；④触发遍历使用更新器外部数组。
    */
   const addPendingFiles = useCallback(
@@ -387,7 +387,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
 
       // ── ⑤ 唯一触发点：遍历更新器外部的数组逐项直通落盘（不依赖 state 提交时序；
       //    预筛跳过的项不触发；同 tick 并发重复项由更新器权威去重丢弃但其 IPC 已发出，
-      //    孤儿继承现状行为归 R6 口径）──
+      //    孤儿不在此处置）──
       const tasks: Array<Promise<SaveOutcome>> = [];
       for (const item of acceptedItems) {
         if (skippedKeys.has(item.localKey)) continue;
@@ -441,7 +441,7 @@ export function useFileUpload(options: UseFileUploadOptions): UseFileUploadRetur
     [],
   );
 
-  /** 切会话/发送受理时清理：仅清本地 state + revoke，不触发 file:delete（磁盘保留，R6 口径） */
+  /** 切会话/发送受理时清理：仅清本地 state + revoke，不触发 file:delete（磁盘保留） */
   const clearLocalOnly = useCallback(() => {
     for (const item of pendingFilesRef.current) {
       if (item.previewUrl) {

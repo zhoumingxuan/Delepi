@@ -11,14 +11,14 @@
  * 渲染信号：内建 200ms leading+trailing 节流发射 executor:record-signal（极小载荷），
  * 轮 seal / 工具事件 / 终态立即发；终态前冲刷并作废挂起 trailing（保证终态信号最后一条）。
  *
- * 草稿规则 R-draft-1~7（思考中流未结束时的中间快照保留规则）：
- * - R-draft-1 草稿创建：本轮首个 reasoning delta 到达时创建 running 草稿条目；
- * - R-draft-2 草稿更新：后续 delta 追加（不新增 seq），显示文本存净化后全文不截断；
- * - R-draft-3 草稿外流：任何增量查询响应恒定携带当前 running 草稿最新全文；
- * - R-draft-4 草稿 seal：onTurnEnd 用 extractAssistantReasoning 权威全文覆盖收口；
- * - R-draft-5 空思考轮：该轮 reasoning 为空 → 不建草稿、不产生思考条目；
- * - R-draft-6 重试复位：onStreamRetry → 当前 running 草稿整体清空重建；
- * - R-draft-7 任务终态：仍有 running 草稿 → 以当前累积文本强制 seal 为 completed。
+ * 草稿规则（思考中流未结束时的中间快照保留规则）：
+ * - 草稿创建：本轮首个 reasoning delta 到达时创建 running 草稿条目；
+ * - 草稿更新：后续 delta 追加（不新增 seq），显示文本存净化后全文不截断；
+ * - 草稿外流：任何增量查询响应恒定携带当前 running 草稿最新全文；
+ * - 草稿 seal：onTurnEnd 用 extractAssistantReasoning 权威全文覆盖收口；
+ * - 空思考轮：该轮 reasoning 为空 → 不建草稿、不产生思考条目；
+ * - 重试复位：onStreamRetry → 当前 running 草稿整体清空重建；
+ * - 任务终态：仍有 running 草稿 → 以当前累积文本强制 seal 为 completed。
  *
  * 幂等守卫：终态后全部写入 API no-op（防迟到回调写脏）；endToolCall 对已终态工具条目
  * 不再转移状态；markTerminal 幂等。
@@ -58,7 +58,6 @@ export type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 // ============================================================
 // 显示视图构造常量（上限，脱敏格式化规则）
 // 思考文本 / 工具参数 / 工具结果预览均存净化后全文，
-// 显示层字数截断机制（truncateDisplay + 3 个阈值常量 + 尾标）已整体移除（零死代码）。
 // ============================================================
 
 /** 显示视图条目上限（超限逐出最老 thinking 条目） */
@@ -161,12 +160,12 @@ export interface ExecutorTaskRecordSession {
   readonly taskId: string;
   /** 承载该委派批次的 assistant 消息 id */
   readonly messageId: string;
-  /** 任务名（委派参数 task_name 解析，规则与 main-agent 既有先例一致） */
+/** 任务名（委派参数 task_name 解析，规则与 main-agent 一致） */
   readonly taskName: string;
   readonly createdAt: string;
-  /** ★ 真实内容视图：executor 循环唯一 push 目标，与 completeExecutorTurn 入参同引用（模型上下文共享） */
+/** 真实内容视图：executor 循环唯一 push 目标，与 completeExecutorTurn 入参同引用（模型上下文共享） */
   readonly modelMessages: RuntimeMessage[];
-  /** ★ 显示视图：按 seq 升序的记录条目（上限 500 条） */
+/** 显示视图：按 seq 升序的记录条目（上限 500 条） */
   readonly records: ExecutorRecordEntry[];
   /** running → completed/failed/aborted；终态后 records 冻结只读 */
   status: ExecutorTaskRecordStatus;
@@ -176,17 +175,17 @@ export interface ExecutorTaskRecordSession {
 
   /** 初始消息写入 modelMessages 并返回该数组引用（adoptMessages 领养语义） */
   adoptMessages(initial: RuntimeMessage[]): RuntimeMessage[];
-  /** 草稿创建/追加（R-draft-1/2/3）+ 节流信号 */
+/** 草稿创建/追加 + 节流信号 */
   appendThinkingDelta(delta: string): void;
-  /** 草稿 seal（R-draft-4/5；无草稿且 reasoning 非空 → 直接补建 completed 条目）+ 立即信号 */
+/** 草稿 seal（无草稿且 reasoning 非空 → 直接补建 completed 条目）+ 立即信号 */
   sealThinkingTurn(reasoning: string): void;
   /** 工具条目 running（argsPreview 构造）+ 立即信号 */
   beginToolCall(info: { callId: string; name: string; args: string }): void;
   /** 工具条目终态（completed/failed，幂等守卫）+ resultPreview + 立即信号 */
   endToolCall(info: { callId: string; success: boolean; message: string }): void;
-  /** onStreamRetry 复位（R-draft-6）+ 立即信号 */
+/** onStreamRetry 复位 + 立即信号 */
   resetThinkingDraft(): void;
-  /** 终态收敛（R-draft-7、running 工具条目处置）+ 冲刷节流 + 立即终态信号 + 冻结 */
+/** 终态收敛（running 工具条目处置）+ 冲刷节流 + 立即终态信号 + 冻结 */
   markTerminal(status: 'completed' | 'failed' | 'aborted'): void;
   /** 任务级停止通知条目（kind='notice'/type='stop'；冻结/终态守卫 no-op；stopExecutorTask 冻结前写入；push + 立即信号走增量下发） */
   appendStopNotice(text: string): void;
@@ -197,7 +196,7 @@ export interface ExecutorTaskRecordSession {
    *  queue-full 拒收；records 新增 state=queued 条目（净化文本）+ pendingUserMessages 入队
    *  （原文，真实视图零加工）+ emitSignal(true) 立即信号；返回受理结果） */
   enqueueUserMessage(text: string): ExecutorTaskMessageSendResult;
-  /** ★ 阶段四：注册适配器 insert 双写通道（模型上下文注入源；显示视图权威仍在 record 侧） */
+/** 注册适配器 insert 双写通道（模型上下文注入源；显示视图权威仍在 record 侧） */
   registerAdapterInsertSink(
     sink: (message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number },
   ): void;
@@ -211,7 +210,7 @@ export interface ExecutorTaskRecordSession {
    *  completed/failed 终态一律同 seq 原位更新（mutatedSeqs 原位补发），本压缩事件绝不二次追加条目；
    *  markTerminal 终态清扫消除悬挂进行中条目（appendStopNotice 同族的冻结/终态守卫不变） */
   appendContextCompressionNotice(payload: ExecutorCompressionNoticePayload): void;
-  /** ★ 助手回复·完成态条目写入（executor-agent 主轮 content 未命中最终输出判定时以原文调用）：
+/** 助手回复·完成态条目写入（executor-agent 主轮 content 未命中最终输出判定时以原文调用）：
    *  调用即同步插入 state='completed' 条目（text 净化 + createdAt/finishedAt）+ 立即信号——无
    *  loading 中间态，前端一次性原样渲染；守卫：冻结态 no-op、空正文不落条目（幂等安全） */
   sealAssistantReply(text: string): void;
@@ -246,10 +245,10 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
    */
   private mutatedSeqs = new Set<number>();
 
-  /** ★ 任务级交互消息排队队列（真实视图原文，FIFO；安全点消费入口：executor-agent 循环
+/** 任务级交互消息排队队列（真实视图原文，FIFO；安全点消费入口：executor-agent 循环
    *  SP1/SP2 调用 consumePendingUserMessages） */
   private pendingUserMessages: Array<{ seq: number; text: string }> = [];
-  /** ★ 阶段四：适配器 insert 双写通道（runDelegatedTask 注册；模型上下文注入源） */
+/** 适配器 insert 双写通道（runDelegatedTask 注册；模型上下文注入源） */
   private adapterInsertSink: ((message: { role: 'user'; content: string }) => { accepted: boolean; reason?: string; queuedCount?: number }) | null = null;
   /** 200ms leading+trailing 节流状态 */
   private lastSignalEmitAt = 0;
@@ -363,7 +362,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     }
     const draft = this.runningDraft;
     if (!draft) {
-      // R-draft-1 草稿创建
+// 草稿创建
       this.draftRawText = sanitizeDisplayText(delta);
       this.records.push({
         kind: 'thinking',
@@ -373,7 +372,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
         startedAt: nowIso(),
       });
     } else {
-      // R-draft-2 草稿追加（不新增 seq；显示文本存净化后全文，不截断不回写真实内容）
+// 草稿追加（不新增 seq；显示文本存净化后全文，不截断不回写真实内容）
       this.draftRawText = `${this.draftRawText}${sanitizeDisplayText(delta)}`;
       draft.text = this.draftRawText;
     }
@@ -388,7 +387,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     const authoritative = sanitizeDisplayText(reasoning ?? '');
     const draft = this.runningDraft;
     if (draft) {
-      // R-draft-4 草稿 seal：权威全文覆盖；权威为空时保留已累积草稿文本（delta 已真实发生）
+// 草稿 seal：权威全文覆盖；权威为空时保留已累积草稿文本（delta 已真实发生）
       draft.text = authoritative.trim() ? authoritative : this.draftRawText;
       draft.status = 'completed';
       draft.finishedAt = nowIso();
@@ -406,7 +405,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       });
       this.evictOverflow();
     }
-    // R-draft-5 空思考轮：无草稿且权威为空 → 不建条目
+// 空思考轮：无草稿且权威为空 → 不建条目
     this.emitSignal(true);
   }
 
@@ -479,11 +478,11 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   markTerminal(status: 'completed' | 'failed' | 'aborted'): void {
-    // 豁免 stopRequested：终态收敛为停止请求冻结后唯一合法写入（R-draft-7 / mutatedSeqs / 终态信号）。
+// 豁免 stopRequested：终态收敛为停止请求冻结后唯一合法写入（mutatedSeqs / 终态信号）。
     if (this.terminal) {
       return;
     }
-    // R-draft-7：running 草稿强制 seal（已产生内容不因终态否定）
+// running 草稿强制 seal（已产生内容不因终态否定）
     const draft = this.runningDraft;
     if (draft) {
       draft.status = 'completed';
@@ -503,7 +502,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
         this.mutatedSeqs.add(record.seq);   // 同 seq 状态转移：登记供增量查询补发
       }
     }
-    // ★ 上下文压缩进行中条目终态清扫（单条目状态机兜底）：终态时仍处 in-progress 的压缩条目 → failed
+// 上下文压缩进行中条目终态清扫（单条目状态机兜底）：终态时仍处 in-progress 的压缩条目 → failed
     //   收敛（aborted=用户取消；completed/failed=任务结束未完成）——统一覆盖中止丢弃、抑制轮
     //   悬挂、freezeForStop 冻结窗口残余（冻结后写 API no-op，markTerminal 为唯一合法收敛口），杜绝永久悬挂。
     for (const record of this.records) {
@@ -515,7 +514,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
         this.mutatedSeqs.add(record.seq);
       }
     }
-    // ★ 任务级交互消息终态清扫：终态时仍在排队的消息收敛为未送达——终态后 modelMessages
+// 任务级交互消息终态清扫：终态时仍在排队的消息收敛为未送达——终态后 modelMessages
     //   不再被任何 create 消费，语义与 UI 对齐
     for (const item of this.pendingUserMessages) {
       const record = this.records.find((entry) => entry.seq === item.seq);
@@ -637,7 +636,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
       createdAt: nowIso(),
     });
     this.pendingUserMessages.push({ seq, text });   // 真实视图：原文零加工
-    // ★ 阶段四（双写）：适配器队列同步双写（模型上下文注入源）——与显示记录
+// 适配器队列同步双写（模型上下文注入源）——与显示记录
     //   同一次同步调用栈内完成（无时序窗口）；content 为包装后形态（与原 L576 push 形态
     //   逐字节一致：buildExecutorUserTaskMessage(item.text)，纯函数入队时求值等价）；
     //   适配器自带同构守卫（terminal/stop-requested/queue-full/invalid），双拒收一致时行为等价
@@ -650,7 +649,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
   }
 
   /**
-   * ★ 阶段四：注册适配器 insert 通道（runDelegatedTask 创建适配器实例后注册）。
+ * 注册适配器 insert 通道（runDelegatedTask 创建适配器实例后注册）。
    * record 队列保留为显示视图权威；适配器队列成为模型上下文注入源（包装不替换）。
    */
   registerAdapterInsertSink(
@@ -666,7 +665,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
     let consumed = 0;
     while (this.pendingUserMessages.length > 0) {
       const item = this.pendingUserMessages.shift()!;
-      // ★ 阶段四（单行职责移交）：modelMessages.push 单行移交适配器——
+// modelMessages.push 单行移交适配器——
       //   adapter.sendMessage 在构建协议请求体之前、同步（无 await）排空适配器队列，
       //   FIFO 追加宿主同引用数组（modelMessages，领养语义 executor-agent.ts L1322-1327 不变）
       //   尾部。三项硬等价：注入时点=同一安全点紧随的 sendMessage 内部；注入序位=
@@ -714,7 +713,7 @@ class ExecutorTaskRecordSessionImpl implements ExecutorTaskRecordSession {
 
   /**
    * 增量条目视图（查询出口内部使用）：
-   * seq > sinceSeq 的条目 ∪ 当前 running 思考草稿（恒返最新全文，R-draft-3）
+   * seq > sinceSeq 的条目 ∪ 当前 running 思考草稿（恒返最新全文）
    * ∪ 原位变更登记条目（seal/工具终态等同 seq 状态转移，兑现"已存在者覆盖"合并语义）。
    * 服务完成后剪除已下发的登记（单客户端应用）。
    */
@@ -830,7 +829,7 @@ export function stopExecutorTask(
   }
   session.appendStopNotice(`${session.taskName || '子智能体任务'} 已停止，用户手动取消。`);
   session.freezeForStop();
-  // ★ 停止入口直接收敛终态（不等执行链路响应 abort）：终态信号立即下发，且早于任何
+// 停止入口直接收敛终态（不等执行链路响应 abort）：终态信号立即下发，且早于任何
   //   abort 触发的迟到回调；随后 main-agent catch 的同态 markTerminal 受 terminal 守卫幂等 no-op。
   session.markTerminal('aborted');
   controller.abort(new Error(ERR_ABORTED));
@@ -944,7 +943,7 @@ export function queryExecutorTaskRecord(params: {
     typeof params.sinceSeq === 'number' && params.sinceSeq > 0 ? params.sinceSeq : 0;
   const reset = session.latestSeq < sinceSeq;
 
-  // 增量条目：seq > sinceSeq ∪ 当前 running 草稿（R-draft-3 恒返）∪ 原位变更登记条目
+// 增量条目：seq > sinceSeq ∪ 当前 running 草稿（恒返）∪ 原位变更登记条目
   const entries: ExecutorRecordEntry[] = session.buildIncrementalEntries(sinceSeq);
 
   return {

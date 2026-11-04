@@ -20,8 +20,6 @@ export const UPDATE_ACCESS_KEY_SOURCE_DEFAULT = 'delepi_update_K7mQ3vTz9LpW4aB2c
 /** 更新接口鉴权请求头名（不进 URL，避免落入访问日志与浏览器历史） */
 export const UPDATE_ACCESS_KEY_HEADER = 'X-Delepi-Update-Key';
 
-/** 平台枚举（与 shared/types/update.ts 的 UpdatePlatform 逐字一致） */
-export const UPDATE_PLATFORMS = ['win10', 'linux', 'mac'] as const;
 
 /** 下载缓存目录名（位于 storage-paths 的客户端 bin 根目录下） */
 export const UPDATE_DIR_NAME = 'updates';

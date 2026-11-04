@@ -9,7 +9,7 @@
  * - value：当前正在流式累积的 ChatMessage 副本
  * - 写入时机：runMainAgent 流式开始时（emit chat:chunk 前）→ 初始化
  *            流式累积时（emit chat:chunk / chat:thinking）→ 更新 content/thinking
- *            流式结束时（writeMessage 后）→ 删除
+ *            流式结束时（消息落库后）→ 删除
  * - 读取时机：conv:get-messages IPC handler → 在返回的消息列表中追加（若该消息尚未入库）
  *
  * 注意：与 tool 消息 payload 不同，runningAssistantMessages
@@ -75,7 +75,7 @@ export interface RunningToolPlaceholder {
 export const runningAssistantMessages: Map<string, RunningAssistantMessage> = new Map();
 
 /**
- * 初始化/覆盖指定会话的 runningAssistantMessage
+ * 初始化/覆盖指定会话的 RunningAssistantMessage 条目
  * 通常在 runMainAgent 流式开始时调用
  * @param conversationId 会话 ID
  * @param message 初始 ChatMessage（status='loading'）
@@ -88,7 +88,7 @@ export function setRunningAssistantMessage(
 }
 
 /**
- * 部分更新指定会话的 runningAssistantMessage
+ * 部分更新指定会话的 RunningAssistantMessage 条目
  * 通常在 chat:chunk / chat:thinking 流式累积时调用
  * @param conversationId 会话 ID
  * @param partial 部分字段（content / thinking / toolCalls 等）
@@ -105,7 +105,7 @@ export function updateRunningAssistantMessage(
 }
 
 /**
- * 获取指定会话的 runningAssistantMessage
+ * 获取指定会话的 RunningAssistantMessage 条目
  * @param conversationId 会话 ID
  * @returns ChatMessage 或 undefined
  */
@@ -116,8 +116,8 @@ export function getRunningAssistantMessage(
 }
 
 /**
- * 删除指定会话的 runningAssistantMessage
- * 通常在流式结束（writeMessage 落库后）调用
+ * 删除指定会话的 RunningAssistantMessage 条目
+ * 通常在流式结束（消息落库后）调用
  * @param conversationId 会话 ID
  */
 export function deleteRunningAssistantMessage(conversationId: string): void {

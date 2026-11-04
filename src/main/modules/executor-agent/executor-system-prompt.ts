@@ -229,7 +229,7 @@ ${buildDeliverableFieldDescription(options.deliveryType)}
 }
 
 /**
- * ★ 任务级交互消息注入包装模板（用户定稿草案A3，逐字）：
+ * 任务级交互消息注入包装模板：
  * 每条用户消息在安全点 push 进 modelMessages 前统一包装；标题前缀「【用户提示】」与
  * 系统提示词「# 用户提示」章节的识别口径一致（双层防御：系统层定边界 + 逐条层重申抗漂移）。
  */

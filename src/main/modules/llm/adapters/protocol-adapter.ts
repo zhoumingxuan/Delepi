@@ -35,17 +35,17 @@ export type AdapterThinkingLevel = '' | 'minimal' | 'low' | 'medium' | 'high' | 
 /** 单个流式 chunk（融合签名：{type,delta,cumulative} + end 枚举语义无损融合）：
  *  - delta = 本次增量文本，"有值传没值空"（纯终结信号回调时 delta=''）
  *  - cumulative = 截至本次的本轮累计文本（重试复位全量覆盖通道的载体，
- *    对齐现状 StreamChunk L85-100 双粒度）
- *  - end = 可选瞬时流控制标志（S1/S2=end:'segment'；S3=end:'message'；缺省即纯增量）
+ *    对齐现状 StreamChunk 双粒度）
+ *  - end = 可选瞬时流控制标志（'segment'=段终结；'message'=消息终结；缺省即纯增量）
  *  - finishReason = 可选终结原因视图（仅 finish 时刻的 chunk 携带；CC 侧为现状
- *    finish_reason 的等价透传通道——G5 实测 finish chunk 独立且 delta.content 空串，
- *    finishReason 变化触发回调依赖该字段等价保持（§三.2.2 逐字段等价）；
+ *    finish_reason 的等价透传通道——finish chunk 独立且 delta.content 空串，
+ *    finishReason 变化触发回调依赖该字段等价保持（逐字段等价）；
  *    Responses 侧由终结事件推导（stop→completed 等）；普通增量 chunk 不携带） */
 export interface AdapterChunk {
-  type: 'content' | 'reasoning'; // 增量归类仅两类（契约承诺 R1；summary 归入 reasoning）
+  type: 'content' | 'reasoning'; // 增量归类仅两类（summary 归入 reasoning）
   delta: string;
   cumulative: string;
-  end?: 'segment' | 'message'; // S1/S2（segment）与 S3（message）承载
+  end?: 'segment' | 'message'; // 段终结（segment）与消息终结（message）承载
   finishReason?: string | null;
 }
 
@@ -80,8 +80,8 @@ export interface AdapterFinished {
     reasoningTokens?: number;
     cachedTokens?: number;
   };
-  assistantMessage?: Record<string, unknown>; // 本轮宿主统一格式 assistant 消息（原封回传载体，§三.2.3）
-  finishReason?: string | null; // CC 侧原始 finish_reason（兼容视图；G5 实测独立 chunk 携带）
+  assistantMessage?: Record<string, unknown>; // 本轮宿主统一格式 assistant 消息（原封回传载体）
+  finishReason?: string | null; // CC 侧原始 finish_reason（兼容视图；finish 独立 chunk 携带）
   model?: string;
 }
 
@@ -122,8 +122,8 @@ export interface AdapterInitConfig {
   hooks?: { onStreamRetry?: () => void };
 }
 
-/** init 成败结果（成败化契约，目标一）：参数校验失败与协议探查失败统一以
- *  {success:false, message:原因} 表达——不再依赖 throw 表达常规初始化失败 */
+/** init 成败结果：参数校验失败与协议探查失败统一以
+ *  {success:false, message:原因} 表达——不依赖 throw 表达常规初始化失败 */
 export interface AdapterInitResult {
   success: boolean;
   message?: string;
@@ -138,7 +138,7 @@ export interface AdapterPendingMessage {
 /** 排队上限（对齐 executor-task-record-store.ts L68 EXECUTOR_TASK_MESSAGE_MAX_PENDING） */
 export const ADAPTER_INSERT_QUEUE_MAX_PENDING = 10;
 
-/** 协议探查超时（目标二：短超时秒级、单次探查、无重试——仅以 URL 为依据判定协议存在性） */
+/** 协议探查超时（短超时秒级、单次探查、无重试——仅以 URL 为依据判定协议存在性） */
 const ADAPTER_PROTOCOL_PROBE_TIMEOUT_MS = 5_000;
 
 // ============================================================
@@ -167,10 +167,10 @@ export abstract class ProtocolAdapter {
 
   /** ① 初始化：注入大模型 API 配置 + 思考程度 + system message（参数级扩展：
    *  hooks.onStreamRetry（重试复位承载）与 tools（实例工具集））。
-   *  成败化契约（目标一，含网络 I/O 故异步化）：返回 Promise<AdapterInitResult>——
+   *  成败化契约（含网络 I/O 故异步化）：返回 Promise<AdapterInitResult>——
    *  常规初始化失败（二次 init / 参数校验失败）不再 throw，统一以 {success:false,
    *  message} 表达；基类默认实现保留参数校验与配置快照职责，不含协议探查
-   *  （协议探查由子类 init 在基类成功后追加，目标二）。 */
+ *  （协议探查由子类 init 在基类成功后追加）。 */
   async init(config: AdapterInitConfig): Promise<AdapterInitResult> {
     if (this.initialized) {
       return { success: false, message: 'adapter already initialized（实例即配置快照，禁止二次 init）' };
@@ -308,7 +308,7 @@ export abstract class ProtocolAdapter {
     }
   }
 
-  /** 协议探查（目标二，由子类 init 在基类校验/快照成功后追加调用）：仅以 URL 为依据
+/** 协议探查（由子类 init 在基类校验/快照成功后追加调用）：仅以 URL 为依据
    *  POST 探查端点，单次、无重试、短超时秒级（参照 responses-adapter.ts 既有 fetch
    *  形态，不触碰 openai-client.ts）。判定映射：HTTP 404 = 协议不存在 = 初始化失败
    *  （success:false，message 携带端点与 404 事实）；收到任何其他 HTTP 状态响应（含

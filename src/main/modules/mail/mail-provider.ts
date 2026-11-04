@@ -123,10 +123,6 @@ export function normalizeHost(value: unknown): string {
   return host.trim().toLowerCase();
 }
 
-/** 端点缺省判定（host 为空或端口非法都算不可用） */
-export function isEndpointUsable(endpoint: MailEndpoint): boolean {
-  return endpoint.host.length > 0 && endpoint.port > 0;
-}
 
 /**
  * 解析生效端点（**收信与发信的唯一端点来源**）。

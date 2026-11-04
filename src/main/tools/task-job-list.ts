@@ -1,7 +1,7 @@
 /**
  * 执行者任务级进程台账（jobList）。
  *
- * 设计边界（对齐技术方案 ③/D6/D7/D8）：
+ * 设计边界：
  * - 一任务一份：由 runDelegatedTask 在任务入口创建，经 ToolRuntimeContext.jobList 透传给
  *   run_shell / run_with_python，任务收敛时由外层 finally 统一收网；
  * - 纯内存：不落盘、不写执行日志、不进入 ToolResult 与模型可见上下文；child 句柄永不序列化；

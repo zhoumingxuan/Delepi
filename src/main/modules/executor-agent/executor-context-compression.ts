@@ -29,12 +29,6 @@ function resolveAdapterHistoryResidency(adapter: unknown): 'client' | 'server' {
   return holder && holder.historyResidency === 'server' ? 'server' : 'client';
 }
 
-/** 统计口径（规则2）：排除前两条消息后的总字符数；仅统计不修改（slice 快照） */
-export function countExecutorCompressibleChars(
-  messages: readonly OpenAI.Chat.ChatCompletionMessageParam[],
-): number {
-  return messages.length <= 2 ? 0 : countStringChars(messages.slice(2));
-}
 
 /**
  * 子智能体独立压缩指令（任务执行中途压缩口径；与主智能体对话历史总结口径相互独立）。
@@ -122,8 +116,8 @@ export function createExecutorContextCompressionRunner(
       durationMs: 0,
     });
 
-    // 同步压缩（规则3/4：复用主智能体压缩核心；入参全量数组——内部剔除 system，
-    //    executor 仅 index0 一条 system，与"削掉最开头 system_message"严格等价）
+    // 同步压缩（复用主智能体压缩核心；入参全量数组——内部剔除 system，
+    //    executor 仅 index 0 一条 system，与"削掉最开头 system_message"严格等价）
     const startedAt = Date.now();
     let summary = '';
     try {

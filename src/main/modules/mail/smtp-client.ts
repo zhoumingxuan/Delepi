@@ -1,5 +1,5 @@
 /**
- * smtp-client — 纯 Node.js SMTP 发送模块（）
+ * smtp-client — 纯 Node.js SMTP 发送模块
  *
  * 设计约束：
  * - 零新增 npm 依赖：只使用 node:tls / node:crypto / node:os / node:string_decoder 等内置模块；
@@ -114,10 +114,10 @@ export interface MimeMessageResult {
 const DEFAULT_TIMEOUT_MS = 90_000;
 
 /**
- * 进程级默认加密方式（ 目标3 的发信侧 provider 接缝）：
+ * 进程级默认加密方式（发信侧 provider 接缝）：
  * 值守服务在每次解析邮箱端点时调用 setDefaultSmtpEncryption()，使「未显式传 encryption」
- * 的既有调用方（send_email 工具，本轮改动白名单之外）自动跟随当前邮箱类型；
- * 未注入前恒为 'ssl'，与~6 的 465 隐式 TLS 行为逐字节一致。
+ * 的既有调用方（send_email 工具）自动跟随当前邮箱类型；
+ * 未注入前恒为 'ssl'（465 隐式 TLS）。
  */
 let defaultSmtpEncryption: 'ssl' | 'starttls' = 'ssl';
 
@@ -126,10 +126,6 @@ export function setDefaultSmtpEncryption(value: 'ssl' | 'starttls'): void {
   defaultSmtpEncryption = value === 'starttls' ? 'starttls' : 'ssl';
 }
 
-/** 读取默认加密方式（诊断用） */
-export function getDefaultSmtpEncryption(): 'ssl' | 'starttls' {
-  return defaultSmtpEncryption;
-}
 const BASE64_LINE_WIDTH = 76;
 const MAX_ENCODED_WORD_BYTES = 45;
 
@@ -638,7 +634,7 @@ export async function sendSmtpMail(options: SmtpSendOptions): Promise<SmtpSendRe
 }
 
 /**
- * SMTP 登录自检（只做 AUTH LOGIN，不发信）：等价旧桥自检的 SMTP 段。
+ * SMTP 登录自检（只做 AUTH LOGIN，不发信）。
  * 阶段语义与 sendSmtpMail 一致：connect（TCP/TLS/EHLO）、auth（AUTH LOGIN 被拒或断连）、
  * timeout（整体/空闲超时）。不抛异常，失败收敛为 { ok:false, stage, error }（错误已脱敏）。
  */

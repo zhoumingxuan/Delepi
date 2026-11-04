@@ -1,6 +1,6 @@
 /**
  * 跨进程共享的执行子智能体工具进度模式
- * 主进程和渲染进程均从此文件导入
+ * 当前使用方：渲染端 lib/executor-thinking.ts
  *
  * 包含：
  * - EXECUTOR_TOOL_PROGRESS_PATTERNS: 工具进度正则模式

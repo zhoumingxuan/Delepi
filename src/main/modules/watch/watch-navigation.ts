@@ -33,24 +33,6 @@ export interface WatchCommandNavigationPayload {
   createdNewConversation: boolean;
 }
 
-/**
- * 永不触发跳转的邮件处理状态（processWatchMail ①~④ 步的返回状态）：
- * - role_filtered      X-Delepi-Role 头存在（防回执环第一道）
- * - subject_filtered   主题前缀 [Delepi回执]（防回执环第二道）
- * - sender_rejected    From 头缺失/解析失败（不可判定来源）
- * - non_command        未命中任何指令标记（静默忽略、零回执）
- */
-export const WATCH_NAVIGATION_SUPPRESSED_STATUSES = [
-  'role_filtered',
-  'subject_filtered',
-  'sender_rejected',
-  'non_command',
-] as const;
-
-/** 该处理状态是否被禁止跳转（上述四类为 true） */
-export function isNavigationSuppressedStatus(status: string): boolean {
-  return (WATCH_NAVIGATION_SUPPRESSED_STATUSES as readonly string[]).includes(status);
-}
 
 /** 构造跳转载荷（subject 截断 80 字符，避免超大主题进 IPC） */
 export function buildCommandNavigationPayload(params: {

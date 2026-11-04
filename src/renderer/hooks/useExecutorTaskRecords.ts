@@ -1,10 +1,10 @@
 /**
- * useExecutorTaskRecords —— executor 任务记录渲染侧唯一数据 hook（）
+ * useExecutorTaskRecords —— executor 任务记录渲染侧唯一数据 hook
  *
  * 职责：
  * 1. 订阅 executor:record-signal（经 preload；信号不携带内容）；
  * 2. 按信号增量拉取 executor:get-task-record（per-task in-flight/dirty 补偿 + 200ms 去抖，
- *    模式复刻 useChat 旧信号订阅块的 补偿机件）；
+ *    per-task in-flight/dirty 补偿 + 200ms 去抖）；
  * 3. 本地任务记录视图状态（Record<delegateCallId, ExecutorTaskView>，拉取为准合并：reset 整体替换 /
  *    seq 已存在覆盖 / 不存在按 seq 插入）；
  * 4. 兜底对账：5s 心跳（仅存在 running 任务时拉取）/ 切换会话全量对账 / 窗口 focus 重对账 /
@@ -296,7 +296,7 @@ export function useExecutorTaskRecords(options: {
               ...view,
               status: 'aborted' as ExecutorTaskRecordStatus,
               finishedAt: abortedAt,
-              // ★ 本地兜底收敛：loading 态助手回复条目同步终态化（终态信号万一丢失时前端
+// 本地兜底收敛：loading 态助手回复条目同步终态化（终态信号万一丢失时前端
               //   双保险；下一次拉取对账时服务端 markTerminal 清扫结果为权威覆盖）
               entries: view.entries.map((entry) =>
                 entry.kind === 'assistant-reply' && entry.state === 'loading'
@@ -417,8 +417,8 @@ export function useExecutorTaskRecords(options: {
 
   /** 任务级隔离停止：conversationId 经 taskConversationIndexRef 反查 → IPC 停止目标任务；
    *  静默容错（无乐观更新、无全局提示——渲染层状态收敛由 executor:record-signal 终态信号链路自动完成）。
-   *  window.electronAPI 的全局类型声明（electron.d.ts）不在本次改动白名单内——
-   *  局部类型收窄（模式对齐 ConfigDrawer/Sidebar 既有先例）。 */
+ *  window.electronAPI 的全局类型声明（electron.d.ts）未声明任务级通道——
+ *  局部类型收窄（同 ConfigDrawer/Sidebar 既有做法）。 */
   const stopTask = useCallback((delegateCallId: string) => {
     const targetConversationId = taskConversationIndexRef.current.get(delegateCallId);
     if (!targetConversationId) {
@@ -437,8 +437,8 @@ export function useExecutorTaskRecords(options: {
     });
   }, []);
 
-  /** 任务级交互消息：conversationId 经 taskConversationIndexRef 反查 → IPC 入队（模式对齐
-   *  stopTask：electron.d.ts 不在改动白名单——局部类型收窄先例沿用） */
+/** 任务级交互消息：conversationId 经 taskConversationIndexRef 反查 → IPC 入队（同
+   *  stopTask：electron.d.ts 未声明——局部类型收窄做法沿用） */
   const sendTaskMessage = useCallback(
     (delegateCallId: string, message: string): Promise<ExecutorTaskMessageSendResult> => {
       const targetConversationId = taskConversationIndexRef.current.get(delegateCallId);

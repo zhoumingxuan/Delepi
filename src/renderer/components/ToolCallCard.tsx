@@ -1,7 +1,7 @@
 /**
  * 工具调用卡片组件
  * 基于 @ant-design/x ThoughtChain 组件
- * 实时计时器 + 加载中思考/进度分离（）
+ * 实时计时器 + 加载中思考/进度分离
  *
  * 
  * - 加载中：拆分 result 字段为 thinking / progress 两段，渲染双 Think 块
@@ -15,7 +15,7 @@ import { Flex, Typography } from 'antd';
 import { memo } from 'react';
 import { RichMarkdown } from './RichMarkdown';
 import { ThinkingBlock } from './ThinkingBlock';
-// ★ P04: 切分函数改用增量缓存版（cacheKey=callId 级），输出与全量版逐字一致；原全量函数保留导出（零回归底线）
+// executor 进度切分（增量缓存版，cacheKey=callId 级）：thinking/progress 拆分与最新进度行提取
 import { splitLoadingToolContentCached } from '../lib/executor-thinking';
 import { ExecutionElapsedTime } from '../hooks/useElapsedSeconds';
 
@@ -58,7 +58,7 @@ export interface ToolCallInfo {
  * - result 非空：拆分 thinking / progress，渲染两个 ThinkingBlock
  * - result 为空：显示"执行中..."占位
  */
-// ★ P04: 追加 cacheKey（流标识级缓存键），切分改走增量缓存（根因 R4）
+// cacheKey（流标识级缓存键）：增量缓存切分入口
 function LoadingToolContent({ result, cacheKey }: { result: string; cacheKey: string }) {
   if (!result || !result.trim()) {
     return (

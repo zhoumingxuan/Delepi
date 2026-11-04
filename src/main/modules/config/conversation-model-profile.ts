@@ -50,7 +50,6 @@ export const PROFILE_CONFIG_KEYS = [
   'visionLlmModel',
 ] as const;
 
-export type ProfileConfigKey = (typeof PROFILE_CONFIG_KEYS)[number];
 
 /** 生效配置来源（用于日志与前端提示） */
 export type ConversationModelConfigSource =
@@ -84,13 +83,6 @@ export interface ConversationModelProfileView {
   activeProfileName: string;
 }
 
-/** 按 id 取方案（不存在返回 null） */
-export function getModelProfileById(profileId: string): ModelProfile | null {
-  if (!profileId) {
-    return null;
-  }
-  return configManager.getSettings().modelProfiles.find((item) => item.id === profileId) ?? null;
-}
 
 /**
  * 把方案 14 键覆盖到设置副本上（返回新对象；缺失键/undefined 键跳过，保持基准值）。
@@ -130,7 +122,7 @@ export function resolveConversationModelConfig(conversationId: string | null): R
   if (!conversationId) {
     // 无会话上下文（防御性分支）：等价「未绑定」，不写任何绑定；取值口径与会话内
     // global-active 分支一致（激活方案存在 → 按其存储值合成；applyProfileToSettings
-    // 返回新对象，天然不含 configManager 内部引用，F-7 语义保持）
+// 返回新对象，天然不含 configManager 内部引用（语义保持）
     return {
       profileId: activeProfile?.id ?? '',
       profileName: activeProfile?.name ?? '',
@@ -173,7 +165,7 @@ export function resolveConversationModelConfig(conversationId: string | null): R
     // 懒绑定后本会话的方案身份 = activeProfile，配置取值与其余
     // conversation 分支同口径：applyProfileToSettings（激活方案 15 键覆盖全局副本），而非直接
     // 返回全局 15 键运行时——全局运行时已收缩为「默认方案投影」语义，不再承诺等于任一会话
-    // 上下文方案的值；本分支返回新合成对象，天然不含 configManager 内部引用（F-7 语义保持）。
+// 上下文方案的值；本分支返回新合成对象，天然不含 configManager 内部引用。
     return {
       profileId: activeProfile.id,
       profileName: activeProfile.name,

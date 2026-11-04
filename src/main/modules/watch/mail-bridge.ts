@@ -1,23 +1,21 @@
 /**
- * mail-bridge — 值守模式邮件通道桥（收信侧完整 Node.js 化）
+ * mail-bridge — 值守模式邮件通道桥（收信侧纯 Node.js 实现）
  *
  * 
- * - 删除内嵌解释器脚本桥（原内嵌脚本常量 / 落盘脚本文件 / spawn 子进程 / 行式 JSON 协议）；
- * - 收信改由纯 Node 实现承担：
+ * - 收信实现：
  *     mail/imap-client.ts    —— IMAP 协议（TCP/TLS、LOGIN、ID、EXAMINE、UID SEARCH、UID FETCH、LOGOUT）
  *     mail/mime-parser.ts    —— MIME 解析（multipart/alternative、base64、quoted-printable、字符集）
  *     mail/smtp-client.ts    —— SMTP 发送
- * - 本模块只保留「编排 + 契约」：对外仍是 mailSelfTest / mailImapPoll / mailImapPollSince /
- *   mailSmtpSend 四个导出，解析产物仍是 FetchedWatchMail 九字段契约，调用方零改造；
- * - 端点不再写死：全部来自 mail/mail-provider.ts 的 provider 解析结果（MailProviderEndpoints），
+ * - 本模块只保留「编排 + 契约」：对外为 mailSelfTest / mailImapPollSince 两个导出，
+ *   解析产物为 FetchedWatchMail 九字段契约。
+ * - 端点全部来自 mail/mail-provider.ts 的 provider 解析结果（MailProviderEndpoints），
  *   由 watch-service 按当前 settings 注入。
  *
  * 兼容接缝：
  * - 导出 WATCH_SMTP_ENDPOINT 以「只读 getter 对象」形式保留：host/port 在访问时返回当前生效
- *   provider 端点（未注入前回落到 QQ 内置常量，与~6 行为逐字节一致）；
+ *   provider 端点（未注入前回落到 QQ 内置常量）；
  * - 同时把 provider 的 SMTP 加密方式写入 smtp-client 的进程级默认值
  *   （setDefaultSmtpEncryption），使未显式传 encryption 的既有调用方自动跟随 provider 设置。
- *   两处接缝。
  *
  * 错误阶段分类：
  * - connect：TCP/DNS/TLS 建连失败
@@ -30,7 +28,7 @@
  * 本模块保持纯 Node（不 import electron），端点与凭据全部由调用方注入，便于受控 harness 直测。
  */
 
-import { formatImapSearchDate, imapPollSinceDate, imapPollSinceUid, imapSelfTest, type ImapFailure, type RawImapMessage } from '../mail/imap-client';
+import { formatImapSearchDate, imapPollSinceDate, imapSelfTest, type ImapFailure, type RawImapMessage } from '../mail/imap-client';
 import { parseFirstAddress, parseMimeMessage, decodeHeaderValue } from '../mail/mime-parser';
 import { QQ_MAIL_PROVIDER, type MailProviderEndpoints } from '../mail/mail-provider';
 import {
@@ -38,7 +36,6 @@ import {
   sendSmtpMail,
   setDefaultSmtpEncryption,
   verifySmtpLogin,
-  type SmtpHeaderInput,
 } from '../mail/smtp-client';
 
 /** 单次操作超时（毫秒，沿用 口径：IMAP 轮询 45 秒；SMTP 发信基础 90 秒） */
@@ -49,7 +46,7 @@ export const MAIL_BRIDGE_TIMEOUT_MS = {
   smtpSend: 90_000,
 } as const;
 
-/** 时间增量收信单轮最多取回的候选 UID 数（与被替换的旧桥 MAX_POLL_SINCE_UIDS 一致） */
+/** 时间增量收信单轮最多取回的候选 UID 数（= MAX_POLL_SINCE_UIDS） */
 export const MAX_POLL_SINCE_UIDS = 50;
 
 /** 授权码占位符（任何错误文本/日志中一律使用，严禁出现明文） */
@@ -59,7 +56,7 @@ const AUTH_CODE_PLACEHOLDER = '<QQ邮箱授权码>';
 // 生效端点注册表（provider 解析结果由 watch-service 注入）
 // ---------------------------------------------------------------------------
 
-/** 未注入前的默认端点：QQ 内置常量（阶段2~6 的实测端点，保证任何早期调用行为不变） */
+/** 未注入前的默认端点：QQ 内置常量 */
 const FALLBACK_ENDPOINTS: MailProviderEndpoints = {
   providerId: QQ_MAIL_PROVIDER.id,
   providerLabel: QQ_MAIL_PROVIDER.label,
@@ -79,10 +76,6 @@ export function setActiveMailEndpoints(endpoints: MailProviderEndpoints): void {
   setDefaultSmtpEncryption(endpoints.smtp.encryption);
 }
 
-/** 读取当前生效端点（诊断/日志/测试用） */
-export function getActiveMailEndpoints(): MailProviderEndpoints {
-  return activeEndpoints;
-}
 
 /**
  * 兼容导出（~6 的既有引用点：src/main/tools/send-email.ts）。
@@ -97,15 +90,6 @@ export const WATCH_SMTP_ENDPOINT: { readonly host: string; readonly port: number
   },
 };
 
-/** 兼容导出：IMAP 端点（仅供诊断展示，收信一律走 provider 解析） */
-export const WATCH_IMAP_ENDPOINT: { readonly host: string; readonly port: number } = {
-  get host(): string {
-    return activeEndpoints.imap.host;
-  },
-  get port(): number {
-    return activeEndpoints.imap.port;
-  },
-};
 
 // ---------------------------------------------------------------------------
 // 运行结果契约与错误归一
@@ -189,7 +173,7 @@ function toOutcome<T>(result: { ok: true; data: T } | ImapFailure, secret: strin
 /**
  * IMAP INTERNALDATE → ISO 8601（解析失败返回空串，调用方回退 Date 头）。
  * 输入形态：`26-Oct-2026 19:38:16 +0800`（IMAP 固定格式，月份为英文三字母缩写）。
- * 说明：只做「到秒」的等价换算（阶段6 用户已明确取消毫秒精度要求）。
+ * 说明：只做「到秒」的等价换算。
  */
 export function internalDateToIso(raw: string): string {
   const text = String(raw ?? '').trim();
@@ -228,7 +212,7 @@ export function internalDateToIso(raw: string): string {
 
 /**
  * sinceIso → IMAP SEARCH SINCE 日期（DD-Mon-YYYY，取 sinceIso 往前 1 天，覆盖时区与日界）。
- * 非法/空值返回 null（调用方按 recv 阶段失败处理，与被替换的旧桥一致）。
+ * 非法/空值返回 null（调用方按 recv 阶段失败处理）。
  */
 export function toImapSearchDate(sinceIso: string): string | null {
   const text = String(sinceIso ?? '').trim();
@@ -260,7 +244,7 @@ export interface MailSelfTestOk {
 
 /**
  * 凭据自检：IMAP 登录 + EXAMINE INBOX（取 UIDVALIDITY/UIDNEXT）+ SMTP 登录（不发信）。
- * 与被替换的旧桥自检等价（IMAP 段 + SMTP 段，两段都成功才通过）。
+ * （IMAP 段 + SMTP 段，两段都成功才通过）。
  */
 export async function mailSelfTest(
   input: MailSelfTestInput,
@@ -339,13 +323,6 @@ export interface FetchedWatchMail {
   bodyText: string;
 }
 
-export interface MailImapPollOk {
-  ok: true;
-  uidvalidity: number;
-  uidnext: number;
-  mails: FetchedWatchMail[];
-}
-
 /** 原始 IMAP 取回 → FetchedWatchMail 九字段契约（header 解码 + MIME 解析） */
 export function toFetchedWatchMail(raw: RawImapMessage): FetchedWatchMail {
   const parsed = parseMimeMessage(raw.body);
@@ -414,38 +391,6 @@ export function sortMailsByTimeAscending(mails: FetchedWatchMail[]): FetchedWatc
   });
 }
 
-/**
- * IMAP 增量收信：UID FETCH (sinceUid+1):* BODY.PEEK[]（不置已读）。
- * 星号语义可能多带回一封不大于 sinceUid 的旧邮件，调用方必须按 uid > sinceUid 过滤。
- * 为「保留能力」：值守主链路使用时间增量（mailImapPollSince），本导出供诊断与兼容调用。
- */
-export async function mailImapPoll(
-  input: { mailbox: string; authCode: string; sinceUid: number },
-  context: MailBridgeContext,
-): Promise<MailBridgeOutcome<MailImapPollOk>> {
-  const result = await imapPollSinceUid({
-    endpoint: context.endpoints.imap,
-    mailbox: input.mailbox,
-    authCode: input.authCode,
-    sinceUid: input.sinceUid,
-    timeoutMs: MAIL_BRIDGE_TIMEOUT_MS.imapPoll,
-  });
-  if (!result.ok) {
-    return toOutcome(result, input.authCode);
-  }
-  const mails = result.data.messages
-    .filter((message) => message.uid > input.sinceUid)
-    .map((message) => toFetchedWatchMail(message));
-  return {
-    ok: true,
-    data: {
-      ok: true,
-      uidvalidity: result.data.uidvalidity,
-      uidnext: result.data.uidnext,
-      mails,
-    },
-  };
-}
 
 export interface MailImapPollSinceInput {
   mailbox: string;
@@ -500,90 +445,4 @@ export async function mailImapPollSince(
       mails: result.data.messages.map((message) => toFetchedWatchMail(message)),
     },
   };
-}
-
-export interface MailSmtpSendInput {
-  mailbox: string;
-  authCode: string;
-  to: string;
-  subject: string;
-  body: string;
-  headers: {
-    inReplyTo?: string;
-    references?: string;
-    xDelepiRole?: string;
-    xDelepiCommandId?: string;
-  };
-}
-
-export interface MailSmtpSendOk {
-  ok: true;
-  declaredMessageId: string;
-  refused: string[];
-}
-
-/**
- * SMTP 服务直发（兼容导出）：值守主链路的回执已改用 sendSmtpMail（HTML + 附件），
- * 本函数保留给「纯文本单段」调用方，内部把纯文本包装为 <pre> 的 HTML 文档后走同一发送实现。
- * 迁移记录：旧桥固定单段纯文本；本实现统一 HTML（smtp-client 的能力子集），
- * 语义等价点=同一 SMTP 命令序列、同一 From/To/Subject 语义、同一 dot-stuffing 与超时分类。
- */
-export async function mailSmtpSend(
-  input: MailSmtpSendInput,
-  context: MailBridgeContext,
-): Promise<MailBridgeOutcome<MailSmtpSendOk>> {
-  const headers: SmtpHeaderInput[] = [];
-  if (input.headers?.inReplyTo) {
-    headers.push({ name: 'In-Reply-To', value: input.headers.inReplyTo });
-    headers.push({ name: 'References', value: input.headers.references || input.headers.inReplyTo });
-  } else if (input.headers?.references) {
-    headers.push({ name: 'References', value: input.headers.references });
-  }
-  if (input.headers?.xDelepiRole) {
-    headers.push({ name: 'X-Delepi-Role', value: input.headers.xDelepiRole });
-  }
-  if (input.headers?.xDelepiCommandId) {
-    headers.push({ name: 'X-Delepi-Command-Id', value: input.headers.xDelepiCommandId });
-  }
-
-  const html = `<!DOCTYPE html>\n<html><head><meta charset="utf-8"></head><body><pre style="white-space:pre-wrap;word-break:break-word;font-family:inherit">${escapeHtml(
-    input.body,
-  )}</pre></body></html>`;
-
-  const outcome = await sendSmtpMail({
-    host: context.endpoints.smtp.host,
-    port: context.endpoints.smtp.port,
-    encryption: context.endpoints.smtp.encryption,
-    mailbox: input.mailbox,
-    authCode: input.authCode,
-    to: input.to || input.mailbox,
-    subject: input.subject,
-    html,
-    headers,
-    timeoutMs: MAIL_BRIDGE_TIMEOUT_MS.smtpSend,
-  });
-
-  if (outcome.ok) {
-    return {
-      ok: true,
-      data: { ok: true, declaredMessageId: outcome.declaredMessageId, refused: outcome.refusedRecipients },
-    };
-  }
-  return {
-    ok: false,
-    stage: outcome.stage === 'auth' ? 'auth' : outcome.stage === 'timeout' ? 'timeout' : 'send',
-    code: outcome.stage === 'auth' ? 'ERR_WATCH_MAIL_AUTH_FAILED' : 'ERR_WATCH_SEND_FAILED',
-    message: outcome.stage === 'auth' ? '邮箱登录验证失败（阶段=登录）：授权码错误或 IMAP/SMTP 服务未开启' : 'SMTP 发送阶段失败',
-    detail: sanitizeWithSecret(outcome.error, input.authCode),
-  };
-}
-
-/** 最小 HTML 转义（纯文本兼容导出用） */
-function escapeHtml(value: string): string {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
 }

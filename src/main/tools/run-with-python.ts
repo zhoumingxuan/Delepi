@@ -213,7 +213,7 @@ function getPythonCommand(): PythonCommand {
         prefixArgs: [],
       };
     }
-    // M2 修复：内置路径为空时不再静默落穿到系统 Python（原 :221-225 裸 'python' fallback）。
+// 内置路径为空时不静默落穿到系统 Python。
     // 按 checkPythonReady 语义显式报错；useBuiltinPython=false 的系统 Python 合法语义不受影响。
     const pythonNotReady = checkPythonReady();
     const stateText = pythonManager.getStatus().state;
@@ -510,7 +510,7 @@ export async function runWithPython(
     ? 'utf-8'
     : '';
   const timeoutSeconds = toTimeoutSeconds(resolvedInput.timeout);
-  // S6-1 方向6：suspend 挂起模式开关（默认 false=现状等价；true 仅监控类长任务）
+// suspend 挂起模式开关（默认 false；true 仅监控类长任务）
   const suspend = normalizeOptionalBoolean(resolvedInput.suspend);
 
   // 主进程配置就绪检查守卫
@@ -673,7 +673,7 @@ export async function runWithPython(
 
   const executionScriptPath = scriptPath;
 
-  // S6-2 方向6挂起模式（A6-1/A6-2/A6-3）：suspend=true 时只开启执行立即返回（分支位于 py_compile 之前，跳过预编译同步等待）。
+// 挂起模式：suspend=true 时只开启执行立即返回（分支位于 py_compile 之前，跳过预编译同步等待）。
   // 挂起成功路径提前 return：tmp 脚本与 __pycache__ 保留，scriptPath 已暴露，由调用方在任务结束前清理。
   if (suspend) {
     try {
@@ -688,7 +688,7 @@ export async function runWithPython(
       );
 
       // 挂起成功：spawn 后立即返回 pid/platform/scriptPath（timeout 忽略、不等待不采集、无执行超时）
-      // 【待用户定稿：P-7】挂起清理提示文案（参照 run-shell.ts 挂起 message 句式：含 PID/平台，另附脚本路径与树杀指引）
+// 挂起清理提示文案（参照 run-shell.ts 挂起 message 句式：含 PID/平台，另附脚本路径与树杀指引）
       const suspendMessage = `\n当前进程(PID: ${suspended.pid}已启动，当前不返回进程状态，可用其他脚本【监控】具体执行状态；当前任务结束前请务必清理，当前平台: ${suspended.platform}`;
 
       const suspendedResult = buildToolResult({

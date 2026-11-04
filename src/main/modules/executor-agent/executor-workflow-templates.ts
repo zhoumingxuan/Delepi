@@ -142,7 +142,7 @@ export function getCustomSkillTemplatePath(slug: string): string {
 }
 
 // ============================================================
-// 内置模板覆写层（方向2扩展：内置技能允许编辑模板内容；标签名/标题/描述常量锁定不动）
+// 内置模板覆写层（内置技能允许编辑模板内容；标签名/标题/描述常量锁定不动）
 // 载体：userData/builtin-skill-overrides/<fileName>（fileName 含同构子目录）；主/执行两侧共用同一覆写根，
 // 两源 fileName 命名空间互不重叠故不分目录；读取时覆写优先（skill-registry readSkillContent /
 // readBuiltinSkillTemplateContent），content=null 删除覆写=恢复默认

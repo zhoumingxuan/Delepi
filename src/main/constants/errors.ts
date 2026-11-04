@@ -8,17 +8,13 @@
 // ============================================================
 
 export const ERR_DELEGATED_TASK_INVALID_INPUT = 'DELEGATED_TASK_INVALID_INPUT';
-export const ERR_DELEGATED_TASK_INVALID_OUTPUT = 'DELEGATED_TASK_INVALID_OUTPUT';
 export const ERR_DELEGATED_TASK_FILE_DELIVERY_FAILED = 'DELEGATED_TASK_FILE_DELIVERY_FAILED';
-export const ERR_DELEGATED_TASK_COMPLETED = 'DELEGATED_TASK_COMPLETED';
-export const ERR_DELEGATED_TASK_FAILED = 'DELEGATED_TASK_FAILED';
 
 // ============================================================
 // 通用错误码
 // ============================================================
 
 export const ERR_ABORTED = 'ABORTED';
-export const ERR_EXECUTOR_ERROR = 'EXECUTOR_ERROR';
 export const ERR_CONVERSATION_RUNNING = 'CONVERSATION_RUNNING';
 export const ERR_INVALID_ARGUMENT = 'INVALID_ARGUMENT';
 export const ERR_OK = 'OK';

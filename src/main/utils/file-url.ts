@@ -3,7 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 /**
- * R5③：判断字符串是否为本地绝对路径。
+ * 判断字符串是否为本地绝对路径。
  * Windows 主进程下仅接受盘符形态（如 E:\... 或 E:/...）、UNC 形态（如 \\server\share\...）
  * 以及 path.isAbsolute 判定的其余绝对形态；相对路径一律视为非绝对路径。
  */
@@ -20,7 +20,7 @@ function isAbsoluteLocalPath(candidate: string): boolean {
  * - 仅接受绝对路径：相对路径不按主进程 CWD resolve，记录警告并返回 null。
  * - 绝对路径经 path.resolve() 规范化后调用 pathToFileURL（Node 标准库），
  *   保证 Windows 盘符、空格、中文等转义正确。
- * - 解析失败时返回 null（与 E:\buildUserOutputStaticUrl 行为一致）。
+ * - 解析失败时返回 null。
  * @param absolutePath 本地绝对路径字符串
  * @returns file:// URL 字符串；相对路径或解析失败返回 null
  */

@@ -130,9 +130,9 @@ function buildScriptToolDescription(): string {
 }
 
 /**
- * use_script_tool 参数 Schema 工厂（v2.0 R1）：tool_name 为自由字符串（不再动态目录名枚举）；
+ * use_script_tool 参数 Schema 工厂：tool_name 为自由字符串（不动态枚举目录名）；
  * 空库隐藏仍由委派组装点承担（executor-agent.ts：扫描无合法工具时不注入本工具）。
- * timeout（11:49 语义）：运行时一概不拦截——-1=挂起类型调用（只启动进程，不等待、不采集输出、不超时终止）；
+ * timeout：运行时一概不拦截——-1=挂起类型调用（只启动进程，不等待、不采集输出、不超时终止）；
  * 正整数=超时秒数；其余取值（0、非 -1 负数、小数）按『不设置超时限制』处理；未传时回落协议 timeout_seconds。
  */
 export function buildScriptToolParameters(): Record<string, unknown> {
@@ -167,7 +167,7 @@ export function buildScriptToolParameters(): Record<string, unknown> {
 }
 
 /**
- * 内置执行者工具集（编译期注册源；S5-1 方向5：内容锁定不动，动态工具不在此登记）。
+ * 内置执行者工具集（编译期注册源；内容锁定不动，动态工具不在此登记）。
  * 动态工具运行时注册入口：executor-registry.registerExecutorTool（dyn-tool-loader 扫描 userData/dyn-tools 后写入），
  * 声明/名单/执行查找统一从 executor-registry.getMergedExecutorTools()（内置∪动态）派生。
  */
@@ -335,7 +335,7 @@ export const EXECUTOR_TOOLS = {
             displayName: '经验工具库调用',
             buildDescription: buildScriptToolDescription(),
         },
-        // v2.0 R1：tool_name 为自由字符串，无动态枚举注入；此处静态声明即唯一声明，executor-registry.ts 保持零改动。
+// tool_name 为自由字符串，无动态枚举注入；此处静态声明即唯一声明，executor-registry.ts 保持零改动。
         parameters: buildScriptToolParameters(),
         execute: scriptTool,
     },

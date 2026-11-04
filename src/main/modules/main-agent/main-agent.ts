@@ -1,7 +1,7 @@
 /**
  * 主智能体核心模块
  *
- * 职责（v1.2）：
+ * 职责：
  * 1. 接收用户消息、构建消息上下文
  * 2. 流式调用 LLM（streamChat）
  * 3. 检测 tool_calls → delegate_executor → 委派给 ExecutorAgent
@@ -93,7 +93,7 @@ import {
 } from '../../constants';
 
 // ============================================================
-// 方向3：标题生成独立取消注册表（自定义标题安全关闭）
+// 标题生成独立取消注册表（自定义标题安全关闭）
 // - titleAbortRegistry：conversationId → 在途标题生成的独立 AbortController
 // - conv:rename 经 abortTitleGeneration 单独取消在途标题生成（不影响会话运行）
 // - 会话 signal abort 时同步连带取消标题（双信号源，保持"中止会话即中止标题"现状语义）
@@ -142,7 +142,7 @@ export interface MainAgentOptions {
    * 本次 run 的六键配置快照（入口构造：chat:send 与
    * conversation-send-service 经 resolveConversationModelConfig 解析 runSettings 后传入）。
    * main-agent/executor-agent 运行期的思考档位/协议/压缩阈值/视觉总开关一律读本快照，
-   * 禁止直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义，INV-3）。
+ * 禁止直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义）。
    * 必填：两个调用入口均已同步补齐（漏传会在 typecheck 暴露）。
    */
   runtimeSettingsSnapshot: RuntimeSettingsSnapshot;
@@ -170,9 +170,8 @@ export interface MainAgentResult {
 // ============================================================
 // Assistant 消息 segments 分段结构
 //   - reasoning：推理段（累积在 onThinking 回调中）
-//   - tool_call：工具调用段（由独立 upsertToolCallSegment 插入）
-// Delepi 原 running-assistant-message-map.ts L49-52 已内联此类型；
-//   此处提取命名类型便于在 onThinking / insertMessage 中复用。
+//   - tool_call：工具调用段（含 toolCallId 字段，索引 toolCalls 数组条目）
+//   命名类型便于在 onThinking / insertMessage 中复用。
 // ============================================================
 type AssistantMessageSegment =
   | { id: string; type: 'reasoning'; text: string }
@@ -284,7 +283,7 @@ async function buildMainAgentMessages(options: {
         : Array.isArray(payload.content)
           ? contentPartsToText(payload.content as ChatContentPart[])
           : '';
-      // ★ 400 防御：历史 assistant 消息 content 为空且无 tool_calls 时整体过滤，不加入回放消息数组
+// 400 防御：历史 assistant 消息 content 为空且无 tool_calls 时整体过滤，不加入回放消息数组
       //   （DashScope：Invalid assistant message: content or tool_calls must be set）
       const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
       const hasContent = content.trim() !== '';
@@ -373,7 +372,7 @@ async function buildMainAgentMessages(options: {
   const currentUserPayload = currentUserMessage.payload;
 
   // 添加当前用户消息
-  // ★ 用户消息时间注入：在消息传给 AI 前，将当前时间（本地时间、不带时区）附加到该轮用户消息内容，
+// 用户消息时间注入：在消息传给 AI 前，将当前时间（本地时间、不带时区）附加到该轮用户消息内容，
   //   使 AI 每次收到消息时都能看到该消息的当前时间；历史用户消息不注入，避免时间语义错位。
   messages.push({
     role: 'user',
@@ -419,7 +418,7 @@ async function resetConversationTasksDir(conversationId: string): Promise<void> 
 
 /**
  * 将委派任务结果包装为 { current_task_execution_result: { success, message, data } } 协议格式
- * 与网站版 stream/route.ts L205-215 行为一致：主智能体通过 tool message content
+ * 主智能体通过 tool message content
  * 收到的结果包含 success/message/data 三段结构，便于下游 prompt 模板区分执行子智能体结果
  */
 function stringifyDelegatedTaskResultForMainAgent(
@@ -456,9 +455,9 @@ function buildDelegatedTaskFailureResult(
   // 失败时刻取失败结果构造时刻，与正常路径 finishedAt 语义一致（formatCurrentDateTime，本地时间不带时区）
   const finishedAt = formatCurrentDateTime();
   const durationSeconds = computeTaskDurationSeconds(startAt, finishedAt);
-  // ★ API 报错保留现场：error.executionLogPath（executor-agent.ts throw 路径
+// API 报错保留现场：error.executionLogPath（executor-agent.ts throw 路径
   //   catch 挂载）存在时注入 data.execution_log_path——与成功输出同构、读回链
-  //   extractExecutionLogPathFromToolResultText 零适配；缺失时保持空对象（降级安全；NR7：
+//   listStoredExecutionLogPaths 同名字段直读零适配；缺失时保持空对象（降级安全；
   //   非 Error 对象/无挂载路径经可选链安全降级为无路径）。
   const executionLogPath = (error as { executionLogPath?: unknown } | null | undefined)?.executionLogPath;
   return {
@@ -576,7 +575,6 @@ export async function runMainAgent(
   const isFirstTurn = currentSeq === 1;
 
   // 5. 加载已完成的压缩上下文（持久化）
-  //   适配 E:\\buildModelMessages 的 contextCompression 加载逻辑
   const contextCompression = getLatestCompletedContextCompression(conversationId, currentSeq);
 
   const historyMessages = loadHistoryMessages(conversationId);
@@ -599,13 +597,13 @@ export async function runMainAgent(
   let fullThinking = '';
 
   let turnMessages = [...messages];
-  // 跨委派任务上下文跟踪（与网站版 stream/route.ts L474-475 行为一致）
+// 跨委派任务上下文跟踪
   // 仅在本次助手回复流程内有效，不入库、不传前端、不修改 tool_call.arguments
   let taskSeqCounter = 1;
   let completedTasks: CompletedTask[] = [];
 
   // ============================================================
-  // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每轮对话新起实例（非常驻）——
+// 多协议适配器（协议选择 + 探查降级）：每轮对话新起实例（非常驻）——
   //   CC = 现状 streamChat 零变化包装（openai-client.ts 一行不改）；
   //   Responses = 智谱 /api/v1/responses 翻译层。协议选择经
   //   AppSettings.mainModelProtocol 实时注入：'cc'/'responses' 指定时仅构造并 init 对
@@ -615,7 +613,7 @@ export async function runMainAgent(
   //   轮 try 内，抛 ModelApiAbortError 携带两次探查原因接入既有错误面）；
   //   warnCodingPlanMismatch 基于实际生效协议告警；实例边界 = runMainAgent 一次调用，
   //   finally 内 close 释放（两级均失败时 adapter 尚为 null，?. 安全跳过），
-  //   配置切换随下一轮 init 自然生效（§六.4）。
+//   配置切换随下一轮 init 自然生效。
   // ============================================================
   let adapter: ProtocolAdapter | null = null;
   // 重试复位基线容器（init.hooks 闭包引用位）：循环内每次 sendMessage 调用前
@@ -631,8 +629,8 @@ export async function runMainAgent(
     // chunk 事件只推送文本 content delta，
     //   reasoning 增量由独立的 chat:thinking 事件承担
     //   解决 reasoning_split 模型同 packet 同时返回 content+reasoning 时正文被丢弃的问题
-    // ★ 转发 finishReason 到 IPC,前端 useChat.ts 据此设置消息 status
-    // ★ 正文首现判据：累计 content 去除空白与零宽字符后仍有可见字符，才算正文开始；
+// 转发 finishReason 到 IPC,前端 useChat.ts 据此设置消息 status
+// 正文首现判据：累计 content 去除空白与零宽字符后仍有可见字符，才算正文开始；
     //   单个空格 / 换行 / 制表符 / 零宽字符不再冒充正文首现，reasoning 段无需封口
     const runningForContent = getRunningAssistantMessage(conversationId);
     const hasVisibleContent = (text: string): boolean =>
@@ -646,10 +644,10 @@ export async function runMainAgent(
       conversationId,
       delta: chunk.delta,
       content: chunk.content,
-      isThinking: false,  // ★ chunk 事件永远为 false（reasoning 由 chat:thinking 单独推送）
+      isThinking: false,  // chunk 事件永远为 false（reasoning 由 chat:thinking 单独推送）
       finishReason: chunk.finishReason,
     });
-    // ★ 累积内容到 runningAssistantMessages
+// 累积内容到 runningAssistantMessages
     //   正文尚未开始时纯空白 / 纯零宽 delta 不进入 content（避免废物文本污染正文首现判定）；
     //   正文开始之后空格、换行、制表符原样保留，禁止 trim（避免破坏 Markdown 排版）
     if (runningForContent) {
@@ -660,7 +658,7 @@ export async function runMainAgent(
         });
       }
     }
-    // ★ T-A：thinking 流结束信号（content 首个可见字符，isContentFirstAppearance
+// thinking 流结束信号（content 首个可见字符，isContentFirstAppearance
     //   既有判定）→ 半成品 assistant 行落库。insertMessage 同 id INSERT OR REPLACE 幂等演进：
     //   thinking/segments 取更新后 running 快照、content 空串占位、不写 tool_calls；seq 首次
     //   取号后钉死、createdAt 首落库时刻回传（防漂移）；重试复位后新 attempt 的 content 再次
@@ -690,11 +688,11 @@ export async function runMainAgent(
   // onThinking 消费函数体（现状 L759-810，零改动——reasoning 类 chunk 与现状 onThinking
   // 同源同频接入：仅 reasoningDelta 非空触发，"有值传没值空"语义保持）
   const adapterOnThinking = (thinking: string) => {
-    // ★ 累积思考到 runningAssistantMessages
+// 累积思考到 runningAssistantMessages
     //   让 conv:get-messages 在流式过程中也能返回最新思考内容
     const running = getRunningAssistantMessage(conversationId);
     if (running) {
-      // ★ F2 新增：累积 segments（与 openai.ts L171-190 appendReasoningSegment 同款）
+// 累积 segments：
       //   策略：始终在已累积的 baseSegments 基础上扩展——末段是 reasoning 则追加到该段 text；
       //     否则新开一段 reasoning。禁止整体替换为空数组，保证各 reasoning 段 text 依次拼接恒等于 thinking。
       const baseSegments: AssistantMessageSegment[] = Array.isArray(running.segments)
@@ -711,7 +709,7 @@ export async function runMainAgent(
         });
       }
       const newThinking = (running.thinking || '') + thinking;
-      // ★ 回填 thinking + segments 到 runningAssistantMessages
+// 回填 thinking + segments 到 runningAssistantMessages
       updateRunningAssistantMessage(conversationId, {
         thinking: newThinking,
         segments: baseSegments,
@@ -726,7 +724,7 @@ export async function runMainAgent(
         conversationId,
         delta: thinking,
         thinking: newThinking,
-        // ★ 使用本次累积后的 segments（含新开的 reasoning 段）
+// 使用本次累积后的 segments（含新开的 reasoning 段）
         segments: baseSegments,
       });
     } else {
@@ -750,7 +748,7 @@ export async function runMainAgent(
       model: options.modelConfig.model,
     },
     // 档位 getter：改读本次 run 的六键快照（runSettings.mainThinkingLevel），
-    //   不再直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义，INV-3）
+//   不再直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义）
     thinkingLevel: () => options.runtimeSettingsSnapshot.mainThinkingLevel,
     systemMessage: systemPrompt,
     // MAIN_TOOLS live-binding getter：每次 sendMessage resolve（禁快照；refreshMainTools
@@ -767,7 +765,7 @@ export async function runMainAgent(
           thinking: retryBaseline.thinking,
           segments: retryBaseline.segments,
         });
-        // ★ 同步：复位内存后，若行已落库则同 id OR REPLACE 写回基线
+// 同步：复位内存后，若行已落库则同 id OR REPLACE 写回基线
         //   payload——库内行与 running map/前端矫正事件三方一致，废弃 attempt 的 thinking
         //   不残留库内。
         if (assistantRowPersisted && assistantPersistSeq !== null) {
@@ -803,7 +801,7 @@ export async function runMainAgent(
     },
   };
 
-  // ★ 分时机落库：assistant 行幂等演进状态（同一 assistantMessageId 在库中
+// 分时机落库：assistant 行幂等演进状态（同一 assistantMessageId 在库中
   //   始终至多一行）——assistantPersistSeq 首次落库取号后钉死（防收尾轮覆盖漂移）、
   //   assistantRowPersisted 行存在标志、assistantPersistedAt 首次 createdAt（覆盖写时回传防漂移）；
   //   apiErrorHit：本轮委派任务 API 报错命中标志（轮末 tasks 重置豁免判定依据）。
@@ -816,7 +814,7 @@ export async function runMainAgent(
     void (async () => {
       try {
         // 12.1 标题生成（首轮）
-        // ★ 方向3：独立取消句柄 + 双信号源 + 入库前版本检查（自定义标题安全关闭三保险）
+// 独立取消句柄 + 双信号源 + 入库前版本检查（自定义标题安全关闭三保险）
         if (includeTitleGeneration && isFirstTurn) {
           const sessionSignal = options.signal;
           if (sessionSignal?.aborted) {
@@ -892,12 +890,12 @@ export async function runMainAgent(
     })();
   };
 
-  // ★ 委派参数校验重试计数（当轮重生成）：校验失败自增、通过清零；
+// 委派参数校验重试计数（当轮重生成）：校验失败自增、通过清零；
   //   每次 runMainAgent 调用（新对话轮次）自然从 0 开始，禁止跨轮次累积
   let delegateArgsRetryCount = 0;
 
   try {
-    // ★ 协议选择：主智能体协议经 AppSettings.mainModelProtocol 的本次 run 快照
+// 协议选择：主智能体协议经 AppSettings.mainModelProtocol 的本次 run 快照
     //   实时注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定
     //   协议时仅构造并 init 对应适配器，init 失败即抛 ModelApiAbortError（禁止自动
     //   降级，用不了就换一个协议由用户自己换）；未指定时走原协议探查降级链（先
@@ -911,11 +909,11 @@ export async function runMainAgent(
     // 三回调注册（onChunk 单通道拆分映射见循环内接线；onToolCall=通知模式默认；
     //   onFinished=轮级权威终结，现状消费经 await 返回值路径等价承载，不额外接线）
     adapter.onChunk((adapterChunk) => {
-      // ★ 阶段一接线（§三.2.2）：适配器单通道 onChunk 拆分映射回现状双通道消费链——
+// 适配器单通道 onChunk 拆分映射回双通道消费链——
       //   reasoning 类（仅非空 delta，end 信号跳过）→ onThinking 处理链（同源同频，
       //   "有值传没值空"语义保持）；content 类（适配器对现状每次回调必发，含 finish 帧
       //   delta=''+finishReason 透传）→ onChunk 处理链（IPC chat:chunk.finishReason 通道依赖）；
-      //   end 枚举为可选瞬时信号，现状无消费（方案 §七.1：消费完全可选），跳过。
+//   end 枚举为可选瞬时信号，当前无消费方，跳过。
       if (adapterChunk.type === 'reasoning') {
         if (adapterChunk.delta) {
           adapterOnThinking(adapterChunk.delta);
@@ -947,7 +945,7 @@ export async function runMainAgent(
         ? baselineRunning.segments.map((segment) => ({ ...segment }))
         : [],
     };
-    // ★ 阶段一接线：本轮基线同步到 init.hooks.onStreamRetry 闭包引用容器
+// 本轮基线同步到 init.hooks.onStreamRetry 闭包引用容器
     //   （捕获时点与现状完全一致——abort 检查后、sendMessage 调用紧前）
     currentRetryBaseline = retryBaseline;
     // 模型调用经 adapter.sendMessage——
@@ -984,7 +982,7 @@ export async function runMainAgent(
           arguments: tc.function.arguments,
         },
       }));
-    // ★ 委派参数校验门禁（五层入库门禁唯一咽喉点）：
+// 委派参数校验门禁（五层入库门禁唯一咽喉点）：
     //   delegate_executor 条目统一 sanitizeDelegateArguments（直解 → 首/尾{}截取重试）；
     //   非 null 回写干净 arguments（A 内存 / B 运行态 / C SQLite / D IPC / E executor_messages.json 五层均记录干净版）；
     //   任一 null → 整轮拒绝（不构建、不 push、不 emit、不落库），当轮重生成重试
@@ -1032,7 +1030,7 @@ export async function runMainAgent(
         thinking: retryBaseline.thinking,
         segments: retryBaseline.segments,
       });
-      // ★ 同步：参数校验复位与 onStreamRetry 同款——复位内存后同步
+// 同步：参数校验复位与 onStreamRetry 同款——复位内存后同步
       //   同 id OR REPLACE 写回基线 payload（库内行/内存/前端矫正事件三方一致）。
       if (assistantRowPersisted && assistantPersistSeq !== null) {
         insertMessage({
@@ -1071,7 +1069,7 @@ export async function runMainAgent(
       role: 'assistant',
       content: streamResult.content || null,
       tool_calls: filteredToolCalls.length > 0 ? filteredToolCalls : undefined,
-      // ★ 推理文本处理：多轮对话上下文中保留 reasoning_content 字段
+// 推理文本处理：多轮对话上下文中保留 reasoning_content 字段
       //   
       //   reasoning_content 为非 OpenAI 标准字段，需要服务端按 enable_thinking + reasoning_split 按字段返回
       //   仅在存在 reasoning 时写入，未推理时不写入（与 runtime-assistant-message.ts 的 undefined 兜底一致）
@@ -1166,7 +1164,7 @@ export async function runMainAgent(
     });
 
     // 处理每个工具调用
-    // ★ 并行执行改造（）：for...of 串行 → map 启动异步闭包立即执行，
+// 并行执行：map 启动异步闭包立即执行，
     //   批次末 await Promise.allSettled(toolCallTasks) 聚合（见本批循环体收尾处）——同批多个
     //   delegate_executor 各自立即启动并独立记录 toolStartedAt / 发送 init 快照，
     //   后续任务不排队等待前序任务收尾（并行任务即时显示，取消即收口、计时准确）。
@@ -1212,7 +1210,7 @@ export async function runMainAgent(
         // executor 任务记录会话创建（abort 检查前——未启动即中止分支
         //   亦需 markTerminal('aborted') 收敛）；modelMessages 将被 runDelegatedTask 经
         //   adoptMessages 领养为 runtimeMessages（同一数组引用，真实视图与模型上下文共享）。
-        //   任务名解析规则沿用下方批末 completedEntry 既有先例（task_name 字段 trim）。
+//   任务名解析规则同下方批末 completedEntry（task_name 字段 trim）。
         const recordSession = beginExecutorTaskRecord({
           conversationId,
           delegateCallId: toolCall.id,
@@ -1317,7 +1315,6 @@ export async function runMainAgent(
               visionEnabled: options.runtimeSettingsSnapshot.visionEnabled,
             },
             // 已完成任务数组直接传下去（不做转换）：completedTasks.length>0 时传全量数组，否则 undefined
-            // 与网站版 stream/route.ts L796-801 行为一致
             completedTasks: completedTasks.length > 0 ? completedTasks : undefined,
             // 记录会话随 options 传入（executor 循环领养 modelMessages
             //   作为 runtimeMessages）；onTurnEnd=轮收口回调（草稿 seal 用 executor 任务级
@@ -1328,7 +1325,7 @@ export async function runMainAgent(
             },
             // 委派任务重试复位：底层模型调用重试边界触发，
             //   四个累积器复位到任务起点基线（前缀去重逻辑跨 attempt 失效，
-            //   attempt-1 已累积增量必须显式清空，否则渲染端 lastContent 双份累积）
+//   attempt-1 已累积增量必须显式清空，否则渲染端内容双份累积）
             onStreamRetry: () => {
               // 重试复位 → 记录草稿整体清空重建（attempt-1 残留不双份累积）
               recordSession.resetThinkingDraft();
@@ -1379,7 +1376,7 @@ export async function runMainAgent(
             success: execResult.success,
           });
 
-          // ★ tool 消息不再即时落库，改为批次暂存（批次末 insertMessages 单事务配对落库）
+// tool 消息批次暂存（批次末 insertMessages 单事务配对落库）
           toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
@@ -1430,7 +1427,7 @@ export async function runMainAgent(
           // catch 内中止不上抛中止错误——中止与非中止失败统一走下方失败消息化路径
           //   （不 throw——单个任务失败不阻塞其他任务）
 
-          // ★ API 报错保留现场：委派任务 API 报错命中标记（isModelApiAbortError
+// API 报错保留现场：委派任务 API 报错命中标记（isModelApiAbortError
           //   覆盖 model-retry 重试耗尽与不可重试致命错误两类 ModelApiAbortError）——轮末重置
           //   豁免判定依据。
           if (isModelApiAbortError(error)) {
@@ -1462,7 +1459,7 @@ export async function runMainAgent(
             success: false,
           });
 
-          // ★ 失败 tool 消息批次暂存（批次末 insertMessages 配对落库）；事件移批次末 emit
+// 失败 tool 消息批次暂存（批次末 insertMessages 配对落库）；事件移批次末 emit
           toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
             role: 'tool',
@@ -1482,7 +1479,7 @@ export async function runMainAgent(
           });
 
 
-          // 发送错误事件（★ 取消去重：用户取消场景（taskStopController.signal.aborted=true，
+// 发送错误事件（取消去重：用户取消场景（taskStopController.signal.aborted=true，
           //   含会话级取消桥接与任务级单独停止双来源，与上方 buildDelegatedTaskFailureResult
           //   aborted 判定同源）不再 emit——取消提示已由 chat:abort → MAIN_AGENT_ABORTED_EVENT
           //   先行时序 + 渲染层归一化气泡（tool-result 覆盖'执行子智能体任务已取消。'）单独
@@ -1496,7 +1493,7 @@ export async function runMainAgent(
           }
           return { toolCall, status: 'failed' as const };
         } finally {
-          // ★ 任务级隔离停止生命周期：任务收敛（成功收口 / catch 收口 / 异常上抛均经此公共路径）——
+// 任务级隔离停止生命周期：任务收敛（成功收口 / catch 收口 / 异常上抛均经此公共路径）——
           //   移除会话级桥接 listener（{once:true} 已触发时 removeEventListener 为幂等 no-op）
           //   + 注销任务级停止注册表条目（防 Map 泄漏；注销后 stopExecutorTask 经双防线校验天然幂等）
           options.signal?.removeEventListener('abort', onSessionAbort);
@@ -1564,10 +1561,10 @@ export async function runMainAgent(
       } else if (toolCall.function.name === MAIN_SEND_EMAIL_TOOL_NAME) {
         // 主智能体 send_email 独立直接工具分支（值守回执唯一发送通道，单轨）。
         //   位置：query_skill 分支之后、read_file/fs_* 直接工具分支之前；
-        //   executeSendEmailTool 入口完成（先例 executor-registry.ts inspect_media）；
+//   executeSendEmailTool 入口完成（同 executor-registry.ts inspect_media 方式）；
         //   声明层可见性由 buildMainTools() 按值守运行态 isWatchRuntimeRunning() 条件追加
         //   （prompt.ts，声明层与执行层同一判定源）。
-        //   不进 executeToolCall——EXECUTOR_TOOLS 仅面向执行子智能体（B28：查不到返回
+//   不进 executeToolCall——EXECUTOR_TOOLS 仅面向执行子智能体（查不到返回
         //   TOOL_NOT_FOUND）；也不注册进 EXECUTOR_TOOLS（避免暴露给执行子智能体）。
         //   发送失败返回 success=false（不抛错），供主智能体按工具 description 第 4 条自主重试。
         let sendEmailResult: ToolResult;
@@ -1634,13 +1631,13 @@ export async function runMainAgent(
         toolCall.function.name === 'fs_list' ||
         toolCall.function.name === 'fs_stat'
       ) {
-        // ★ 主智能体直接工具执行（轻量文本文件阅读 / 文件系统搜索，不委派执行者）。
+// 主智能体直接工具执行（轻量文本文件阅读 / 文件系统搜索，不委派执行者）。
         //   执行入口复用执行者注册表统一入口 executor-registry.executeToolCall——
         //   参数解析、错误归一（TOOL_ARGUMENTS_INVALID / TOOL_EXECUTION_EXCEPTION /
         //   ABORTED 等）、结果结构（ToolResult → stringifyToolResult）与执行者侧完全同源；
         //   read_file 与 fs_search 均为纯 Node fs 只读实现，支持 context.signal 取消。
         //   工具上下文形状对齐执行者侧既有约定（conversationId/runDir/signal）：
-        //   运行层形状见 executor-agent.ts L1265-1269；会话委派 toolContext 先例见本文件 L1272-1275。
+//   运行层形状见 executor-agent.ts；会话委派 toolContext 构造同本文件会话委派分支。
         const execution = await executeToolCall(
           toolCall.function.name,
           toolCall.function.arguments,
@@ -1705,7 +1702,7 @@ export async function runMainAgent(
           tool_call_id: toolCall.id,
           content: JSON.stringify({ success: false, message: errorMsg }),
         });
-        // ★ 未知工具补配对 tool 消息（消除该分支 tool_call 无配对消息的既有悬空，
+// 未知工具补配对 tool 消息（消除该分支 tool_call 无配对消息的悬空，
         //   ）
         toolSlotPaired[slotIndex] = true;
           pendingToolMessagePayloads.push({
@@ -1726,7 +1723,7 @@ export async function runMainAgent(
       }
     })());
 
-    // ★ 并行等待全部任务收尾（）：
+// 并行等待全部任务收尾：
     //   下方批次收口（tool.batch.completed → 全中止判定 → insertMessages → TOOL_MESSAGE_CREATED）
     //   自此全部位于 allSettled 之后执行，批次消息时序语义与 :968-1038 一致。
     const settled = await Promise.allSettled(toolCallTasks);
@@ -1753,7 +1750,7 @@ export async function runMainAgent(
       toolSlotPaired[index]=true;
     }
 
-    // ★ 批次完成后：按 settled 结果汇总 completedTasks（）——
+// 批次完成后：按 settled 结果汇总 completedTasks——
     //   任务闭包不再直接 push（原串行循环内逐个 push 语义在并行下不成立）；seq 按批次末汇总序赋值。
     //   配套效果：runDelegatedTask 入参 completedTasks（全量数组）在闭包启动时刻读到的 completedTasks
     //   即"批次开始前已完成的任务"（同批次 entry 全部延迟至此 push），语义
@@ -1773,7 +1770,7 @@ export async function runMainAgent(
     //   （批次事件先于全中止 throw 发送，含全中止批次）
     // ============================================================
 
-    // ★ 批次整体完成事件 tool.batch.completed（）
+// 批次整体完成事件 tool.batch.completed
     //   时序=先于全中止 throw（含全中止批次也先发事件，前端兜底收口残余 loading 快照）
     eventBus.emit(TOOL_BATCH_COMPLETED_EVENT, {
       conversationId,
@@ -1791,13 +1788,13 @@ export async function runMainAgent(
       ],
     });
 
-    // seq 批次末统一采样（）；空数组防御：全部 toolCall 无 id 被过滤、
+// seq 批次末统一采样；空数组防御：全部 toolCall 无 id 被过滤、
     //   闭包全 skipped 的极值下回退 assistantPersistSeq（即本轮已落库最大 seq，语义正确）
     contextCompressionMaxMessageSeq = pairedMessages.length > 0
       ? pairedMessages[pairedMessages.length - 1].seq
       : assistantPersistSeq;
 
-    // TOOL_MESSAGE_CREATED 批次末统一 emit（）：载荷从 insertMessages 返回记录构造，
+// TOOL_MESSAGE_CREATED 批次末统一 emit：载荷从 insertMessages 返回记录构造，
     //   结构与成功/失败路径一致（前端 useChat 消费不变）；
     //   isDelegatedExecutor 按工具名重推导（未知工具分支为 false）
     for (const pairedMessage of pairedMessages) {
@@ -1869,7 +1866,7 @@ export async function runMainAgent(
     deleteRunningAssistantMessage(conversationId);
 
     assistantMessageId = uuidv4();
-    // ★ 分时机落库：新一轮 assistant 行演进状态随 assistantMessageId 重建同步重置。
+// 分时机落库：新一轮 assistant 行演进状态随 assistantMessageId 重建同步重置。
     assistantPersistSeq = null;
     assistantRowPersisted = false;
     assistantPersistedAt = undefined;
@@ -1878,9 +1875,8 @@ export async function runMainAgent(
       role: 'assistant',
       content: '',
       thinking: '',
-      // ★ F1 新增：
       //   会话切换时 getRunningAssistantMessage 返回的消息含 segments: [] 字段，
-      //   前端 ChatMessageContent 优先使用 message.segments（不再走 buildLegacySegments 兜底）
+      //   前端 ChatMessageContent 优先使用 message.segments（仅无 segments 旧数据走其私有 buildLegacySegments 兜底）
       segments: [],
       toolCalls: [],
       status: 'loading',
@@ -1901,16 +1897,16 @@ export async function runMainAgent(
   }
 
   // 9. 写入 assistant 消息到 SQLite
-  // ★ assistantMessageId 已在步骤 3 提前生成并初始化 runningAssistantMessages
+// assistantMessageId 已在步骤 3 提前生成并初始化 runningAssistantMessages
   //   直接复用同一个 ID 落库，保证前端 running 状态和落库后状态对应同一消息
-  // ★ F3 新增：从 runningAssistantMessages 读取累积的 segments 写入 payload
+// 从 runningAssistantMessages 读取累积的 segments 写入 payload
   //   持久化分段结构到 messages.payload_json，历史消息读取时
-  //   listRendererMessages 能直接返回 segments[]，无需 buildLegacySegments 兜底
+  //   listRendererMessages 能直接返回 segments[]，仅存量旧消息在渲染端走私有 buildLegacySegments 兜底
   const runningFinal = getRunningAssistantMessage(conversationId);
   const assistantMessage = insertMessage({
     conversationId,
     id: assistantMessageId,
-    // ★ 分时机落库：行已落库时显式传钉死 seq/createdAt——同 id 原位覆盖
+// 分时机落库：行已落库时显式传钉死 seq/createdAt——同 id 原位覆盖
     //   零漂移（不依赖自动取号的删旧插新路径）；未落库时缺省自动取号（防御路径兜底）。
     ...(assistantRowPersisted && assistantPersistSeq !== null
       ? {
@@ -1922,7 +1918,7 @@ export async function runMainAgent(
     payload: {
       content: fullContent,
       thinking: fullThinking || undefined,
-      // ★ F3 新增：持久化分段结构（）
+// 持久化分段结构
       //   仅在 segments 非空时写入；undefined 时 payload_json 不会包含此字段
       segments: Array.isArray(runningFinal?.segments) && runningFinal.segments.length > 0
         ? runningFinal.segments.map((segment) => ({ ...segment }))
@@ -1947,13 +1943,13 @@ export async function runMainAgent(
     {
       role: 'assistant',
       content: fullContent || null,
-      // ★ 压缩最终轮思考回填：）
+// 压缩最终轮思考回填：
       ...(fullThinking
         ? ({ reasoning_content: fullThinking } as { reasoning_content?: string })
         : {}),
     },
   ];
-  // ★ 落库完成后从 runningAssistantMessages 移除
+// 落库完成后从 runningAssistantMessages 移除
   //   之后 conv:get-messages 直接从 messages 表读取该消息
   deleteRunningAssistantMessage(conversationId);
 
@@ -1972,7 +1968,7 @@ export async function runMainAgent(
 
   // 
   // 再统一清理整个 tasks/ 目录并重建，便于同一轮后续委派任务通过路径读取前序任务临时文件。
-  // ★ API 报错保留现场：本轮命中委派任务 API 报错
+// API 报错保留现场：本轮命中委派任务 API 报错
   //   （apiErrorHit）时豁免 resetConversationTasksDir——内存任务记录与磁盘 tasks 目录均保留，
   //   保证报错轮 execution_log_path 指向的任务现场与终态任务记录回看窗口持续有效；下一次无
   //   API 报错的轮末照常统一清理（豁免仅当轮生效；conv:delete 仍无条件清理，无泄漏死角）。
@@ -2018,7 +2014,7 @@ export async function runMainAgent(
 
     throw error;
   } finally {
-    // ★ 阶段一接线（方案 §四.1/§六.2）：适配器实例随对话轮结束释放（幂等）——
+// 适配器实例随对话轮结束释放（幂等）——
     //   排队残留上报后清空、回调注册表注销、close 后任何操作成员 → terminal 错误；
     //   标题/压缩/视觉三辅助链路直调 openai-client 不经适配器，close 清单不含它们
     //   （降级链两级均失败时 adapter 尚为 null——?. 跳过，无实例可释放）

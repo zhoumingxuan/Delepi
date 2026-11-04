@@ -25,9 +25,9 @@ export type ExecutorToolRegistryItem = {
 };
 
 /**
- * 动态工具表：运行时注册（S5-2 开放 register/unregister API；S5-3 dyn-tool-loader
+ * 动态工具表：运行时注册（register/unregister API；dyn-tool-loader
  * 扫描 userData/dyn-tools/<tool_name>/{manifest.json,main.py} 后写入）。
- * 空表时合并视图与改造前静态派生结果逐字节等价（S5-1 等价性硬约束）。
+ * 空表时合并视图即为内置静态工具表。
  */
 const dynamicTools = new Map<string, ExecutorToolRegistryItem>();
 
@@ -57,7 +57,7 @@ export function getMergedExecutorTools(): Record<string, ExecutorToolRegistryIte
 }
 
 /**
- * 工具注册表（函数式派生，替代原静态导出——S5-1 方向5改造）。
+ * 工具注册表（函数式派生）。
  * 不维护任何本地执行函数映射；动态注册/注销后下次调用即生效，无需刷新缓存。
  */
 export function getExecutorToolRegistry(): Record<string, ExecutorToolRegistryItem> {
@@ -65,7 +65,7 @@ export function getExecutorToolRegistry(): Record<string, ExecutorToolRegistryIt
 }
 
 // ============================================================
-// 动态注册 API（S5-2 方向5：内置4工具锁定，重名内置拒绝注册）
+// 动态注册 API（内置4工具锁定，重名内置拒绝注册）
 // ============================================================
 
 export type RegisterExecutorToolResult = {
@@ -106,8 +106,8 @@ export function getDynamicExecutorToolNames(): string[] {
 }
 
 /**
- * 动态工具展示元数据（S5-4 进度名三级回退 manifest.progressName→displayName→name 的数据源）。
- * 内置工具返回 null（调用方回退内置 EXECUTOR_TOOL_PROGRESS_NAMES 映射，行为与现状逐字节一致）。
+ * 动态工具展示元数据（进度名三级回退 manifest.progressName→displayName→name 的数据源）。
+ * 内置工具返回 null（调用方回退内置 EXECUTOR_TOOL_PROGRESS_NAMES 映射）。
  */
 export function getDynamicExecutorToolMeta(name: string): {
   progressName?: string;

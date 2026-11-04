@@ -1,5 +1,5 @@
 /**
- * ExecutorRecordDrawer —— 任务执行记录固定 dock 右栏（ 视觉规格）
+ * ExecutorRecordDrawer —— 任务执行记录固定 dock 右栏
  *
  * 择型：固定 dock 布局列（非 antd Drawer / 非 Modal）——常驻观察面需与消息流同时可读；
  * 宽度 clamp(280px, 26vw, 400px)、高度 100dvh、borderLeft 1px colorBorderSecondary，
@@ -12,15 +12,15 @@
  *   纯文本 pre-wrap+闪烁光标，completed 经 RichMarkdown 渲染、折叠按渲染后高度（132px 裁切）判定）；工具条目（ToolOutlined + displayName + 三态徽标：
  *   执行中 LoadingOutlined colorPrimary / 已完成 CheckCircleFilled colorSuccess /
  *   失败 CloseCircleFilled colorError；行点击展开 argsPreview/resultPreview 全文——JSON
- *   感知 markdown 渲染（JSON → ```json 代码块，对齐 ChatMessageContent.renderToolResultContent
- *   先例与 RichMarkdown）、colorFillQuaternary 背景块 max-height 200px 滚动上限）；
- * - 滚动跟随：贴底/恢复阈值 24px（对齐 ThinkingBlock FOLLOW_TAIL_RESUME_PX 先例），
+ *   感知 markdown 渲染（JSON → ```json 代码块，同 ChatMessageContent.renderToolResultContent
+ *   与 RichMarkdown）、colorFillQuaternary 背景块 max-height 200px 滚动上限）；
+ * - 滚动跟随：贴底/恢复阈值 24px（同 ThinkingBlock FOLLOW_TAIL_RESUME_PX），
  *   跟随期自动到底（behavior:auto）、暂停期悬浮"回到最新"胶囊；滚动事件 rAF 合帧；
  * - 条目追加动效：key={seq} 160ms cubic-bezier(0.4,0,0.2,1) 淡入 + translateY(4px→0)；
  * - 归档空态（hasRecords=false）：居中"任务记录已随本轮结束归档"（13px secondary），
  *   标题区保留任务名+终态 Tag，关闭按钮可用。
  *
- * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均已接线：停止经 onStopTask → 任务级 IPC 精确停止，发送经 onSendTaskMessage → 任务级消息入队；草稿按 delegateCallId 键控隔离；原"纯只读面板"声明随之废止，修订）。
+ * 全部色值经 theme.useToken() 引用（禁硬编码）；底部含任务级输入区（停止/发送均已接线：停止经 onStopTask → 任务级 IPC 精确停止，发送经 onSendTaskMessage → 任务级消息入队；草稿按 delegateCallId 键控隔离）。
  */
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -50,7 +50,7 @@ import type {
 import type { ExecutorTaskView } from '../lib/executor-record-messages';
 import { RichMarkdown } from './RichMarkdown';
 
-/** 贴底/恢复阈值（px）——对齐 ThinkingBlock FOLLOW_TAIL_RESUME_PX=24 先例 */
+/** 贴底/恢复阈值（px）——同 ThinkingBlock FOLLOW_TAIL_RESUME_PX=24 */
 const FOLLOW_TAIL_THRESHOLD_PX = 24;
 /** 思考正文折叠态可视高度上限（px）：completed 折叠判定阈值与折叠态 maxHeight 同源（132px hidden） */
 const THINKING_COLLAPSED_MAX_HEIGHT_PX = 132;
@@ -98,7 +98,7 @@ function formatEntryClock(iso: string): string {
   return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
-/** JSON 字符串判定（实现与 ChatMessageContent / ToolCallCard 同名先例一致） */
+/** JSON 字符串判定（实现与 ChatMessageContent / ToolCallCard 同名函数一致） */
 function isJsonString(value: string): boolean {
   try {
     JSON.parse(value);
@@ -118,7 +118,7 @@ function prettyJsonString(value: string): string {
   }
 }
 
-/** 工具预览 markdown 感知内容（对齐 ChatMessageContent.renderToolResultContent 先例）：JSON → ```json 代码块，否则原文本 */
+/** 工具预览 markdown 感知内容（同 ChatMessageContent.renderToolResultContent）：JSON → ```json 代码块，否则原文本 */
 function renderToolPreviewMarkdown(value: string): string {
   if (isJsonString(value)) {
     return ['```json', prettyJsonString(value), '```'].join('\n');
@@ -141,11 +141,11 @@ function statusTagOf(status: ExecutorTaskRecordStatus): ReactElement {
 
 /** 思考条目（内聚子组件，不外泄）
  *
- * - running：正文保持现状纯文本 pre-wrap + 尾部闪烁光标（方案甲锁定：流式草稿约每 200ms 更新一次，
+ * - running：正文为纯文本 pre-wrap + 尾部闪烁光标（流式草稿约每 200ms 更新一次，
  *   不做 markdown 渲染以规避每 delta 全量 parse）；折叠判定沿用"非空行数 > THINKING_COLLAPSE_LINES"（纯文本行高 22px 线性对应）。
- * - completed：seal 后文本冻结，正文一次性经 RichMarkdown 渲染（content=record.text，复用同文件工具预览先例 262/270）；
+ * - completed：seal 后文本冻结，正文一次性经 RichMarkdown 渲染（content=record.text，复用同文件工具预览实现）；
  *   折叠判定改按"渲染后实际高度 > THINKING_COLLAPSED_MAX_HEIGHT_PX(132px)"（markdown DOM 高度与文本行数不再线性对应），
- *   实测内容确被 maxHeight(132px) 裁切时才展示"展开全文"入口，杜绝"被裁切却无入口 / 短内容出现无入口滚动条"两种历史缺陷形态。
+ *   实测内容确被 maxHeight(132px) 裁切时才展示"展开全文"入口，杜绝"被裁切却无入口 / 短内容出现无入口滚动条"两类缺陷形态。
  * - 折叠视觉语义两态共用常量：可折叠且未展开 → 132px hidden；展开态/不可折叠 → 240px auto 上限且高度按内容自适应。
  * - 状态切换（seal running→completed）为一次性 DOM 结构替换，无新增动画/闪烁；结束态"思考中"徽标/高亮圆点零残留由 running 条件渲染保证。
  */
@@ -225,7 +225,7 @@ function ThinkingRecordItem(options: { record: ExecutorThinkingRecord }): ReactE
         ) : null}
       </div>
       {running ? (
-        /* running：正文保持现状纯文本 pre-wrap + 闪烁光标（方案甲锁定，禁止对 running 草稿引入 RichMarkdown） */
+/* running：正文为纯文本 pre-wrap + 闪烁光标（禁止对 running 草稿引入 RichMarkdown） */
         <div
           style={{
             fontSize: 13,
@@ -399,7 +399,7 @@ function ToolRecordItem(options: { record: ExecutorToolRecord }): ReactElement {
  *   渲染层按 kind 独立分发，本组件天然不出现“思考 #N”头部）——停止文案不再冒充思考；
  * - 头部行与思考/工具条目头部行同构（12px/18px colorTextTertiary），语义标识“已停止”
  *   （与文案模板“…已停止，用户手动取消。”动词一致；标题 Tag“已取消”表达任务终态，互补不冲突）；
- * - 压缩进行中态：头部前置 LoadingOutlined（colorPrimary，对齐工具条目“执行中”徽标先例）+
+ * - 压缩进行中态：头部前置 LoadingOutlined（colorPrimary，同工具条目“执行中”徽标）+
  *   标题“上下文压缩（压缩中） · HH:mm:ss”，正文=后端“上下文正在压缩中…”全文（信息条观感不变）；
  * - 正文为纯文本信息条（非 markdown；单条固定文案，无折叠/展开需求，量级确定），
  *   中性浅底 colorFillQuaternary + 次级文本色 colorTextSecondary —— 表达“正常手动取消”，
@@ -520,7 +520,7 @@ function UserMessageRecordItem(options: { record: ExecutorUserMessageRecord }): 
 /** 任务级助手回复条目（内聚子组件，不外泄；与 ThinkingRecordItem 为两个不同条目类型，互不复用、
  *  严禁混淆）：
  *  - 头部行与用户消息/思考/工具/通知条目同构（12px/18px colorTextTertiary）："助手回复 · HH:mm:ss · 状态"，
- *    状态文案 已完成/未收到回复（对齐 UserMessageRecordItem 头部行先例）；
+ *    状态文案 已完成/未收到回复（同 UserMessageRecordItem 头部行）；
  *  - completed：正文一次性经 RichMarkdown 渲染（后端判定命中即写入完成态条目，无 loading 中间态；
  *    record.text 原样渲染，不做任何标记过滤）；复用
  *    .thinking-md-scope 局部样式作用域（13px/22px/colorText，与思考正文观感一致但渲染独立）；
@@ -595,7 +595,7 @@ export function ExecutorRecordDrawer(options: {
   onClose: () => void;
   /** 任务级停止回调（ChatShell 已接线至 executorRecords.stopTask → preload executor.stopTask → executor:stop-task；不传时静默跳过、不报错） */
   onStopTask?: (delegateCallId: string) => void;
-  /** 任务级交互消息回调（受理结果制；不传时静默跳过、不报错——对齐 onStopTask 可选先例） */
+/** 任务级交互消息回调（受理结果制；不传时静默跳过、不报错——同 onStopTask 可选形态） */
   onSendTaskMessage?: (
     delegateCallId: string,
     message: string,
@@ -611,7 +611,7 @@ export function ExecutorRecordDrawer(options: {
     return () => cancelAnimationFrame(raf);
   }, []);
 
-  /* ★ 任务级草稿键控隔离（模式对齐 ChatShell 主输入草稿 draftsRef 先例：Map<会话ID,草稿>）：
+/* 任务级草稿键控隔离（模式同 ChatShell 主输入草稿 draftsRef：Map<会话ID,草稿>）：
      按 delegateCallId 键控，openTask 切换 taskView 时恢复目标任务草稿，并发任务互不串扰；
      useLayoutEffect 在 paint 前完成恢复，避免切换瞬间闪现上一任务草稿 */
   const [taskDraft, setTaskDraft] = useState('');
@@ -663,7 +663,7 @@ export function ExecutorRecordDrawer(options: {
   const [showBackToLatest, setShowBackToLatest] = useState(false);
   const scrollRafRef = useRef<number | null>(null);
 
-  /** 滚动判定 rAF 合帧（对齐 ChatArea P05 模式） */
+/** 滚动判定 rAF 合帧（同 ChatArea 模式） */
   const evaluateFollowState = useCallback(() => {
     if (scrollRafRef.current !== null) return;
     scrollRafRef.current = requestAnimationFrame(() => {
@@ -924,7 +924,7 @@ export function ExecutorRecordDrawer(options: {
         ) : null}
       </div>
 
-      {/* ★ 底部任务级输入区（任务级交互消息）：单按钮四态（判定依据 taskRunning 与
+      {/* 底部任务级输入区（任务级交互消息）：单按钮四态（判定依据 taskRunning 与
           taskDraft.trim().length）——①执行中+有草稿=可发送（primary+ArrowUpOutlined 蓝箭头，
           点击发送）；②执行中+无草稿=停止（default 圆钮+10×10 圆角2 currentColor 方块图标，
           点击停止）；③/④非执行中（无论有无草稿）=不可发送（disabled 置灰箭头，禁止触发点击）；
@@ -968,7 +968,7 @@ export function ExecutorRecordDrawer(options: {
             />
           </div>
           {(() => {
-            /* ★ 单按钮四态判定（完全收敛于此一个按钮的渲染与事件逻辑内，判定依据 taskRunning
+            /* 单按钮四态判定（完全收敛于此一个按钮的渲染与事件逻辑内，判定依据 taskRunning
              *  与 taskDraft.trim().length）：
              *  ① taskRunning=true 且 taskDraft.trim().length>0 → 可发送态（蓝色箭头，触发 handleTaskSend）；
              *  ② taskRunning=true 且 taskDraft.trim().length===0 → 停止态（方块图标，触发 handleTaskStop）；

@@ -71,7 +71,6 @@ function buildShellSpawn(platform: ShellPlatform, command: string): { command: s
   return { command: '/bin/bash', args: ['-c', command] };
 }
 
-// 迁移 run-exe.ts L156-173
 function normalizeOptionalBoolean(value: unknown): boolean {
   if (typeof value === 'boolean') {
     return value;
@@ -122,7 +121,6 @@ function stripCommandWrappers(raw: string): string {
   return text;
 }
 
-// 迁移 run-exe.ts L744-762
 async function resolveWorkDir(inputWorkDir: string | null, context: ToolRuntimeContext | undefined): Promise<string | null> {
   const requestedDir = inputWorkDir || normalizeOptionalString(context?.runDir) || null;
   if (!requestedDir) {
@@ -290,7 +288,6 @@ async function runSuspendedSpawnCommand(
 
 /**
  * run_shell 主入口：校验 → 工作目录解析 → 普通/挂起分支 → 结果组装
- * （结果字段与 run-exe.ts L764-995 runExe 逐字段一致）。
  */
 export async function runShell(input: unknown, context: ToolRuntimeContext): Promise<ToolResult> {
   const resolvedInput = input && typeof input === 'object' ? (input as RunShellInput) : {};

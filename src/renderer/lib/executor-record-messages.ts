@@ -1,5 +1,5 @@
 /**
- * executor 任务记录 → 虚拟 ChatMessage 纯函数库（）
+ * executor 任务记录 → 虚拟 ChatMessage 纯函数库
  *
  * - buildExecutorTaskMessages：任务视图 → 虚拟 ChatMessage（role='tool'、source='executor'、
  *   携带 executorTask 徽标）；虚拟消息 id=executor-task-{delegateCallId}，

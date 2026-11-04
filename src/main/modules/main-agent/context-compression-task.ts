@@ -1,9 +1,9 @@
 /**
  * 上下文压缩任务层
  * 
- * 适配：
- *   1. 本项目无 userId 概念，简化参数（仅 conversationId）
- *   2. 本项目无环境变量配置阈值，硬编码 64KB
+ * 职责边界：
+ *   1. 单用户架构：参数仅 conversationId
+ *   2. 压缩阈值硬编码 64KB
  *   3. 本项目 context_compressions 表已存在，复用 schema
  *
  * 与 context-compression.ts 的区别：

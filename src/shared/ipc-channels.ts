@@ -28,16 +28,15 @@ export const IPC_CHAT = {
   COMPRESSION: 'chat:compression',
   /**
    * 用户消息创建事件（主→渲染）
-   * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
+    * 由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
    * 用于 replaceLatestLocalUser 将 status='local' 的本地乐观消息替换为服务端真实消息
    */
   USER_MESSAGE_CREATED: 'chat:user-message-created',
   /**
-   * Assistant 消息三态事件（主→渲染）
-   *  P1-2 适配层：
+    * Assistant 消息两态事件（主→渲染）
    * - STARTED: 初始化 assistant message（status='loading'）
    * - DONE: 标记 status='success' 或 'error'
-   * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
+    * 由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
    */
   ASSISTANT_STARTED: 'chat:assistant-started',
   ASSISTANT_DONE: 'chat:assistant-done',
@@ -46,7 +45,7 @@ export const IPC_CHAT = {
   /**
    * 对话被中止事件（主→渲染）
    * 已由主进程真实推送（main-agent.ts 对应 emit → ipc-handlers.ts 白名单转发）
-   * 用于 markRunningMessagesAborted 归一化（任务记录显示态由 executor:* 新链路独立承载）
+    * 消息标记：markRunningMessagesAbortedInList 将 loading 态消息标记为 aborted
    */
   ABORTED: 'chat:aborted',
   /** 批次完成事件（主→渲染） */
@@ -127,7 +126,6 @@ export const IPC_EXECUTOR = {
    * 请求 { conversationId, delegateCallId, message }；返回 { accepted, reason? }。
    * 消息仅进入目标任务的排队队列（与 stopExecutorTask 同构的任务级隔离寻址），
    * 在执行子智能体安全点（思考段结束/工具批次结束）注入该任务模型上下文；
-   * 任务非 running / 停止请求已置位 / 超长 / 队满 → accepted=false（拒收，不入时间线）。
    */
   SEND_TASK_MESSAGE: 'executor:send-task-message',
 } as const;
@@ -141,9 +139,9 @@ export const IPC_FILE = {
    * 参数 FileUploadParams：{ conversationId, name, size, contentType, data: string(Base64) | ArrayBuffer | Uint8Array | number[] }
    * 返回 FileUploadResult：{ file: ChatUploadedFile }
    * ）
-   * - H1 防御：data 优先为 Base64 字符串（IPC 结构化克隆纯字符串传输，规避 ArrayBuffer 序列化断点），
+    * - 防御：data 优先为 Base64 字符串（IPC 结构化克隆纯字符串传输，规避 ArrayBuffer 序列化断点），
    *   主进程 fileInputToBuffer 同时兼容 Base64 string 与 ArrayBuffer/Uint8Array/number[]（向后兼容）
-   * - R5：入口校验 conversationId 非空、name 非空、data 非空；整体 try/catch，
+    * - 入口校验 conversationId 非空、name 非空、data 非空；整体 try/catch，
    *   失败写入 userData/logs/main.log（ERROR 级）后 rethrow；可预期错误带稳定错误码（ERR_FILE_UPLOAD_*）
    * - 文件数限制：单次请求（当前待发送附件列表）上限 MAX_UPLOAD_COUNT=10，由渲染端预检拦截；主进程不按 uploads 目录累计存量拒绝。
    * - 落盘 conversations/{conversationId}/uploads/{fileId}.{ext}（原始展示名写入同名 .json 元数据）
@@ -169,17 +167,17 @@ export const IPC_FILE = {
    */
   DELETE: 'file:delete',
   /**
-   * 读取已上传文件的二进制内容（用于 P7 切换会话时重建 ObjectURL 预览）
+    * 读取已上传文件的二进制内容（用于切换会话时重建 ObjectURL 预览）
    * 参数 FileReadParams：{ conversationId, storageKey }
    * 返回 FileReadResult：{ data: ArrayBuffer, contentType: string, name: string, size: number }
    * 
-   * 适配 Delepi 客户端:无 static token 鉴权,直接通过 IPC 读取已上传文件到 ArrayBuffer
+    * 本客户端无 static token 鉴权,直接通过 IPC 读取已上传文件到 ArrayBuffer
    * - 校验 storageKey 前缀属于当前 conversationId 的 uploads/(防越权读取)
    * - 主进程用 readFile 读取磁盘内容,IPC 序列化 ArrayBuffer 回前端
    */
   READ: 'file:read',
   /**
-   * P9 孤儿清理（手动触发）
+    * 孤儿清理（手动触发）
    * 参数 FileCleanupOrphansParams：{}
    * 返回 FileCleanupOrphansResult：{ removedConversationIds, scannedCount, removedCount }
    * - 主进程扫描 bin/conversations/ 目录,与 SQLite conversations 表比对
@@ -199,7 +197,7 @@ export const IPC_PYTHON = {
 } as const;
 
 
-// --- 自定义技能 IPC 通道（方向2：内置9标签只读锁定，自定义标签/模板管理） ---
+// --- 自定义技能 IPC 通道（内置9标签只读锁定，自定义标签/模板管理） ---
 export const IPC_SKILLS = {
   /** 列出内置9标签（只读，含归属）与自定义标签元数据+上限（渲染→主，invoke） */
   LIST: 'skills:list',
@@ -213,7 +211,7 @@ export const IPC_SKILLS = {
   SAVE_BUILTIN_OVERRIDE: 'skills:save-builtin-override',
 } as const;
 
-// --- 动态工具 IPC 通道（方向5：userData/dyn-tools 动态注册；内置3工具锁定不受重载影响） ---
+// --- 动态工具 IPC 通道（userData/dyn-tools 动态注册；内置3工具锁定不受重载影响） ---
 export const IPC_TOOLS = {
   /** 重载动态工具：先注销全部动态注册再重扫 dyn-tools 目录（渲染→主，invoke） */
   DYN_RELOAD: 'tools:dyn-reload',
@@ -283,19 +281,3 @@ export const IPC_UPDATE = {
   /** 状态变化推送（主→渲染，send） */
   STATE_CHANGED: 'update:state-changed',
 } as const;
-
-/** 所有 IPC 通道的联合类型 */
-export type IpcChannel =
-  | (typeof IPC_CHAT)[keyof typeof IPC_CHAT]
-  | (typeof IPC_CONFIG)[keyof typeof IPC_CONFIG]
-  | (typeof IPC_CONV)[keyof typeof IPC_CONV]
-  | (typeof IPC_EXECUTOR)[keyof typeof IPC_EXECUTOR]
-  | (typeof IPC_FILE)[keyof typeof IPC_FILE]
-  | (typeof IPC_PYTHON)[keyof typeof IPC_PYTHON]
-  | (typeof IPC_SKILLS)[keyof typeof IPC_SKILLS]
-  | (typeof IPC_TOOLS)[keyof typeof IPC_TOOLS]
-  | (typeof IPC_LOG)[keyof typeof IPC_LOG]
-  | (typeof IPC_DIALOG)[keyof typeof IPC_DIALOG]
-  | (typeof IPC_WATCH)[keyof typeof IPC_WATCH]
-  | (typeof IPC_UPDATE)[keyof typeof IPC_UPDATE];
-

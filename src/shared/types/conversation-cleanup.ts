@@ -10,9 +10,9 @@ export type ConversationDateGroup = (typeof CONVERSATION_DATE_GROUPS)[number];
 
 /** 清理条件（传条件不传 id 列表：预览与执行以主进程实时口径为准） */
 export interface ConversationCleanupOptions {
-  /** M1：清理空会话（0 条消息） */
+/** 清理空会话（0 条消息） */
   removeEmpty: boolean;
-  /** M2：命中的时间组名，取值域=CONVERSATION_DATE_GROUPS；可为空数组 */
+/** 命中的时间组名，取值域=CONVERSATION_DATE_GROUPS；可为空数组 */
   dateGroups: string[];
 }
 

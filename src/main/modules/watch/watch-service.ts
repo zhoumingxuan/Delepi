@@ -1976,20 +1976,6 @@ export function getWatchStatus(): WatchStatusResult {
   };
 }
 
-/**
- * 手动执行一轮轮询（诊断/受控测试直调；不接入 IPC）。
- * 复用与定时轮询完全相同的 runPollOnce（含 inFlight 互斥）。
- */
-export async function pollWatchOnceForDiagnosis(): Promise<{ accepted: boolean; reason?: string; outcome?: PollOnceOutcome }> {
-  if (runtimeStatus !== 'running') {
-    return { accepted: false, reason: 'WATCH_NOT_RUNNING' };
-  }
-  if (pollInFlight) {
-    return { accepted: false, reason: 'POLL_IN_FLIGHT' };
-  }
-  const outcome = await runPollOnce();
-  return { accepted: true, outcome };
-}
 
 // ---------------------------------------------------------------------------
 // 应用重启恢复逻辑（app ready 后由 registerIpcHandlers 调用）

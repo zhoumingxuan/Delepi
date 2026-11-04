@@ -1,6 +1,5 @@
 /**
  * settings 表操作
- * 从 repository.ts 拆分
  */
 
 import { getDb } from '../sqlite-adapter';

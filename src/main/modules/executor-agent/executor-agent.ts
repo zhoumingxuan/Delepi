@@ -174,7 +174,7 @@ function normalizeTaskTags(value: unknown): TaskTagName[] {
     return [];
   }
 
-  // 方向2 A2-2 第二关：放行集合改「执行者侧归属集合（内置执行者 9 项 ∪ 归属 executor 的启用自定义）」（单一定义源 getAllTaskTags）。
+// 第二关：放行集合为「执行者侧归属集合（内置执行者 9 项 ∪ 归属 executor 的启用自定义）」（单一定义源 getAllTaskTags）。
   // 内置执行者标签行为不变（内置执行者 9 项包含于归属集合），归属 executor 的启用自定义标签放行，未知标签仍丢弃，去重逻辑保持。
   const allowedTagSet = new Set<string>(getAllTaskTags('executor', configManager.getSettings().customSkillTags));
   const tags: TaskTagName[] = [];
@@ -349,7 +349,7 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
       : {};
   } catch (error) {
     // 纵深防御：rawArguments 非合法 JSON 时不再抛出 SyntaxError，
-    // 改走与下方七项校验失败一致的 {input: null, issues} 失败返回形态，
+//   纵深防御：与下方七项校验失败一致，返回 {input: null, issues} 失败形态，
     // 使调用点（runDelegatedTask）之后的逻辑自然进入既有 INVALID_INPUT 失败路径
     if (error instanceof SyntaxError) {
       return {
@@ -831,7 +831,7 @@ function buildExecutorToolProgressText(options: {
   return `${toolDisplayName}工具完成，继续处理...`;
 }
 
-// 单任务模板数上限=3（基线原由 constants 导出 MAX_WORKFLOW_TEMPLATE_COUNT=3，该导出已随 ce14996 技能体系改造删除，还原工作方式预注入时按基线值本地固化）
+// 单任务模板数上限=3（本地固化常量）
 const MAX_WORKFLOW_TEMPLATE_COUNT = 3;
 
 /** 工作流模板选取结果（内置/自定义双源；内置映射锁定优先，自定义仅绑自定义模板） */
@@ -844,7 +844,7 @@ type WorkflowTemplateSelection = {
 
 function selectWorkflowTemplates(taskTags: TaskTagName[]): WorkflowTemplateSelection[] {
   const selections: WorkflowTemplateSelection[] = [];
-  // 方向2 A2-2 第三关：映射查找接入自定义来源（启用的自定义标签元数据按 name 索引）
+// 第三关：映射查找接入自定义来源（启用的自定义标签元数据按 name 索引）
   const customEnabledByName = new Map<string, CustomSkillTag>(
     getEnabledCustomSkillTags()
       .filter((item) => item.owner !== 'main')
@@ -852,7 +852,7 @@ function selectWorkflowTemplates(taskTags: TaskTagName[]): WorkflowTemplateSelec
   );
 
   for (const tag of taskTags) {
-    // 内置标签 → 内置模板映射锁定（Record<TaskTag,...> 类型级锁定 + 运行时优先，不可被自定义覆盖）
+    // 内置标签 → 内置模板映射锁定（Record 键按 BUILTIN_EXECUTOR_TASK_TAGS 字面量联合类型级锁定 + 运行时优先，不可被自定义覆盖）
     const templateId = TASK_TAG_WORKFLOW_TEMPLATE_ID[tag as keyof typeof TASK_TAG_WORKFLOW_TEMPLATE_ID];
     if (templateId) {
       const template = EXECUTOR_WORKFLOW_TEMPLATES[templateId];
@@ -904,8 +904,8 @@ async function readWorkflowTemplateContent(fileName: string): Promise<string> {
 }
 
 /**
- * 读取自定义模板（方向2 A2-4 感知改善：读取失败不再静默空串——console.warn + 告警上浮；
- * 内置模板维持现状 warn 行为不变）。
+ * 读取自定义模板（读取失败不静默——console.warn + 告警上浮；
+ * 内置模板 warn 行为不变）。
  */
 async function readCustomWorkflowTemplateContent(
   selection: WorkflowTemplateSelection,
@@ -983,7 +983,7 @@ function normalizeExecutorToolCalls(rawToolCalls: unknown[]): {
   const prebuiltResults: Array<{ id: string; result: ToolResult }> = [];
 
   // tool_calls 碎片合并：同 id 相邻条目合并（function.arguments 字符串拼接）预处理，
-  //   作为 nonStream/历史路径防御层（流式路径已由 openai-client 三级索引解析合并）
+//   作为非流式/历史消息路径防御层（流式路径已由 openai-client 三级索引解析合并）
   const mergedRawToolCalls: unknown[] = [];
   for (const rawToolCall of rawToolCalls) {
     const rawRecord = isRecord(rawToolCall) ? rawToolCall : {};
@@ -1083,7 +1083,7 @@ function normalizeExecutorToolCalls(rawToolCalls: unknown[]): {
  */
 async function completeExecutorTurn(options: {
   assistantConfig: AssistantRuntimeConfig;
-  /** ★ 阶段一接线（方案 §四.2）：任务级适配器实例（runDelegatedTask 创建/init/finally close） */
+/** 任务级适配器实例（runDelegatedTask 创建/init/finally close） */
   adapter: ProtocolAdapter;
   messages: RuntimeMessage[];
   tools: Array<{
@@ -1134,11 +1134,11 @@ async function completeExecutorTurn(options: {
 // ============================================================
 
 /**
- * 【F-4·R4 运行期快照】本次 run 的六键配置快照（runMainAgent 的两个入口——chat:send 与
+ * 本次 run 的六键配置快照（runMainAgent 的两个入口——chat:send 与
  * conversation-send-service——经 resolveConversationModelConfig 解析 runSettings 后构造，
  * 并沿 runMainAgent → runDelegatedTask 调用链透传）。运行期的思考档位/协议/压缩阈值/视觉
  * 总开关一律读本快照，禁止直读 configManager 全局：运行中他处切换方案不影响本次 run（快照
- * 语义，INV-3）。六键全集与 PROFILE_CONFIG_KEYS 中的档位/协议/阈值键 + visionEnabled 对应。
+ * 语义）。六键全集与 PROFILE_CONFIG_KEYS 中的档位/协议/阈值键 + visionEnabled 对应。
  */
 export interface RuntimeSettingsSnapshot {
   mainThinkingLevel: AppSettings['mainThinkingLevel'];
@@ -1195,8 +1195,8 @@ export type RunDelegatedTaskOptions = {
    */
   onTurnEnd?: (info: { reasoning: string; hasToolCalls: boolean }) => void;
   /**
-   * 注意：onThinking / onToolCall / onToolResult 三回调均会触发
-   * persistExecutorIntermediate（见 main-agent.ts）。
+    * 注意：onThinking / onToolCall / onToolResult 三回调均接入任务记录存储
+    * （executor-task-record-store，经 runDelegatedTask 内 recordSession 接线）。
    * type 字段约定：
    *   - onThinking: 'thinking'（普通思考）或 'tool-progress'（buildExecutorToolProgressText 输出）
    *   - onToolCall: 固定 'tool-progress'（buildExecutorToolProgressText 输出）
@@ -1285,7 +1285,7 @@ export async function runDelegatedTask(
 ): Promise<RunDelegatedTaskResult> {
   // 任务开始时间（本地时间，不带时区）
   const taskStartedAt = formatCurrentDateTime();
-  // ★ 任务级进程台账：一任务一份，纯内存；任务收敛时统一收网清理非挂起存活进程
+// 任务级进程台账：一任务一份，纯内存；任务收敛时统一收网清理非挂起存活进程
   const jobList = createTaskJobList(options.taskId);
 
   // 解析委派任务输入
@@ -1358,7 +1358,7 @@ export async function runDelegatedTask(
   const { contents: workflowTemplates, warnings: workflowTemplateWarnings } =
     await readWorkflowTemplates(parsedInput.skillTags);
 
-  // 构建消息（v2.0 R5：清单块尾拼在 buildExecutorPlainTextPrompt 产物之后，保证位于用户提示词最后面）
+// 构建消息（清单块尾拼在 buildExecutorPlainTextPrompt 产物之后，保证位于用户提示词最后面）
   const plainExecutorPrompt = buildExecutorPlainTextPrompt({
     taskInput: parsedInput,
     workflowTemplates,
@@ -1394,7 +1394,7 @@ export async function runDelegatedTask(
     ? options.recordSession.adoptMessages(initialMessages)
     : initialMessages;
 
-  // ★ 压缩基准冻结（上下文压缩重建基准）：重建恒以任务最初形态为基准（system 原对象+user 原文）；
+// 压缩基准冻结（上下文压缩重建基准）：重建恒以任务最初形态为基准（system 原对象+user 原文）；
   //   二次压缩不依赖反解重建消息（bg(n-1) 已在压缩入参 slice(2) 范围内被总结覆盖）。
   const executorCompressionBase = {
     originalSystemMessage: initialMessages[0],
@@ -1402,10 +1402,10 @@ export async function runDelegatedTask(
   };
 
   // ============================================================
-  // ★ 多协议适配器（协议选择 + 探查降级，目标三）：每任务一实例（非常驻）——
+// 多协议适配器（协议选择 + 探查降级）：每任务一实例（非常驻）——
   //   tools 传 delegatedExecutorTools 静态数组（L1285-1287 每任务局部构建，天然最新）；
   //   档位传 getter：getter 内改读本次 run 的六键快照（runSettings.executorThinkingLevel），
-  //   不再直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义，INV-3）；
+//   不再直读 configManager 全局——运行中他处切换方案不影响本次 run（快照语义）；
   //   复位链经 init.hooks.onStreamRetry 承载（重试边界时序不变）；
   //   协议选择：子智能体协议经本次 run 快照（runSettings.executorModelProtocol）
   //   注入（'cc'=Chat Completion，'responses'=Response API，默认 'cc'）——指定协议
@@ -1415,7 +1415,7 @@ export async function runDelegatedTask(
   //   成功即采用；两级均失败 = 请求大模型 API 完全失败——initAdapterWithFallback 抛
   //   ModelApiAbortError（携带两次探查失败原因）→ 本函数既有 catch saveExecutionLogOnError 后 rethrow →
   //   主链路委派失败消息化；warnCodingPlanMismatch 基于实际生效协议告警；
-  //   实例边界 = runDelegatedTask 一次调用，finally 内 close 释放（§六.1）。
+//   实例边界 = runDelegatedTask 一次调用，finally 内 close 释放。
   // ============================================================
   // stateful 内聚：宿主侧不再外放 stateful 接线——ResponsesAdapter 内部
   //   恒 stateful=true 起步，经首轮 store 回显验证自动判定端点是否支持 ID 续接（支持→缓存
@@ -1438,13 +1438,13 @@ export async function runDelegatedTask(
   const adapterSetup = await initAdapterWithFallback(adapterInitConfig, options.runtimeSettingsSnapshot.executorModelProtocol);
   const adapter = adapterSetup.adapter;
   warnCodingPlanMismatch(adapterSetup.protocol, options.assistantConfig.executorModel.baseUrl);
-  // ★ 阶段四：适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；
+// 适配器 insert 通道注册到记录会话（enqueueUserMessage 双写；
   //   消费侧 L576 职责已移交 adapter.sendMessage 排水——显示视图权威仍在 record 侧）
   if (options.recordSession) {
     options.recordSession.registerAdapterInsertSink((message) => adapter.insertMessage(message));
   }
 
-  // ★ 上下文压缩 runner（executorContextCompressionThreshold 运行时消费）：
+// 上下文压缩 runner（executorContextCompressionThreshold 运行时消费）：
   //   门禁(''/中止/服务端驻留/未超限)→slice(2)统计→同步压缩→原位重建→notice 全内聚于模块内；
   //   阈值 getter：改读本次 run 快照（对齐上方 thinkingLevel 快照范式，不直读全局）；
   //   压缩模型=executorModel 三键（任务内冻结）；无 recordSession 时 notice 跳过、重建照常。
@@ -1465,10 +1465,10 @@ export async function runDelegatedTask(
   // 工具调用循环
   while (true) {
 
-    // ★ 上下文压缩检查点（每轮唯一插队点：门禁→统计→同步压缩→原位重建→notice；'' 时仅一次阈值纯读即返回）
+// 上下文压缩检查点（每轮唯一插队点：门禁→统计→同步压缩→原位重建→notice；'' 时仅一次阈值纯读即返回）
     await executorCompressionStep();
 
-    // ★ 任务级交互消息·安全点二（工具批次结束/循环轮起点）：到达此点必经 Promise.all 汇聚
+// 任务级交互消息·安全点二（工具批次结束/循环轮起点）：到达此点必经 Promise.all 汇聚
     //   （并发批次全部结束）+ 全部 role:'tool' 已 push 同步收口，或无工具轮回填
     //   continue；批次期间到达的排队消息在此注入（序位=数组末尾），本轮请求即携带——
     //   批次收口到本轮 create 之间无 await，注入必然生效。
@@ -1497,7 +1497,7 @@ export async function runDelegatedTask(
     const thinking = extractAssistantReasoning(assistantMessage).trim();
     const assistantContent = turnContent.trim();
 
-    // ★ 单个 assistant message 处理顺序：① thinking → ② content → ③ tool_calls（三者可隶属
+// 单个 assistant message 处理顺序：① thinking → ② content → ③ tool_calls（三者可隶属
     //   同一 message seq）
     // ① thinking：既有 onTurnEnd 思考收口在前（reasoning=executor 任务级思考权威全文，
     //   轮界 seal 思考条目）
@@ -1548,7 +1548,7 @@ export async function runDelegatedTask(
     // 执行工具调用
     runtimeMessages.push(
       buildRuntimeAssistantMessage({
-        // ★ 原文回填：content 原样进入后续模型上下文（不剥任何标记）；模型对已回复内容的记忆不受影响
+// 原文回填：content 原样进入后续模型上下文（不剥任何标记）；模型对已回复内容的记忆不受影响
         content: assistantContent,
         reasoning: thinking,
         toolCalls,
@@ -1675,7 +1675,7 @@ export async function runDelegatedTask(
       }
     }
 
-    // 方向2 A2-4：自定义模板读取失败告警附到委派结果 data（仅存在告警时出现该字段）
+// 自定义模板读取失败告警附到委派结果 data（仅存在告警时出现该字段）
     if (workflowTemplateWarnings.length > 0) {
       resultData = { ...(resultData ?? {}), workflowTemplateWarnings };
     }
@@ -1698,7 +1698,7 @@ export async function runDelegatedTask(
       startAt: taskStartedAt,
     });
   } finally {
-    // ★ 阶段一接线（方案 §四.2/§六.2）：适配器实例随任务结束释放（幂等）——
+// 适配器实例随任务结束释放（幂等）——
     //   insert 排队残留上报后清空、回调注册表注销；任务失败统一消息化路径（不上抛）
     //   与 apiErrorHit 现场保留豁免均不因 close 受影响
     adapter.close();
@@ -1710,7 +1710,7 @@ export async function runDelegatedTask(
     );
   }
   } catch (error) {
-    // ★ API 报错保留现场：写盘失败（saveExecutionLogOnError 返回
+// API 报错保留现场：写盘失败（saveExecutionLogOnError 返回
     //   undefined）时不挂载路径，错误原样上抛——失败结果 data 保持空对象，降级安全。
     const executionLogPathOnError = await saveExecutionLogOnError({
       log: executionLog,
@@ -1722,7 +1722,7 @@ export async function runDelegatedTask(
     }
     throw error;
   } finally {
-    // ★ 任务级进程台账收网：任务收敛统一清理「running 且非挂起」的存活进程；收网自身永不抛错
+// 任务级进程台账收网：任务收敛统一清理「running 且非挂起」的存活进程；收网自身永不抛错
     await reapTaskJobList(jobList);
   }
 }

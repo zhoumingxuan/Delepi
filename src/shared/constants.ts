@@ -36,7 +36,7 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   modelProfiles: [],
   activeProfileId: '',
 
-  // 自定义技能标签（方向2；键白名单硬要求：必须与 AppSettings 同步，否则 reload 静默丢弃）
+// 自定义技能标签（键白名单硬要求：必须与 AppSettings 同步，否则 reload 静默丢弃）
   customSkillTags: [],
   useBuiltinPython: true,
   customPythonPath: '',

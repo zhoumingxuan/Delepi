@@ -1,6 +1,6 @@
 /**
  * Delepi 数据库内部辅助函数
- * 从 repository.ts 提取，供各 repository 文件共享使用
+ * 供各 repository 文件共享使用
  * 注意：这些函数为内部实现细节，不从 db/index.ts 对外导出
  */
 
@@ -18,16 +18,6 @@ export function parseJsonObject(value: string): Record<string, unknown> {
       : {};
   } catch {
     return {};
-  }
-}
-
-export function parseJsonArray(value: string | null | undefined): unknown[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
   }
 }
 

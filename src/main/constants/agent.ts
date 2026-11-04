@@ -59,7 +59,7 @@ export const EXECUTOR_TOOL_PROGRESS_NAMES: Record<string, string> = {
 /**
  * 工具进度名解析（函数式查找——内置映射 + 动态工具三级回退）。
  * 内置工具（dynamicToolMeta 为 null/undefined）：EXECUTOR_TOOL_PROGRESS_NAMES[toolName] ?? toolName，
- *   与直查映射行为逐字节一致（等价性约束）。
+ *   行为与直查映射等价。
  * 动态工具三级回退：manifest.progressName → displayName → 工具 name（displayName 为 manifest
  *   必填项保证回退链终点非空）。
  */
@@ -77,17 +77,11 @@ export function resolveExecutorToolProgressDisplayName(
 // 执行子智能体
 // ============================================================
 
-/** 最终输出修复最大尝试次数 */
-export const MAX_EXECUTOR_FINAL_OUTPUT_REPAIR_ATTEMPTS = 3;
 
 /** 委派参数校验失败重试上限（主智能体当轮重生成，超限走 MAIN_AGENT_ERROR_EVENT 终止） */
 export const DELEGATE_ARGUMENTS_RETRY_LIMIT = 3;
 
-/** 修复提示中输出截断长度 */
-export const EXECUTOR_OUTPUT_TRUNCATE_LENGTH = 8192;
 
-/** 无效输出截断长度 */
-export const EXECUTOR_INVALID_OUTPUT_TRUNCATE_LENGTH = 8192;
 
 // ============================================================
 // 主智能体
@@ -163,7 +157,6 @@ export const TASK_TYPE_VALUES = [
   '全量验证',
   '编写用例',
 ] as const;
-export type TaskType = (typeof TASK_TYPE_VALUES)[number];
 
 /** 内置技能标签（主智能体2项＋执行子智能体9项，只读锁定：一字不动、不可删除；内置模板映射不可被自定义覆盖） */
 export const BUILTIN_TASK_TAGS = [
@@ -179,7 +172,6 @@ export const BUILTIN_TASK_TAGS = [
   '思路设计',
   '推理分析',
 ] as const;
-export type TaskTag = (typeof BUILTIN_TASK_TAGS)[number];
 
 /** 内置技能归属分组（非开放要求：禁止调整划分或引入第三类归属；owner 仅存在于代码常量与自定义元数据，不落入模板/yaml 数据文件） */
 export const BUILTIN_MAIN_TASK_TAGS = ['思路设计', '推理分析'] as const;
@@ -198,7 +190,7 @@ export const BUILTIN_EXECUTOR_TASK_TAGS = [
 /** 归属类型（主/子二值；shared/types/config.ts 中 CustomSkillTag.owner 复用同名语义） */
 export type SkillOwnerScope = 'main' | 'executor';
 
-/** 运行时链使用的宽化标签名（内置∪自定义）；内置 TaskTag 联合类型保留用于内置模板映射 Record 的类型级锁定 */
+/** 运行时链使用的宽化标签名（内置∪自定义）；内置模板映射 Record 的类型级锁定由内置标签常量字面量联合（BUILTIN_MAIN_TASK_TAGS / BUILTIN_EXECUTOR_TASK_TAGS）承担 */
 export type TaskTagName = string;
 
 /** 兼容别名（既有导出消费兼容；语义=内置只读标签集合） */

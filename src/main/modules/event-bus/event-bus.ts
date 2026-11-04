@@ -2,7 +2,7 @@
  * EventBus 事件总线模块
  * 基于 typed-event-emitter 实现类型安全的事件发布/订阅
  *
- * 事件流设计（v1.2）：
+ * 事件流设计：
  * - MainAgent 事件 → EventBus → IPC → 前端（白名单推送）
  * - ExecutorAgent 事件 → EventBus → IPC 白名单 → 前端（executor 三通道）
  */
@@ -35,9 +35,9 @@ export interface MainAgentEvents {
   'main-agent:thinking': {
     conversationId: string;
     delta: string;
-    /** F2 扩展：完整思考文本 */
+    /** 完整思考文本 */
     thinking?: string;
-    /** F4 扩展：思考分段 */
+    /** 思考分段 */
     segments?: unknown[];
   };
   /** 流式 chunk 推送 */
@@ -47,7 +47,7 @@ export interface MainAgentEvents {
     content: string;
     isThinking: boolean;
     /**
-     * ★ finishReason 字段(可选)
+     * finishReason 字段(可选)
      * 由 openai-client.ts 在 finish_reason 变化时附加,转发到 IPC chat:chunk 事件
      * 前端 useChat.ts 据此判断 stream 终止原因(set status=success/length_limited)
      */
@@ -60,7 +60,7 @@ export interface MainAgentEvents {
     name: string;
     arguments: string;
     /**
-     * ★ 标识该工具调用为主智能体对执行子智能体的委派
+     * 标识该工具调用为主智能体对执行子智能体的委派
      *   前端可据此把对应 toolCall 渲染为"代理卡片"而非"工具进度"
      *   默认 undefined 时视为普通主智能体工具调用（向后兼容）
      */
@@ -119,7 +119,7 @@ export interface MainAgentEvents {
     message: unknown;
   };
   /**
-   * ★ P6 用户消息创建事件（主进程内部事件总线 → ipc-handlers 转发给 renderer）
+   * 用户消息创建事件（主进程内部事件总线 → ipc-handlers 转发给 renderer）
    * - 由 main-agent.ts 在 insertMessage(user) 后 emit
    * - ipc-handlers.ts 监听后转发到 IPC_CHAT.USER_MESSAGE_CREATED
    * - 前端 useChat 收到后 replaceLatestLocalUserInList 替换本地乐观 user 消息
@@ -137,7 +137,7 @@ export interface MainAgentEvents {
     };
   };
   /**
-   * ★ S3 批次完成事件（M4，）
+   * 批次完成事件：批内全部工具调用结束（含失败/中止）后于批次收口点发出
    * - 由 main-agent.ts 批次收口块在全中止判定之前 emit（含全中止批次）
    * - 前端 useChat 按 toolCallIds 收口 running 快照（isError → failed / 否则 completed）
    */
@@ -148,7 +148,7 @@ export interface MainAgentEvents {
 }
 
 /**
- * ★ ExecutorAgent 事件（走 IPC 白名单推送）
+ * ExecutorAgent 事件（走 IPC 白名单推送）
  * executor:thinking / executor:tool-progress 两数据通道停用；
  * 仅保留 executor:record-signal 渲染信号通道（信号与内容彻底解耦，
  * 前端收到信号后主动增量拉取 executor:get-task-record 获取任务记录明细）。

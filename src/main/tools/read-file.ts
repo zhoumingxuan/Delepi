@@ -408,7 +408,7 @@ export async function readFileTool(
     }
   }
 
-  // encoding 可选：不限定枚举（用户定稿：仅默认 utf-8）；utf-16le/utf-16be 显式生效，其余任意值一律按默认 utf-8 读取，不报错
+// encoding 可选：不限定枚举（默认 utf-8）；utf-16le/utf-16be 显式生效，其余任意值一律按默认 utf-8 读取，不报错
   let encoding: TextEncoding = 'utf-8';
 
   if (
@@ -455,7 +455,7 @@ export async function readFileTool(
     });
   }
 
-  // 第一行组回即超 16384：不输出任何内容，直接报错（用户定稿文案逐字；"请改用其他工具"为原文，未擅改）
+// 第一行组回即超 16384：不输出任何内容，直接报错（"请改用其他工具"为既定文案）
   if (range.firstLineTooLong) {
     return buildToolResult({
       success: false,

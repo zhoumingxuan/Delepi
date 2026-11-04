@@ -53,32 +53,32 @@ export interface ElectronAPI {
   file: {
     open: (target: string) => Promise<void>;
     /**
-     * P5 文件上传独立 IPC 通道
+     * 文件上传独立 IPC 通道
      * @param params FileUploadParams: { conversationId, name, size, contentType, data }
      * @returns FileUploadResult: { file: ChatUploadedFile }
      */
     upload: (params: import('./ipc').FileUploadParams) => Promise<import('./ipc').FileUploadResult>;
     /**
-     * P5 文件上传独立 IPC 通道
+     * 文件上传独立 IPC 通道
      * @param params FileListParams: { conversationId }
      * @returns FileListResult: { files: ChatUploadedFile[] }
      */
     list: (params: import('./ipc').FileListParams) => Promise<import('./ipc').FileListResult>;
     /**
-     * P5 文件上传独立 IPC 通道
+     * 文件上传独立 IPC 通道
      * @param params FileDeleteParams: { conversationId, storageKey }
      * @returns FileDeleteResult: { success: boolean }
      */
     delete: (params: import('./ipc').FileDeleteParams) => Promise<import('./ipc').FileDeleteResult>;
     /**
-     * P7 文件读取 IPC 通道
+     * 文件读取 IPC 通道
      * 用于切换会话时从主进程读取已上传文件二进制,前端用 URL.createObjectURL 重建预览
      * @param params FileReadParams: { conversationId, storageKey }
      * @returns FileReadResult: { data: ArrayBuffer, name: string, size: number }
      */
     read: (params: import('./ipc').FileReadParams) => Promise<import('./ipc').FileReadResult>;
     /**
-     * P9 孤儿清理(手动触发)
+     * 孤儿清理(手动触发)
      * 扫描 bin/conversations/ 目录,删除 SQLite 中无引用的会话目录
      * @param params FileCleanupOrphansParams: {}
      * @returns FileCleanupOrphansResult: { removedConversationIds, scannedCount, removedCount }
@@ -116,7 +116,7 @@ export interface ElectronAPI {
   /**
    * 渲染端日志转发：渲染→主 invoke，主进程 writeMainLog 写入
    * userData/logs/main.log 持久日志。渲染端上传失败等异常经此通道落 ERROR 记录，
-   * 不再止于打包版不可见的 console.error。旧版 preload 未暴露时调用方以 ?. 防御。
+   * 写入打包版可见的持久日志；通道未暴露时调用方以 ?. 防御。
    */
   log: {
     write: (params: {

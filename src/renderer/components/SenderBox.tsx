@@ -188,7 +188,7 @@ export const SenderBox = memo(function SenderBox({
 
   // ── Submit ─────────────────────────────────────────────────────
   const handleSubmit = useCallback(() => {
-    // ★ 守卫收敛（仅两条规则）：
+    // 守卫（仅两条规则）：
     //   规则 1：运行中/发送中禁发（showCancel = 活跃会话 sending ∪ running，含主进程权威 isRunning）
     //   规则 2：空消息禁发（无文本且无附件）
     if (showCancel) {
@@ -216,7 +216,7 @@ export const SenderBox = memo(function SenderBox({
           handleSubmit();
           // ：返回 false 抑制 @ant-design/x Sender 内部 onInternalKeyDown 的
           //   triggerSend 二次提交（TextArea.js:97 “eventRes === false 即跳过”）。
-          //   M5 解冻 submitDisabled 后内部提交路径恢复可用，必须防止双发。
+          //   解冻 submitDisabled 后内部提交路径恢复可用，必须防止双发。
           return false;
         }
         // ：锁定时反馈（原为静默吞回车）；空内容静默（与原行为一致）
@@ -258,7 +258,7 @@ export const SenderBox = memo(function SenderBox({
                   item.isImage && item.previewUrl ? (
                     <div
                       key={item.localKey}
-                      // R3：error 态 title 携带 uploadError，失败原因对用户可见
+                      // error 态 title 携带 uploadError，失败原因对用户可见
                       title={item.uploadStatus === 'error' ? item.uploadError || '上传失败' : undefined}
                       style={{
                         position: 'relative',
@@ -271,7 +271,7 @@ export const SenderBox = memo(function SenderBox({
                           width: 72,
                           height: 72,
                           overflow: 'hidden',
-                          // R3：error 态红色描边提示上传失败
+                          // error 态红色描边提示上传失败
                           border: `1px solid ${item.uploadStatus === 'error' ? token.colorError : token.colorBorderSecondary}`,
                           borderRadius: token.borderRadiusLG,
                           background: token.colorFillAlter,
@@ -290,7 +290,7 @@ export const SenderBox = memo(function SenderBox({
                         />
                       </div>
                       {item.uploadStatus === 'saving' && (
-                        // R3：saving 态 Spin 遮罩，落盘窗口状态对用户可见
+                        // saving 态 Spin 遮罩，落盘窗口状态对用户可见
                         <div
                           style={{
                             position: 'absolute',
@@ -329,13 +329,13 @@ export const SenderBox = memo(function SenderBox({
                       key={item.localKey}
                       align="center"
                       gap={8}
-                      // R3：error 态 title 携带 uploadError，失败原因对用户可见
+                      // error 态 title 携带 uploadError，失败原因对用户可见
                       title={item.uploadStatus === 'error' ? item.uploadError || '上传失败' : undefined}
                       style={{
                         maxWidth: 180,
                         minWidth: 0,
                         padding: '6px 10px',
-                        // R3：error 态红色描边提示上传失败
+                        // error 态红色描边提示上传失败
                         border: `1px solid ${item.uploadStatus === 'error' ? token.colorError : token.colorBorderSecondary}`,
                         borderRadius: token.borderRadiusLG,
                         background: token.colorBgContainer,
@@ -386,17 +386,17 @@ export const SenderBox = memo(function SenderBox({
           suffix={(defaultActions) => (
             <>
               {/*
-                ★ M5（T2 库级缺陷修复，一个对话一个 is_running 标志位配套）：
-                @ant-design/x v2.9.0 Sender.js:179 的 submitDisabled 以
-                useState(!innerValue) 初始化，唯一更新入口是 ActionButton.js:20-24
-                action='onSend' 的 useEffect；原先自定义 ReactElement suffix 经
-                Sender.js:158-160 整体替换含 SendButton 的默认 actionNode，导致
-                submitDisabled 永久冻结 true、内部 onSubmit 永不触发（回车仅剩
-                TextArea.js:88-89 转发的应用级 onKeyDown 单一路径）。
-                修复：suffix 改函数形式接收默认 actionNode，将其隐藏渲染于
-                display:none 的 span（无布局副作用）——SendButton 重新挂载，
-                submitDisabled 随 onSendDisabled=!innerValue 正常同步解冻；
-                自定义按钮仍按目标会话级 showCancel/canSend 渲染与判定。
+                /* @ant-design/x v2.9.0 Sender submitDisabled 约束：
+                   Sender.js:179 的 submitDisabled 以
+                   useState(!innerValue) 初始化，唯一更新入口是 ActionButton.js:20-24
+                   action='onSend' 的 useEffect；自定义 ReactElement suffix 会经
+                   Sender.js:158-160 整体替换含 SendButton 的默认 actionNode，导致
+                   submitDisabled 冻结 true、内部 onSubmit 永不触发（回车仅剩
+                   TextArea.js:88-89 转发的应用级 onKeyDown 单一路径）。
+                处理：suffix 采用函数形式接收默认 actionNode，将其隐藏渲染于
+                   display:none 的 span（无布局副作用）——SendButton 保持挂载，
+                   submitDisabled 随 onSendDisabled=!innerValue 正常同步；
+                自定义按钮按目标会话级 showCancel/canSend 渲染与判定。
               */}
               <span style={{ display: 'none' }}>{defaultActions}</span>
               <Button

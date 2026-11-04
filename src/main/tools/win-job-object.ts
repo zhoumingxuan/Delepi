@@ -1,10 +1,10 @@
 /**
- * Windows Job Object 根治模块（单一根治方案 B'）。
+ * Windows Job Object 进程集终止模块。
  *
  * 职责：非挂起 run_shell / run_with_python 在 spawn 后立即建立 Job Object 创建期内核所有权
  * （JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE），超时/abort 触发点经 TerminateJobObject 内核级终止
  * 整个进程集——后代继承管道的写端持有者全部消亡，child 'close' 必然立即返回，
- * 从根因上消除"孤儿持管 → close 悬挂 → executor await 悬挂 → 前端永久 running"。
+ * 杜绝"孤儿持管 → close 悬挂 → executor await 悬挂 → 前端永久 running"。
  *
  * 设计边界：
  * - win32 门控：非 win32 平台 createJobForChild 直接返回 null（调用方维持现状行为）；
@@ -15,7 +15,7 @@
  *   解析失效；运行时 require 与 better-sqlite3 同轨（node_modules 运行时解析，打包后经
  *   asar.unpacked 生效），koffi 加载器自身支持 Electron resourcesPath 布局回退；
  * - Job Object 属创建期内核所有权（assign 先于后代派生、Terminate 作用于内核进程集），
- *   不属事后枚举/补偿，不在 process-kill.ts 禁令范围（第三轮诊断核实）；
+ *   不属事后枚举/补偿，不在 process-kill.ts 禁令范围；
  * - WinJobHandle 仅内存持有、永不序列化（对齐 task-job-list.ts child 句柄同款边界）；
  * - 挂起模式（runSuspendedSpawnCommand）物理不经过本模块：不创建 Job、不设 timer、不挂 abort。
  */

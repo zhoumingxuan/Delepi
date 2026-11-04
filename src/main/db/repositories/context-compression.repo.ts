@@ -1,6 +1,5 @@
 /**
  * context_compressions 表操作
- * 从 repository.ts 拆分
  */
 
 import { v4 as uuidv4 } from 'uuid';

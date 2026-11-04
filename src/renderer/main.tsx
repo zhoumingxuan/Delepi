@@ -8,11 +8,11 @@ import App from './App';
 import './styles/globals.css';
 
 /**
- * ★ A-4 修复：全局渲染错误边界（class 组件 getDerivedStateFromError / componentDidCatch）
+ * 全局渲染错误边界（class 组件 getDerivedStateFromError / componentDidCatch）
  * - React render 期异常（如畸形消息 segments 数据触发的 TypeError）不再整树卸载白屏：
  *   边界捕获后渲染兜底 UI（错误现场可见）+『重新加载』按钮触发应用级恢复路径；
  * - componentDidCatch 记录错误现场（console.error），不静默吞错掩盖缺陷；
- * - 边界仅作最终兜底，不替代 A-1（渲染消费防御）/A-2（读库净化）/A-3（组装净化），
+ * - 边界仅作最终兜底，不替代渲染消费防御 / 读库净化 / 组装净化，
  *   二者并存：防御负责数据层清除畸形，边界负责兜住防御之外的任何渲染期异常。
  */
 interface AppErrorBoundaryProps {
@@ -122,7 +122,7 @@ if (!window.electronAPI) {
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    {/* ★ A-4 修复：全局错误边界包裹整棵应用树（App 内任何 render 期异常不再整树卸载白屏） */}
+    {/* 全局错误边界包裹整棵应用树（App 内任何 render 期异常不会整树卸载白屏） */}
     <AppErrorBoundary>
       <App />
     </AppErrorBoundary>

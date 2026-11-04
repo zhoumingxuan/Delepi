@@ -1,7 +1,7 @@
 /**
- * ExecutorTaskCard —— 运行中委派任务卡（ M7 / 视觉规格）
+ * ExecutorTaskCard —— 运行中委派任务卡
  *
- * 布局（替换现状运行中卡片的 ThinkingBlock×2 内容区）：
+ * 布局（运行中卡片内容区）：
  * - 标题行：任务名（无显式文字样式，继承 ThoughtChain item title 默认值——与完成态
  *   ChatMessageContent 任务名观感一致；仅保留单行省略号溢出保护）+ 既有 ExecutionElapsedTime 计时；
  * - 思考行：最新一行思考（13px/20px colorTextSecondary，单行省略号；抽为 React.memo
@@ -14,7 +14,7 @@
  *   colorPrimary+colorPrimaryBg；aria-label="查看任务执行记录"。
  *
  * 容器沿用既有 ThoughtChain 单节点外框（chat-tool-result-chain，三层 min-width:0 链防溢出）；
- * 运行中不显示思考折叠块/工具调用块/任何工具名参数结果（数据源=executor 任务级思考，§1.4）。
+ * 运行中不显示思考折叠块/工具调用块/任何工具名参数结果（数据源=executor 任务级思考）。
  */
 
 import { Flex } from 'antd';

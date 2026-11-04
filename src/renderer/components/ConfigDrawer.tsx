@@ -133,8 +133,8 @@ interface SkillsListResult {
 }
 
 /**
- * 技能管理 API 局部类型：同 ProfilesConfigApi 先例，electron.d.ts 不在改动白名单内，
- * preload 已暴露 skills 三方法，以局部类型断言安全对接（运行时经 contextBridge 正常可达）。
+ * 技能管理 API 局部类型：同 ProfilesConfigApi 方式——preload 已暴露 skills 三方法，
+ * 以局部类型断言安全对接（运行时经 contextBridge 正常可达）。
  */
 type SkillsConfigApi = {
   list: () => Promise<SkillsListResult>;
@@ -303,7 +303,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   configLoading,
   conversationId,
   onSave,
-  // onSaveAll 保留接口兼容性但不再使用（按钮已移除）
+// onSaveAll 保留接口兼容性，当前无调用方
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onSaveAll: _onSaveAll,
   // onReload：方案切换/删除后调用，刷新 useSettings.config 使全局消费点与库一致
@@ -378,13 +378,13 @@ export const ConfigDrawer = memo(function ConfigDrawer({
   const profilesApiMissingRef = useRef(false);
 
   /**
-   * （R1 显示半边，与 F-1 同批交付）：会话绑定方案有效（conversationProfile
+   * 会话绑定方案有效（conversationProfile
    * 与当前 conversationId 一致且 boundProfileValid）时，15 个方案键以绑定方案存储值覆盖显示
    * （过滤 undefined 跳过缺键，与主进程 applyProfileToSettings 的键覆盖语义一致）；非方案键
    * （visionEnabled 等全局键）仍取全局 config。无有效绑定（列表态/未绑定/绑定悬空/视图未就绪）
-   * 时 displayConfig === config，行为与旧版一致。数据源复用 loadProfiles 已返回的
-   * profiles + conversationProfile，不新增 IPC。使「表单所见 = 会话绑定方案内容」（INV-1），
-   * 并为 handleSave/onChange 的同值跳过（F4）提供比较基准。
+    * 时 displayConfig === config。数据源复用 loadProfiles 已返回的
+    * profiles + conversationProfile，不新增 IPC。使「表单所见 = 会话绑定方案内容」，
+    * 并为 handleSave/onChange 的同值跳过提供比较基准。
    */
   const displayConfig = useMemo<AppSettings>(() => {
     const boundValid = Boolean(
@@ -431,14 +431,13 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     async (key: keyof AppSettings) => {
       try {
         const value = form.getFieldValue(key);
-        // 同值跳过 + 基准切换：比较基准改为合成显示值（会话绑定方案有效时
-        // = 绑定方案存储值；无绑定/列表态 = 全局 config 值，行为与旧版一致），消除失焦/焦点
-        // 迁移类噪声写库（如 ApiKeyPassword 点眼睛经 rAF 聚焦再失焦产生的同值 onBlur）。
+        // 同值跳过：比较基准为合成显示值（会话绑定方案有效时
+        // = 绑定方案存储值；无绑定/列表态 = 全局 config 值），消除失焦/焦点
+        // 交互类噪声写库（如 ApiKeyPassword 点眼睛经 rAF 聚焦再失焦产生的同值 onBlur）。
         if (value === displayConfig[key]) return;
         // 写入目标随数据携带：第 4 参 = 保存发起时的上下文方案身份
         // （displayProfileId：会话绑定有效→绑定 id；否则→全局激活 id），主进程按载荷定位
-        // 写入、不读到达时刻可变状态——迟到的保存写回发起时上下文方案，无需 F-5 切换窗口
-        // 拦截（已移除）
+        // 写入、不读到达时刻可变状态——迟到的保存写回发起时上下文方案
         await onSave(key, value, conversationId, displayProfileId);
       } catch (err) {
         antdMessage.error('保存失败');
@@ -477,11 +476,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
   }, [open, loadProfiles]);
 
-  // 【链路B】打开配置抽屉时，以最新显示配置全量刷新表单。
+// 打开配置抽屉时，以最新显示配置全量刷新表单。
   // antd Form initialValues 仅在首次挂载时生效一次，且 Drawer 未配置 destroyOnClose（Form store 跨打开保留），
-  // 若不显式 setFieldsValue，打开配置页后表单将显示过期/残留值（"打开配置页加载方案后 ApiKey 显示 BaseUrl"的根因载体）。
+// 若不显式 setFieldsValue，打开配置页后表单将显示过期/残留值。
   // 填充源由全局 config 改为合成显示值 displayConfig：会话绑定方案有效时 15 个方案键
-  // = 绑定方案存储值（INV-1），非方案键仍取全局；无绑定时与全局 config 等价（旧行为不变）。
+// = 绑定方案存储值，非方案键仍取全局；无绑定时与全局 config 等价。
   const latestConfigRef = useRef(displayConfig);
   latestConfigRef.current = displayConfig;
   useEffect(() => {
@@ -491,11 +490,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, configLoading, form]);
 
-  // 【链路B】config 引用变化时，同步全部未 touched 字段（用户正在编辑的字段不打断）。
+  // config 引用变化时，同步全部未 touched 字段（用户正在编辑的字段不打断）。
   // 覆盖"打开配置页时 config 异步加载完成"与"加载/切换方案后 reload 刷新 config"两类时序，
   // 保证表单字段始终与当前生效配置一致，杜绝 ApiKey 等字段残留 BaseUrl 值。
-  // 同步源改为合成显示值 displayConfig：绑定方案视图就绪/方案列表刷新时（loadProfiles
-  // 返回后）同样触发同步，使表单 15 键始终 = 绑定方案合成值（INV-1）；无绑定时等价旧行为。
+  // 同步源为合成显示值 displayConfig：绑定方案视图就绪/方案列表刷新时（loadProfiles
+  // 返回后）同样触发同步，使表单 15 键始终 = 绑定方案合成值；无绑定时等价全局值。
   useEffect(() => {
     if (configLoading) return;
     const patch: Record<string, unknown> = {};
@@ -523,7 +522,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
         setActiveProfileId(result?.activeProfileId ?? id);
         if (conversationId && result?.resolvedSettings) {
           // 会话分支：主进程零全局写入（全局 config 未变），用返回的新方案合成配置
-          // （全局设置+新方案 15 键覆盖，与 F-2 displayConfig 同口径）回填表单；不 await
+// （全局设置+方案 15 键覆盖，与 displayConfig 同口径）回填表单；不 await
           // onReload()——全局 config 本就未变（onReload 仅由列表态分支保留）
           const clean = Object.fromEntries(
             Object.entries(result.resolvedSettings).filter(([, v]) => v !== undefined),
@@ -581,9 +580,9 @@ export const ConfigDrawer = memo(function ConfigDrawer({
    * 不自行拼装方案对象写库）；随后取新方案 id（saveProfile 返回按唯一名匹配，缺失时回退
    * listProfiles 匹配），经等价 switchProfile 链路切换（有会话上下文时带
    * conversationId → 新方案绑定当前会话（displayProfileId 随之切到新方案，后续编辑保存的
-   * profileId=新方案，表单/写入目标一致）；列表态 → 应用默认方案（写全局 14 键 + activeProfileId，
-   * 旧行为）、回填表单为空白值，最后 onReload + loadProfiles 刷新。全程不写旧方案任何内容，
-   * 此后字段修改经链路C 写入新方案。
+   * conversationId → 新方案绑定当前会话（displayProfileId 随之切到新方案，后续编辑保存的
+   * profileId=新方案，表单/写入目标一致）；列表态 → 应用默认方案（写全局 14 键 + activeProfileId）、回填表单为空白值，最后 onReload + loadProfiles 刷新。全程不写旧方案任何内容，
+   * 此后字段修改写入新方案。
    * 注：不直接复用 handleSwitchProfile，因其闭包内的 profiles 为创建前快照、找不到新方案，
    * 表单回填分支会被跳过；此处在拿到新方案对象后执行等价链路，行为与其完全一致。
    */
@@ -803,7 +802,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
     }
   }, [profilesApi, dialogApi, antdMessage, activeProfileId]);
 
-  // ---- 技能管理（方向2：内部自治；与聊天流零连接点，故 useChat.ts 零改动） ----
+  // ---- 技能管理（内部自治；与聊天流零连接点，故 useChat.ts 零改动） ----
   const skillsApi = useMemo(
     () => (window as unknown as { electronAPI?: { skills?: SkillsConfigApi } }).electronAPI?.skills,
     [],
@@ -1180,7 +1179,7 @@ export const ConfigDrawer = memo(function ConfigDrawer({
                         }))}
                       />
                     </Flex>
-                    {/* 阶段7 目标1：会话级方案绑定可视化（有对话=该对话的绑定；无对话=全局默认） */}
+                    {/* 会话级方案绑定可视化（有对话=该对话的绑定；无对话=全局默认） */}
                     {conversationId ? (
                       <Typography.Paragraph
                         type="secondary"

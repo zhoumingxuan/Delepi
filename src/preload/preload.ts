@@ -31,10 +31,10 @@ const electronAPI = {
      * 主进程内存维护，重启后返回 null → 场景C退化
      */
     getRestoreConversationId: () => ipcRenderer.invoke(GET_LAST_ACTIVE_CONVERSATION),
-    /** 方向3：重命名对话（主进程先安全关闭在途标题生成再写入；返回带 tags 的会话摘要） */
+/** 重命名对话（主进程先安全关闭在途标题生成再写入；返回带 tags 的会话摘要） */
     rename: (params: { id: string; title: string }) =>
       ipcRenderer.invoke(IPC_CONV.RENAME, params),
-    /** 方向3：移除对话标签；返回最新 tags */
+/** 移除对话标签；返回最新 tags */
     removeTag: (params: { id: string; tag: string }) =>
       ipcRenderer.invoke(IPC_CONV.TAG_REMOVE, params),
     /** 清理对话：条件预览统计（纯只读，不删数据） */
@@ -92,35 +92,35 @@ const electronAPI = {
     open: (target: string) => ipcRenderer.invoke(IPC_FILE.OPEN, target),
     /**
      * 上传单个文件到对话 uploads 目录（主进程落盘）
-     * P5 文件上传独立 IPC 通道，
-     * H1 防御：data 为 Base64 字符串（主进程兼容 ArrayBuffer/Uint8Array/number[] 旧格式）
+     * 文件上传独立 IPC 通道
+     * 防御：data 为 Base64 字符串（主进程兼容 ArrayBuffer/Uint8Array/number[] 旧格式）
      * @param params FileUploadParams: { conversationId, name, size, contentType, data }
      * @returns FileUploadResult: { file: ChatUploadedFile }
      */
     upload: (params: unknown) => ipcRenderer.invoke(IPC_FILE.UPLOAD, params),
     /**
      * 列出对话 uploads/ 目录下全部已上传文件
-     * P5 文件上传独立 IPC 通道，）
+     * 文件上传独立 IPC 通道
      * @param params FileListParams: { conversationId }
      * @returns FileListResult: { files: ChatUploadedFile[] }
      */
     list: (params: unknown) => ipcRenderer.invoke(IPC_FILE.LIST, params),
     /**
      * 删除已上传的单个文件（磁盘 + manifest 一并清理）
-     * P5 文件上传独立 IPC 通道，
+     * 文件上传独立 IPC 通道
      * @param params FileDeleteParams: { conversationId, storageKey }
      * @returns FileDeleteResult: { success: boolean }
      */
     delete: (params: unknown) => ipcRenderer.invoke(IPC_FILE.DELETE, params),
     /**
-     * 读取已上传文件的二进制内容(P7 切换会话恢复待发送文件)
+     * 读取已上传文件的二进制内容(切换会话恢复待发送文件)
      * 用于在切回原会话时从主进程读取文件内容,前端用 URL.createObjectURL 重建预览
      * @param params FileReadParams: { conversationId, storageKey }
      * @returns FileReadResult: { data: ArrayBuffer, name: string, size: number }
      */
     read: (params: unknown) => ipcRenderer.invoke(IPC_FILE.READ, params),
     /**
-     * P9 孤儿清理(手动触发)
+     * 孤儿清理(手动触发)
      * 扫描 bin/conversations/ 目录,删除 SQLite 中无引用的会话目录
      * @param params FileCleanupOrphansParams: {}
      * @returns FileCleanupOrphansResult: { removedConversationIds, scannedCount, removedCount }

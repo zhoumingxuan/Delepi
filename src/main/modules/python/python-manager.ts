@@ -72,7 +72,7 @@ export class PythonManager {
   private errorMessage = '';
   private pythonPath = '';
   private initPromise: Promise<void> | null = null;
-  /** 下载取消控制器（M7：支持取消下载） */
+/** 下载取消控制器（支持取消下载） */
   private _downloadAbortController: AbortController | null = null;
 
   static getInstance(): PythonManager {
@@ -187,7 +187,7 @@ export class PythonManager {
     this.errorMessage = '';
     this.progress = 0;
     this.initPromise = null;
-    // M7: 创建新的 AbortController 以支持取消下载
+// 创建新的 AbortController 以支持取消下载
     this._downloadAbortController = new AbortController();
     try {
       await this._downloadAndExtract();
@@ -198,9 +198,9 @@ export class PythonManager {
 
 
   /**
-   * v2.0: 两阶段取消安装
-   * - 阶段一（Python运行时+pip）：DOWNLOADING/EXTRACTING/INSTALLING_PIP → CANCELLED_PHASE1（Python不可用）
-   * - 阶段二（推荐依赖包）：INSTALLING_DEPS → CANCELLED_PHASE2（Python可用，依赖不完整）
+    * 两阶段取消安装
+    * - 第一段（Python运行时+pip）：DOWNLOADING/EXTRACTING/INSTALLING_PIP → CANCELLED_PHASE1（Python不可用）
+    * - 第二段（推荐依赖包）：INSTALLING_DEPS → CANCELLED_PHASE2（Python可用，依赖不完整）
    * 使用 AbortController 实现取消逻辑
    */
   cancel(): void {
@@ -269,7 +269,7 @@ export class PythonManager {
   private async _doInit(): Promise<void> {
     this.setState(PythonState.DETECTING);
 
-    // ★ 新增：优先检查预置 Python 环境
+// 优先检查预置 Python 环境
     const presetPath = this.getPythonExePath();
     if (existsSync(presetPath)) {
       // 快速验证：检查 python.exe 可执行 + _pth 已配置
@@ -283,7 +283,7 @@ export class PythonManager {
       console.warn('[PythonManager] 预置 Python 环境验证失败，尝试降级下载');
     }
 
-    // ★ 原有逻辑：Windows 下载 embeddable 包（保留作为降级方案）
+// Windows 下载 embeddable 包（降级方案）
     if (process.platform === 'win32') {
       await this._downloadAndExtract();
       return;
@@ -422,7 +422,7 @@ export class PythonManager {
         // 清理失败的下载文件
         try { unlinkSync(zipPath); } catch { /* ignore */ }
 
-        // M7: 用户主动取消下载时，不重试，直接标记失败
+// 用户主动取消下载时，不重试，直接标记失败
         if (err instanceof Error && err.message === '下载已取消') {
           this.errorMessage = '下载已取消';
           this.setState(PythonState.FAILED);
@@ -532,7 +532,7 @@ export class PythonManager {
             .catch(reject);
         });
 
-        // M7: 监听 AbortController 取消信号
+// 监听 AbortController 取消信号
         if (this._downloadAbortController) {
           const onAbort = () => {
             req.destroy();
@@ -752,7 +752,7 @@ export class PythonManager {
   /**
    * 安装 pip 和依赖包（解压完成后调用）
    * 1. 调用 _autoInstallPip() 安装 pip
-   * 2. pip 成功后，若 _depsInstallCallback 已注册，调用回调安装 14 个依赖包
+    * 2. pip 成功后，若已注册依赖安装回调，调用回调安装 14 个依赖包
    * 3. 回调完成后（无论成功失败），设置状态为 READY
    * 4. 若 pip 失败，状态已在 _autoInstallPip 中设为 FAILED
    */

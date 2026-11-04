@@ -28,7 +28,7 @@ import type { ChatMessage } from '../hooks/useChat';
 import type { ExecutorTaskChatMessage } from '../lib/executor-record-messages';
 
 // ============================================================
-// executor 任务记录虚拟消息时间线合并（数据源切换为 useExecutorTaskRecords）
+// executor 任务记录虚拟消息时间线合并（数据源为 useExecutorTaskRecords）
 // 合并算法（existingToolCallIds 去重 + time→seq→id 三级稳定排序）原样保留；
 // 虚拟消息构造职责移至 lib/executor-record-messages（buildExecutorTaskMessages）
 // ============================================================
@@ -46,8 +46,8 @@ function parseTimelineTime(value: string | undefined | null): number {
 }
 
 /**
- * 把虚拟消息（executor 任务记录）合并到 messages 时间线（泛化）
- * 算法原样保留（）：
+ * 把虚拟消息（executor 任务记录）合并到 messages 时间线
+ * 算法：
  * 1. existingToolCallIds 去重：真实 tool 消息已存在的 callId 虚拟消息让位
  *    （真实 tool.message.created 到达后，运行中任务卡自然切换为既有 Result 渲染）
  * 2. 虚拟消息按 createdAt 排序（time → seq → id 三级稳定排序）
@@ -120,7 +120,7 @@ export function mergeVirtualMessagesIntoTimeline(
 //   - TOOL_CALL_GROUP_ENABLED=false 时单元化退化为全部单条（单点回滚开关）。
 // ============================================================
 
-/** ★ 小工具折叠聚合单点回滚开关：置 false 时退化为全部单条、观感回到改动前 */
+/** 小工具折叠聚合开关：置 false 时退化为全部单条展示 */
 export const TOOL_CALL_GROUP_ENABLED = true;
 
 /** 折叠阈值：连续 run 长度 ≥1 即折叠为分组容器（单个工具调用同样折叠为组头） */
@@ -197,7 +197,7 @@ interface ChatAreaProps {
     activeDelegateCallId: string | null;
   };
   /**
-   * ★ 当前活跃会话 ID
+    * 当前活跃会话 ID
    * 用于过滤虚拟消息（避免跨会话污染）
    */
   conversationId?: string | null;
@@ -207,13 +207,9 @@ interface ChatAreaProps {
   showScrollToBottom?: boolean;
   /** 向上回调：ChatArea 内部判定后通过此回调通知 useChat */
   onShowScrollToBottomChange?: (show: boolean) => void;
-  /** ★ 滚动收敛：打开/切换对话触发的贴底收敛信号（递增；初值 0 不触发） */
+/** 滚动收敛：打开/切换对话触发的贴底收敛信号（递增；初值 0 不触发） */
   scrollSettleTick?: number;
   isStreaming?: boolean;
-  /**
-   * ★ 
-   * 
-   */
   messageLoading?: boolean;
   emptyState?: ReactNode;
   children?: ReactNode;
@@ -237,9 +233,6 @@ export const ChatArea = memo(function ChatArea({
   onShowScrollToBottomChange,
   scrollSettleTick = 0,
   isStreaming = false,
-  /**
-   * ★ 
-   */
   messageLoading = false,
   emptyState,
   toolSummaries,
@@ -249,11 +242,11 @@ export const ChatArea = memo(function ChatArea({
   const internalStickRef = useRef(true);
   const scrollRef = messageListRef ?? internalScrollRef;
   const stickRef = stickToBottomRef ?? internalStickRef;
-  /** ★ item 引用缓存（单元粒度）：单元内消息引用未变 ⇒ item 全部派生字段未变 ⇒ 复用整 item（extraInfo 随之稳定） */
+/** item 引用缓存（单元粒度）：单元内消息引用未变 ⇒ item 全部派生字段未变 ⇒ 复用整 item（extraInfo 随之稳定） */
   const bubbleItemCacheRef = useRef(new Map<string, BubbleItemType>());
   /**
-   * ★ 滚动收敛事务（scroll settle）状态与策略：
-   * - 贴底滚动从「单次采样目标 + 单次滚动」升级为「持续校正的收敛事务」；
+    * 滚动收敛事务（scroll settle）状态与策略：
+    * - 贴底滚动为「持续校正的收敛事务」；
    *   scrollSettleRafRef 为事务循环帧句柄；scrollSettleIntentRef 为贴底意图（与 stickRef
    *   的「当前是否贴底」布局读数语义分离）；scrollSettleStateRef 为帧间采样（停滞/稳定判定）。
    * - 事务存续只受：稳定收口 / 用户手势取消 / 保险上限；不经由贴底 effect 的清理链路。
@@ -353,7 +346,7 @@ export const ChatArea = memo(function ChatArea({
   );
 
   /**
-   * ★ 合并 toolSnapshots 到 messages 时间线
+    * 合并虚拟消息（executor 任务记录）到 messages 时间线
    * - 合并后用于 bubbleItems 渲染和 showEmpty 判定
    * - useMemo 缓存避免每次重渲染都重新合并
    */
@@ -366,18 +359,18 @@ export const ChatArea = memo(function ChatArea({
     [messages, executorTaskMessages],
   );
 
-  /** 核心判定函数（）
+/** 核心判定函数：
    *  - 阈值常量：SCROLLABLE_THRESHOLD_PX = 8、AT_BOTTOM_THRESHOLD_PX = 96
    *  - 仅在判定结果与外部状态不一致时回调，避免无效 setState
    */
   const SCROLLABLE_THRESHOLD_PX = 8;
   const AT_BOTTOM_THRESHOLD_PX = 96;
 
-  // ★ reflow 节流：布局属性读取（scrollHeight/clientHeight/scrollTop）经 rAF 对齐，
+// reflow 节流：布局属性读取（scrollHeight/clientHeight/scrollTop）经 rAF 对齐，
   //   同一帧内多次 scroll 事件只读一次布局（滚动期强制同步布局次数合并至帧级）。
   //   判定逻辑逐字保持（96px/8px 阈值原样），仅执行时机帧对齐；按钮显隐最多晚一帧，无感。
   const scrollStateRafRef = useRef<number | null>(null);
-  /** ★ 贴底滚动 rAF 合帧：同帧内多次 mergedMessages 变化只执行一次 scrollTo（强制布局合并至帧级） */
+/** 贴底滚动 rAF 合帧：同帧内多次 mergedMessages 变化只执行一次 scrollTo（强制布局合并至帧级） */
   const scrollFollowRafRef = useRef<number | null>(null);
   const updateScrollBottomState = useCallback(() => {
     if (scrollStateRafRef.current !== null) return; // 同帧多次 scroll 事件只读一次布局
@@ -396,7 +389,7 @@ export const ChatArea = memo(function ChatArea({
     });
   }, [scrollRef, showScrollToBottom, onShowScrollToBottomChange]);
 
-  // ★ FAB 3 秒自动隐藏：showScrollToBottom=true → 按钮立即可见并启动 3000ms 渐隐计时，
+// FAB 3 秒自动隐藏：showScrollToBottom=true → 按钮立即可见并启动 3000ms 渐隐计时，
   //   到期置不可见；=false（贴底/切换会话/发送消息/流式置 false）→ 清计时器并置不可见。
   //   hover / :focus-visible 渐显由 globals.css 既有规则原样保留（透明态仍可命中 hover）。
   const [fabVisible, setFabVisible] = useState(false);
@@ -449,7 +442,7 @@ export const ChatArea = memo(function ChatArea({
           const el = scrollRef.current;
           // rAF 回调时重读 stickRef（最新）：调度与回调之间用户上滚 → 跳过，保住「上滚停跟」语义
           if (el && stickRef.current) {
-            // ★ 滚动收敛：经收敛事务入口滚动（首滚即时；增长由事务循环重瞄持续校正）
+// 滚动收敛：经收敛事务入口滚动（首滚即时；增长由事务循环重瞄持续校正）
             scrollToBottom(isStreaming ? 'auto' : 'smooth');
           }
         });
@@ -464,7 +457,7 @@ export const ChatArea = memo(function ChatArea({
       }
     };
   }, [mergedMessages, isStreaming, scrollRef, stickRef, scrollToBottom, updateScrollBottomState]);
-  // ★ 滚动收敛：打开/切换对话信号（scrollSettleTick 递增）→ 启动贴底收敛事务。
+// 滚动收敛：打开/切换对话信号（scrollSettleTick 递增）→ 启动贴底收敛事务。
   //   事务独立于贴底 effect 的「单次调度帧 + 清理取消 + stick 复核」链路：静默重载二次提交
   //   造成的同帧取消与布局判定先行清标志均不影响本事务（时序断点修复）。
   const lastScrollSettleTickRef = useRef(0);
@@ -475,7 +468,7 @@ export const ChatArea = memo(function ChatArea({
     lastScrollSettleTickRef.current = scrollSettleTick;
     scrollToBottom(isStreaming ? 'auto' : 'smooth');
   }, [scrollSettleTick, isStreaming, scrollToBottom]);
-  // ★ 滚动收敛：用户手势（滚轮/指针按下/触摸/键盘上翻）→ 立即取消收敛事务。
+// 滚动收敛：用户手势（滚轮/指针按下/触摸/键盘上翻）→ 立即取消收敛事务。
   //   程序不与被禁止的「用户滚动」竞争：用户接管后不再重瞄，直到下次显式贴底请求。
   useEffect(() => {
     const el = scrollRef.current;
@@ -532,7 +525,7 @@ export const ChatArea = memo(function ChatArea({
     [],
   );
 
-  // 三色头像 roleConfig（）
+// 三色头像 roleConfig
   // 
   // 每个 role 增加 contentRender 函数，从 bubbleItem.extraInfo.message 读取 message，
   // 并调用 ChatMessageContent 渲染。
@@ -681,7 +674,7 @@ export const ChatArea = memo(function ChatArea({
         ),
       },
     }),
-    // ★ roleConfig 依赖收敛：useMemo 体内仅引用 toolSummaries/conversationId/renderUserMessageFooter/executorPanel；
+// roleConfig 依赖：useMemo 体内仅引用 toolSummaries/conversationId/renderUserMessageFooter/executorPanel；
     //   虚拟消息仍经 props 参与 mergedMessages（投影链零改动），仅不再无谓重建 roleConfig
     [toolSummaries, conversationId, renderUserMessageFooter, executorPanel],
   );
@@ -745,8 +738,8 @@ export const ChatArea = memo(function ChatArea({
     return items;
   }, [mergedMessages]);
 
-  // ★ showEmpty 判定使用合并后消息列表
-  // 如果只有 toolSnapshots（无主消息）也视为非空（避免空状态闪烁）
+// showEmpty 判定使用合并后消息列表
+// 如果只有虚拟消息（无主消息）也视为非空（避免空状态闪烁）
   const showEmpty = mergedMessages.length === 0;
 
   return (
@@ -765,7 +758,7 @@ export const ChatArea = memo(function ChatArea({
         ref={scrollRef}
         onScroll={() => {
           updateScrollBottomState();
-          // ★ 滚动期间持续重置 3 秒隐藏计时：条件成立时每次滚动清除旧计时并开启新计时，
+// 滚动期间持续重置 3 秒隐藏计时：条件成立时每次滚动清除旧计时并开启新计时，
           //   停止滚动 3 秒后才渐隐；重新滚动时按钮回到可见态。
           if (showScrollToBottom) {
             if (fabHideTimerRef.current !== null) {
@@ -787,7 +780,7 @@ export const ChatArea = memo(function ChatArea({
           padding: '24px 32px 16px',
         }}
       >
-        {/* ★ P07: 稳定类名作为 content-visibility 作用域锚（globals.css .chat-message-list） */}
+      {/* 稳定类名作为 content-visibility 作用域锚（globals.css .chat-message-list） */}
         <div
           className="chat-message-list"
           style={{
@@ -800,7 +793,7 @@ export const ChatArea = memo(function ChatArea({
             flexDirection: 'column',
           }}
         >
-          {/* ★ 对齐 ai_fr：messageLoading 期间显示 Spin 占位，避免空白闪烁 */}
+      {/* messageLoading 期间显示 Spin 占位，避免空白闪烁 */}
           {messageLoading ? (
             <div
               style={{

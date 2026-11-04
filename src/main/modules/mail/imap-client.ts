@@ -1,19 +1,16 @@
 /**
- * imap-client — 纯 Node.js IMAP 收信客户端（替换原内嵌解释器脚本桥）
+ * imap-client — 纯 Node.js IMAP 收信客户端
  *
- * 能力范围（与被删除的旧桥逐项等价）：
+ * 能力范围：
  * - 建连：隐式 TLS（993，tls.connect + servername + rejectUnauthorized:true）
  *   或 STARTTLS（明文建连 → STARTTLS 命令 → 同 socket 升级 TLS）
  * - 登录：AUTH 走 LOGIN 命令（QQ 实测支持；失败返回 NO/BAD → 认证阶段错误，一次即回落）
  * - 会话准备：ID 命令（best effort，失败忽略）→ EXAMINE "INBOX"（只读打开，不置已读标志）
- * - 收信①：UID FETCH <sinceUid+1>:* BODY.PEEK[]（UID 增量；星号语义可能多带回一封旧邮件，
- *   调用方按 uid > sinceUid 过滤）
- * - 收信②：UID SEARCH SINCE <DD-Mon-YYYY> → 取最新至多 N 个 UID → UID FETCH (INTERNALDATE BODY.PEEK[])
+ * - 收信：UID SEARCH SINCE <DD-Mon-YYYY> → 取最新至多 N 个 UID → UID FETCH (INTERNALDATE BODY.PEEK[])
  * - 退出：LOGOUT（best effort）
  *
- * 协议解析（坑位的根治）：
- * - 自实现响应解析器，按「tag + token 树」解析，原生处理 IMAP literal（{n} + CRLF + n 字节），
- *   不再依赖旧桥「tuple + 紧随独立响应项」的解析语义；
+ * 协议解析：
+ * - 自实现响应解析器，按「tag + token 树」解析，原生处理 IMAP literal（{n} + CRLF + n 字节）；
  * - INTERNALDATE 在 head 内或在同一响应里独立出现都能取到（见 parseFetchResponses 的合并逻辑），
  *   服务端把 INTERNALDATE 作为紧随 tuple 的独立响应项返回时仍能取到该字符串。
  *
@@ -27,7 +24,6 @@
  * 设计约束：
  * - 只使用 node:net / node:tls / node:buffer 等内置模块，零第三方依赖；
  * - 不 import electron，端点与凭据全部由调用方注入，便于受控 harness 直连本地 mock 服务端；
- * - 提供 createImapSession(socket) 注入缝：单测可用 net.connect 的明文 socket 驱动完整命令序列。
  */
 
 import { connect as netConnect, type Socket } from 'node:net';
@@ -69,7 +65,7 @@ export interface ImapAuthParams {
   endpoint: MailEndpoint;
   mailbox: string;
   authCode: string;
-  /** 整体超时（毫秒），默认 45000（与旧桥 OP_TIMEOUT=25s 之上的整体兜底一致） */
+  /** 整体超时（毫秒），默认 45000 */
   timeoutMs?: number;
   /** 额外 TLS 参数（测试注入自签 CA 用；生产不传，走 rejectUnauthorized:true） */
   tlsOptions?: TlsConnectionOptions;
@@ -323,7 +319,7 @@ export function extractResponseCodeNumber(responses: ImapResponse[], code: strin
 /**
  * FETCH 响应 → 邮件列表。
  * 同一 UID 的多个 FETCH 响应（服务端把 INTERNALDATE 拆成独立响应项时会出现）按 UID 合并：
- * 取更长的 body 与首个非空 INTERNALDATE —— 坑位在此根治。
+ * 取更长的 body 与首个非空 INTERNALDATE（该情形在此统一合并处理）。
  */
 export function parseFetchResponses(responses: ImapResponse[]): RawImapMessage[] {
   const byUid = new Map<number, RawImapMessage>();
@@ -799,36 +795,13 @@ async function sessionCommand(
 
 /**
  * 凭据自检：建连 → LOGIN → ID(忽略失败) → EXAMINE INBOX（取 UIDVALIDITY/UIDNEXT）→ LOGOUT。
- * 与旧桥自检等价（旧桥还额外做一次 SMTP 登录，由调用方用 smtp-client 补齐）。
+ * （SMTP 登录自检由调用方用 smtp-client 补齐）。
  */
 export async function imapSelfTest(params: ImapAuthParams): Promise<ImapResult<{ uidvalidity: number; uidnext: number }>> {
   return withImapSession(params, async (context) => ({
     uidvalidity: context.uidvalidity,
     uidnext: context.uidnext,
   }));
-}
-
-/**
- * UID 增量收信：UID FETCH <sinceUid+1>:* BODY.PEEK[]（不含 INTERNALDATE，等价旧桥 imap_poll）。
- * 星号语义可能多带回一封旧邮件，调用方按 uid > sinceUid 过滤。
- */
-export async function imapPollSinceUid(
-  params: ImapAuthParams & { sinceUid: number },
-): Promise<ImapResult<ImapFetchResult>> {
-  return withImapSession(params, async (context) => {
-    const sinceUid = Number.isFinite(params.sinceUid) ? Math.max(0, Math.floor(params.sinceUid)) : 0;
-    const messages: RawImapMessage[] = [];
-    if (sinceUid + 1 <= context.uidnext || context.uidnext === 0) {
-      const fetched = await sessionCommand(
-        context,
-        `UID FETCH ${sinceUid + 1}:* (BODY.PEEK[])`,
-        'UID FETCH',
-        'recv',
-      );
-      messages.push(...parseFetchResponses(fetched.untagged));
-    }
-    return { uidvalidity: context.uidvalidity, uidnext: context.uidnext, messages };
-  });
 }
 
 /** IMAP SEARCH 日期格式：DD-Mon-YYYY（固定英文月份缩写，不受系统 locale 影响） */
@@ -842,7 +815,7 @@ export function formatImapSearchDate(date: Date): string {
 
 /**
  * 时间增量收信：UID SEARCH SINCE <DD-Mon-YYYY> → 取最新至多 maxUids 个候选 →
- * UID FETCH (INTERNALDATE BODY.PEEK[])（等价旧桥 imap_poll_since）。
+ * UID FETCH (INTERNALDATE BODY.PEEK[])。
  * SEARCH SINCE 只精确到「日」，秒级过滤由调用方用 internalDate/Date 头完成。
  */
 export async function imapPollSinceDate(
@@ -868,11 +841,4 @@ export async function imapPollSinceDate(
     }
     return { uidvalidity: context.uidvalidity, uidnext: context.uidnext, messages };
   });
-}
-
-/** 暴露会话类构造缝（单测用明文 socket 驱动完整命令序列） */
-export function createImapSessionForTest(socket: Socket): ImapResponseReader {
-  const reader = new ImapResponseReader();
-  reader.attach(socket);
-  return reader;
 }

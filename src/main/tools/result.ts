@@ -119,27 +119,6 @@ export function truncateToolOutput(text: string): string {
   return `${text.slice(0, MAX_OUTPUT_LENGTH)}${buildOutputTruncationSuffix()}`;
 }
 
-/** 按行截断：逐行累计字符（行间换行符计 1 字符），加入当前行会超限则停在上一行边界并追加固定后缀；首行即超限则 slice 保底保留前 16384 字符 */
-export function truncateLinesToLimit(lines: string[]): string {
-  let total = 0;
-  const kept: string[] = [];
-
-  for (const line of lines) {
-    const addLen = line.length + (kept.length > 0 ? 1 : 0);
-
-    if (total + addLen > MAX_OUTPUT_LENGTH) {
-      if (kept.length === 0) {
-        kept.push(line.slice(0, MAX_OUTPUT_LENGTH));
-      }
-      return `${kept.join('\n')}${buildOutputTruncationSuffix()}`;
-    }
-
-    kept.push(line);
-    total += addLen;
-  }
-
-  return lines.join('\n');
-}
 
 /**
  * fs 工具结果按 JSON 序列化长度截断（fs_search / fs_list 共用）：

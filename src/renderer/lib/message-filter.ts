@@ -47,21 +47,13 @@ export function isEmptyAssistantBubble(message: ChatMessage): boolean {
   return true;
 }
 
-/**
- * 从消息列表中过滤掉空泡
- * @param messages 原始消息列表
- * @returns 过滤后的消息列表
- */
-export function filterEmptyAssistantBubbles(messages: ChatMessage[]): ChatMessage[] {
-  return messages.filter((m) => !isEmptyAssistantBubble(m));
-}
 
 
 /**
- * AssistantMessageSegment 二元结构（P1-A1）
+ * AssistantMessageSegment 二元结构
  * 
  * - type='reasoning'：思考内容段，含 text 字段
- * - type='tool_call'：工具调用段，含 toolCallId 字段（索引 AssistantToolCall.id）
+ * - type='tool_call'：工具调用段，含 toolCallId 字段（索引 toolCalls 数组的 ToolCallInfo.callId）
  */
 export type AssistantMessageSegment =
   | {
@@ -74,51 +66,3 @@ export type AssistantMessageSegment =
       type: 'tool_call';
       toolCallId: string;
     };
-
-/**
- * AssistantToolCall 工具调用定义（P1-A1 兼容路径）
- * 
- */
-export interface AssistantToolCall {
-  id: string;
-  type: 'function';
-  function: {
-    name: string;
-    arguments: string;
-  };
-}
-
-/**
- * 旧数据兼容路径（P1-A2）
- * 从 thinking + toolCalls 派生 segments 列表
- * 
- * - 若 thinking 非空，第一个段为 reasoning
- * - 每个 toolCall 生成一个 tool_call 段（id 为 `legacy-tool-${toolCall.id}`）
- * @param thinking 旧 thinking 字段
- * @param toolCalls 旧 toolCalls 列表（id 为 AssistantToolCall.id）
- * @returns 派生的 segments 列表
- */
-export function buildLegacySegments(
-  thinking: string,
-  toolCalls: AssistantToolCall[],
-): AssistantMessageSegment[] {
-  const segments: AssistantMessageSegment[] = [];
-
-  if (thinking) {
-    segments.push({
-      id: 'legacy-reasoning',
-      type: 'reasoning',
-      text: thinking,
-    });
-  }
-
-  for (const toolCall of toolCalls) {
-    segments.push({
-      id: `legacy-tool-${toolCall.id}`,
-      type: 'tool_call',
-      toolCallId: toolCall.id,
-    });
-  }
-
-  return segments;
-}

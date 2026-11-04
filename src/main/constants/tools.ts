@@ -8,7 +8,7 @@
 // ============================================================
 
 /** 默认命令行执行超时（秒）。
- * 挂起模式豁免（方向6 S6-3/D6C8 落档）：run_shell 与 run_with_python 的 suspend=true 挂起模式均 spawn 后立即返回真实子进程 PID，
+ * 挂起模式豁免：run_shell 与 run_with_python 的 suspend=true 挂起模式均 spawn 后立即返回真实子进程 PID，
  * timeout 语义=忽略，挂起进程生命周期由调用方管理（立即返回、不等待不采集、无执行超时）。 */
 export const DEFAULT_TIMEOUT_SECONDS = 180;
 

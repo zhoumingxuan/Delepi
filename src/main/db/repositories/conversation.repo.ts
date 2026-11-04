@@ -1,6 +1,5 @@
 /**
  * conversations 表操作
- * 从 repository.ts 拆分
  */
 
 import { v4 as uuidv4 } from 'uuid';
@@ -10,7 +9,7 @@ import { nowIso } from '../helpers';
 import type { ConversationRecord } from '../types';
 
 /**
- * 会话记录 + 聚合标签（方向3）
+ * 会话记录 + 聚合标签
  * 向后兼容：既有五字段不动，仅在 listConversations 返回结构上叠加 tags
  */
 export type ConversationWithTags = ConversationRecord & { tags: string[] };
@@ -45,7 +44,7 @@ export function listConversations(): ConversationWithTags[] {
     updated_at: string;
   }>;
 
-  // 方向3：一次性聚合全部会话标签（conversation_tags 独立新表，内存按会话分组，
+// 一次性聚合全部会话标签（conversation_tags 独立新表，内存按会话分组，
   // 避免逐会话 N+1 查询；既有五字段经 mapConversationRow 保持不动，仅叠加 tags）
   const tagRows = db.prepare(`
     SELECT conversation_id, tag FROM conversation_tags ORDER BY id
@@ -178,7 +177,7 @@ export function setConversationRunning(
 }
 
 /**
- * touchConversation 拆分职责，
+ * touchConversation 职责单一，
  *   仅更新 updated_at（列表排序语义保持不变，不更新 is_running）——is_running 的
  *   写入出口收敛到 run 生命周期边界（chat:send 启动的 setConversationRunning(true)、
  *   run 真实 settle 出口的 setConversationRunning(false) 与 chat:abort 复位），
@@ -200,7 +199,7 @@ export function updateConversationTitle(conversationId: string, title: string): 
 }
 
 // ============================================================
-// 方向3：conversation_tags 标签仓储 + 自定义重命名
+// conversation_tags 标签仓储 + 自定义重命名
 // （独立新表，UNIQUE(conversation_id, tag) 约束去重；
 //   标签与重命名均不触碰 updated_at / is_running —— 规划 A3-5）
 // ============================================================
@@ -235,7 +234,7 @@ export function renameConversationTitle(conversationId: string, title: string): 
 }
 
 /**
- * 条件更新标题（方向3 A3-3 原子版本检查·最终防线）
+ * 条件更新标题（原子版本检查·最终防线）
  * 仅当当前 title 仍等于 expectedTitle（生成期间的基线）时写入——
  * 把"读检查→写入"两步合并为单条原子 UPDATE（CAS 语义），
  * 彻底消除版本检查与入库之间的微时序窗口（期间被 conv:rename 改写则 changes=0 放弃）

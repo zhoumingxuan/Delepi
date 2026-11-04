@@ -1,7 +1,7 @@
 /**
  * 客户端自动更新：HTTP 检查客户端与下载器（Node 内置 http/https，零新增依赖）
  *
- * 契约（服务端由并行任务实现，两端必须逐字一致）：
+ * 契约（两端必须逐字一致）：
  * - GET {baseUrl}/check?version=<当前版本>&platform=<win10|linux|mac>
  * - GET {baseUrl}/download?platform=<...>&version=<可选>
  * - 请求头 X-Delepi-Update-Key: <32 位授权码>

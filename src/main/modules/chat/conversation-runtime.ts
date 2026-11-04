@@ -2,7 +2,7 @@
  * 对话运行时管理
  *
  * 
- * 简化为 Delepi 单用户 Electron 架构：
+ * Delepi 单用户 Electron 架构：
  * - 进程级 Map 足够（无需 userId 维度）
  * - 仅保留核心功能：beginConversationRun / finishConversationRun / abortConversationRun
  */
@@ -11,7 +11,7 @@ import { ERR_ABORTED } from '../../constants';
 
 /**
  * 全局对话运行状态：conversationId → AbortController
- * ★ 闸门生命周期与 run 实例绑定模型：条目在 beginConversationRun 创建后，仅由持有
+ * 闸门生命周期与 run 实例绑定模型：条目在 beginConversationRun 创建后，仅由持有
  *   该控制器实例的 run 在真实 settle 时经 finishConversationRun（实例归属校验）释放；
  *   abortConversationRun 只触发取消、不提前释放条目——保证任意时刻同会话至多一个 run，
  *   且另一 run 的退出不可能删除/覆盖新 run 的 AbortController 与状态。

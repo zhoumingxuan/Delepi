@@ -1,19 +1,19 @@
 /**
  * OtherSettingsTab — 其他设置（值守模式）Tab 组件（开关真实启停）
  *
- * 功能（对齐 PythonEnvTab.tsx:48-51 先例：具名导出函数组件 + useSettings() 读写 + AntApp.useApp() 反馈）：
+ * 功能（具名导出函数组件 + useSettings() 读写 + AntApp.useApp() 反馈，结构同 PythonEnvTab.tsx）：
  * - 值守模式总开关：真实启停（调 watch:start / watch:stop）；开启前本地校验邮箱/授权码，
  *   主进程执行 IMAP/SMTP 真实自检；含"自检中 / 运行中 / 已停止"状态反馈与开启失败错误提示
  * - 运行状态区：每 5 秒递归 setTimeout 轮询 watch:status，展示状态、增量游标、本次运行已处理封数
- *   与下次轮询时间（不再展示 UID 水位）；
+ *   与下次轮询时间；
  *   运行期回落关闭（自检失败/连续失败阈值）经 lastError Alert 展示错误码与原因
  * - 邮箱类型：QQ邮箱（内置端点）/ 其他（自定义 IMAP/SMTP 主机、端口、加密方式）；
  *   选择「其他」时展开六个自定义参数，保存即生效（收信与发信两侧统一由 provider 解析端点）
  * - 值守邮箱 / 授权码（密码型输入）/ 轮询间隔（分钟数字输入）/ 回信收件人：失焦校验 + trim 保存
  * - 指令说明：值守模式行尾问号图标 → Popover 展示命令行协议与最小可用示例（可复制）
- * - 自动更新（v1）：自动检查开关 + 更新地址 + 状态/进度展示 + 检查/下载/取消/立即安装操作行；
+ * - 自动更新：自动检查开关 + 更新地址 + 状态/进度展示 + 检查/下载/取消/立即安装操作行；
  *   复用同文件既有问号 Popover 结构承载机制说明（updateAutoCheckEnabled / updateBaseUrl 两键）
- * - 唯一入口原则：值守设置仅存在于本 Tab；本轮起本 Tab 追加「自动更新」区块（不含其它更新扩展项）
+ * - 「自动更新」区块位于本 Tab（不含其它更新扩展项）
  * - watchEnabled 不经 config:save 写入（主进程已守卫拦截）：开关状态只由 watch:start/stop 改变
  */
 
@@ -45,7 +45,7 @@ const EMAIL_RE = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/;
 
 // ---------------------------------------------------------------------------
 // watch IPC 局部类型（window.electronAPI 的全局类型声明不在改动白名单内，
-// 沿用 ConfigDrawer.tsx 局部类型 + 断言访问先例）
+// 沿用 ConfigDrawer.tsx 局部类型 + 断言访问方式）
 // ---------------------------------------------------------------------------
 
 type WatchRuntimeStatusLite = 'closed' | 'starting' | 'running' | 'suspended';
@@ -57,7 +57,7 @@ interface WatchApi {
   stop: () => Promise<{ ok: boolean; status: WatchRuntimeStatusLite }>;
   /**
    * 状态查询：status/enabled/lastError/watermark(恒 null)/cursor/nextPollAt/processedCount
-   * watermark 保留字段但恒为 null（不再展示），时间增量进度改由 cursor.sinceTime 表达
+    * watermark 保留字段恒为 null，时间增量进度由 cursor.sinceTime 表达
    */
   status: () => Promise<{
     status: WatchRuntimeStatusLite;
@@ -767,7 +767,7 @@ export function OtherSettingsTab() {
 
       <Divider style={{ margin: '8px 0 16px' }} />
 
-      {/* ===== 总开关（阶段2：真实启停 watch:start / watch:stop） ===== */}
+      {/* ===== 总开关（真实启停 watch:start / watch:stop） ===== */}
       <div style={fieldGap}>
         <div style={{ display: 'flex', alignItems: 'center', gap: token.paddingSM }}>
           <Switch
@@ -833,7 +833,7 @@ export function OtherSettingsTab() {
         ) : null}
       </div>
 
-      {/* ===== 邮箱类型区块（阶段7 目标3：QQ邮箱内置 / 其他自定义端点） ===== */}
+      {/* ===== 邮箱类型区块（QQ邮箱内置 / 其他自定义端点） ===== */}
       <div style={fieldGap}>
         <Text style={labelStyle}>邮箱类型</Text>
         <Select

@@ -110,7 +110,7 @@ async function writeExecutorExecutionLog(
 }
 
 /**
- * ★ API 报错保留现场：throw 路径复用唯一写盘点生成 executor_messages.json。
+ * API 报错保留现场：throw 路径复用唯一写盘点生成 executor_messages.json。
  * errors 追加错误信息后经 writeExecutorExecutionLog 写盘（与成功路径同目录同文件名），
  * 返回绝对路径；写盘失败（内部 catch 返回 undefined）时返回 undefined——调用方据此不挂载
  * 路径，错误原样上抛，失败结果 data 保持空对象（降级安全）。
@@ -153,24 +153,4 @@ export async function attachExecutionLogPathToResult(options: {
     ...options.result,
     data: addExecutionLogPathToData(options.result.data, executionLogPath),
   };
-}
-
-export function extractExecutionLogPathFromToolResultText(output: string): string {
-  const parsed = (() => {
-    try {
-      return JSON.parse(output) as unknown;
-    } catch {
-      return null;
-    }
-  })();
-
-  if (!isRecord(parsed)) return '';
-  const currentTaskExecutionResult = parsed.current_task_execution_result;
-  if (!isRecord(currentTaskExecutionResult)) return '';
-  const data = currentTaskExecutionResult.data;
-  if (!isRecord(data)) return '';
-
-  return typeof data.execution_log_path === 'string'
-    ? data.execution_log_path
-    : '';
 }

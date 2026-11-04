@@ -2,28 +2,27 @@
  * ChatCompletionsAdapter - CC（Chat Completions）零变化包装适配器
  *
  * 零变化包装原则：只做参数搬运与回调分发，全部协议行为（请求体构造
- * openai-client.ts L233-244 流式 / L442-454 非流式、SSE 解析 L257-383、
- * 重试 L424-428）委托现状 streamChat——openai-client.ts 一行不改，
- * "message 原封回传逻辑放在 CC 适配器里面"的入向/出向双层原封落位（§三.2.3）：
+ * / SSE 解析 / 重试）委托 streamChat——openai-client.ts 一行不改，
+ * "message 原封回传逻辑放在 CC 适配器里面"的入向/出向双层原封落位：
  *  - 入向原封：宿主 messages 数组零加工直通（三条红线回传路径产出的 reasoning_content
  *    原样进入请求体，本适配器不认识也不处理该字段）；
- *  - 出向原封：现状 streamChatOnce 构造的 assistantMessage（L388-404）经
+ *  - 出向原封：streamChatOnce 构造的 assistantMessage 经
  *    AdapterTurnResult.assistantMessage / AdapterFinished.assistantMessage 原样透出。
  *
- * onChunk 拆分（§三.2.2）：现状混合载荷回调（触发条件 changed||finishReasonChanged，
- * 含 finishReason 变化，L353-381）拆分为 reasoning/content 两类 AdapterChunk
- * + 段终结信号（§三.2.5 映射表）；reasoning 类与现状 onThinking 同源同频
- * （仅 reasoningDelta 非空触发，L375-377——契约"有值传没值空"）。
- * 拆分顺序保持现状回调时序（onChunk 先于 onThinking，L364-377）：content 类先于
- * reasoning 类发出，保证宿主 F4 切段（forceNewReasoningSegment 标记先置、思考后到新开段）
- * 的段结构语义与现状一致。
+ * onChunk 拆分：混合载荷回调（触发条件 changed||finishReasonChanged，
+ * 含 finishReason 变化）拆分为 reasoning/content 两类 AdapterChunk
+ * + 段终结信号；reasoning 类与 onThinking 同源同频
+ * （仅 reasoningDelta 非空触发——契约"有值传没值空"）。
+ * 拆分顺序保持回调时序（onChunk 先于 onThinking）：content 类先于
+ * reasoning 类发出，保证宿主切段语义（content 先到、思考后到新开段——
+ * main-agent 正文首现判据依赖该时序）。
  *
  * finishReason 等价保持：收到 finish_reason 非 null 的 chunk 时发出
- * 回调 {type:<末段>, delta:'', cumulative, end:'message', finishReason}——G5 实测
- * finish_reason 位于独立 chunk 且 delta.content=空串，空增量回调与现状 finishReason
+ * 回调 {type:<末段>, delta:'', cumulative, end:'message', finishReason}——
+ * finish_reason 位于独立 chunk 且 delta.content=空串，空增量回调与 finishReason
  * 变化触发的空增量回调逐字段等价（含 finishReason 字段透传，IPC chat:chunk.finishReason
- * 通道依赖该字段逐层传递，A-04 断言 2）；"end:'message' 不得并入末增量回调"
- * （G5 实测 S3 触发 chunk 与末增量 chunk 天然分离）。
+ * 通道依赖该字段逐层传递）；"end:'message' 不得并入末增量回调"
+ * （finish 触发 chunk 与末增量 chunk 天然分离）。
  */
 
 import { streamChat, type ModelConfig, type StreamChunk, type StreamChatResult } from '../openai-client';
@@ -43,7 +42,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
   private toolCallHandler: ((toolCall: AdapterToolCall) => AdapterToolMessage | undefined) | null = null;
   private finishedHandler: ((finished: AdapterFinished) => void) | null = null;
 
-  // ---- 拆分状态机（每轮 sendMessage 复位；C-1 事件式语义：不假设恰一次切换） ----
+  // ---- 拆分状态机（每轮 sendMessage 复位；事件式语义：不假设恰一次切换） ----
   /** 当前活动段类型（最后一次发出增量的段；初始无段） */
   private currentSegment: 'reasoning' | 'content' | null = null;
   /** 挂靠末段（该 message 中最后出现的段类型；纯 tool_calls 轮挂靠 content） */
@@ -55,7 +54,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
     super();
   }
 
-  /** ① init 覆写（成败化契约 + 协议探查，目标一/二）：继承基类参数校验/配置快照职责，
+/** ① init 覆写（成败化契约 + 协议探查）：继承基类参数校验/配置快照职责，
    *  基类成功后 POST 探查 {baseUrl}/chat/completions——HTTP 404 = 协议不存在 = 初始化
    *  失败；收到任何其他 HTTP 状态响应（含 400/401/403/405）= 协议存在 = 探查通过
    *  （鉴权/参数类状态码恰证端点存在）；网络层失败/超时 = 探查未通过（记录原因）。 */
@@ -125,8 +124,8 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
       }
     };
 
-    // 现状混合载荷回调 → 拆分（顺序：S1/S2 → content 类 → reasoning 类 → S3，
-    // content 类先于 reasoning 类保持现状 onChunk→onThinking 触发时序）
+    // 混合载荷回调 → 拆分（顺序：段切换 → content 类 → reasoning 类 → 消息终结，
+    // content 类先于 reasoning 类保持 onChunk→onThinking 触发时序）
     const wrappedOnChunk = (chunk: StreamChunk): void => {
       const hasContentDelta = Boolean(chunk.delta);
       const hasReasoningDelta = Boolean(chunk.reasoningDelta);
@@ -146,7 +145,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
         this.toolCallsStarted = true;
       }
 
-      // content 类：★现状每次回调必发（混合载荷 onChunk 半边的等价承载——触发条件
+// content 类：每次回调必发（混合载荷 onChunk 半边的等价承载——触发条件
       // changed||finishReasonChanged 下，reasoning 帧 / tool_calls 帧 / finish 帧均产生
       // 一次 delta='' 或增量的 chunk 回调，G-CC-01/03/08/09 时间线依赖逐条一致）
       emit({
@@ -231,7 +230,7 @@ export class ChatCompletionsAdapter extends ProtocolAdapter {
       }
     }
 
-    // onFinished 三情形映射（§三.2.4）
+    // onFinished 三情形映射
     const finished = this.mapFinished(streamResult);
     this.fireFinished(finished);
 
