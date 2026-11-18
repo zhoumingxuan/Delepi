@@ -26,7 +26,6 @@ import { buildExecutorSystemPrompt } from './executor-system-prompt';
 import { createExecutorContextCompressionRunner } from './executor-context-compression';
 import {
   SCRIPTS_TOOLS_DIR,
-  type TaskTagName,
 } from '../../constants';
 import {
   parseExecutorStructuredPayload,
@@ -35,16 +34,7 @@ import type {
   ExecutorStructuredPayload,
 } from './executor-structured-payload';
 import type { AssistantRuntimeConfig } from './assistant-config';
-import {
-  EXECUTOR_WORKFLOW_TEMPLATES,
-  TASK_TAG_WORKFLOW_TEMPLATE_ID,
-  getCustomSkillTemplatePath,
-  getEnabledCustomSkillTags,
-  readBuiltinTemplateContent,
-  readCustomSkillTemplateContent,
-  type ExecutorWorkflowTemplate,
-} from './executor-workflow-templates';
-import type { AppSettings, CustomSkillTag } from '@shared/types/config';
+import type { AppSettings } from '@shared/types/config';
 
 import {
   executeToolCall,
@@ -68,8 +58,8 @@ import {
   isRecord,
 } from '../../utils/index';
 import { formatCurrentDateTime } from '../../utils/helper';
+import { getTeamMemberByNickname } from '../../db';
 import {
-  EXECUTOR_WORKER_SKILLS_DIR,
   resolveExecutorToolProgressDisplayName,
   EXECUTOR_DELIVERY_TYPE_SET,
   DELIVERY_TYPE_IMAGE,
@@ -113,6 +103,7 @@ export interface DelegatedUploadedFile {
 type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 type DelegateExecutorInput = {
   task_name?: unknown;
+  member_nickname?: unknown;
   task_target?: unknown;
   constraints?: unknown;
   delivery_type?: unknown;
@@ -127,6 +118,7 @@ type ExpectedDelivery = {
 
 type ParsedDelegateExecutorInput = {
   taskName: string;
+  memberNickname: string;
   taskTarget: string;
   taskConstraints: string[];
   contextData: string;
@@ -303,6 +295,7 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
   const issues = collectDelegateExecutorInputIssues(parsed);
 
   const taskName = normalizeString(parsed.task_name);
+  const memberNickname = normalizeString(parsed.member_nickname);
   const contextData = normalizeString(parsed.context);
   const taskTarget = normalizeString(parsed.task_target);
   const taskConstraints = collectTaskConstraintDescriptions(parsed.constraints);
@@ -318,6 +311,7 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
   return {
     input: {
       taskName,
+      memberNickname,
       taskTarget,
       taskConstraints,
       expectedDelivery,
@@ -742,132 +736,6 @@ function buildExecutorToolProgressText(options: {
   return `${toolDisplayName}工具完成，继续处理...`;
 }
 
-// 单任务模板数上限=3（本地固化常量）
-const MAX_WORKFLOW_TEMPLATE_COUNT = 3;
-
-/** 工作流模板选取结果（内置/自定义双源；内置映射锁定优先，自定义仅绑自定义模板） */
-type WorkflowTemplateSelection = {
-  source: 'builtin' | 'custom';
-  /** 内置：相对 skills 目录的 fileName；自定义：模板目录 slug */
-  locator: string;
-  title: string;
-};
-
-function selectWorkflowTemplates(taskTags: TaskTagName[]): WorkflowTemplateSelection[] {
-  const selections: WorkflowTemplateSelection[] = [];
-// 第三关：映射查找接入自定义来源（启用的自定义标签元数据按 name 索引）
-  const customEnabledByName = new Map<string, CustomSkillTag>(
-    getEnabledCustomSkillTags()
-      .filter((item) => item.owner !== 'main')
-      .map((item) => [item.name, item]),
-  );
-
-  for (const tag of taskTags) {
-    // 内置标签 → 内置模板映射锁定（Record 键按 BUILTIN_EXECUTOR_TASK_TAGS 字面量联合类型级锁定 + 运行时优先，不可被自定义覆盖）
-    const templateId = TASK_TAG_WORKFLOW_TEMPLATE_ID[tag as keyof typeof TASK_TAG_WORKFLOW_TEMPLATE_ID];
-    if (templateId) {
-      const template = EXECUTOR_WORKFLOW_TEMPLATES[templateId];
-      if (template && !selections.some((s) => s.source === 'builtin' && s.locator === template.fileName)) {
-        selections.push({ source: 'builtin', locator: template.fileName, title: template.title });
-      }
-      continue;
-    }
-
-    // 自定义标签 → 自定义模板（仅能绑定自定义模板；停用标签不入选）
-    const custom = customEnabledByName.get(tag);
-    if (custom && !selections.some((s) => s.source === 'custom' && s.locator === custom.slug)) {
-      selections.push({ source: 'custom', locator: custom.slug, title: custom.title });
-    }
-  }
-
-  // 单任务模板数上限维持 MAX_WORKFLOW_TEMPLATE_COUNT=3（内置+自定义合并计数）
-  return selections.slice(0, MAX_WORKFLOW_TEMPLATE_COUNT);
-}
-
-/** 模板内容注入包装（内置/自定义同构格式） */
-function wrapWorkflowTemplateContent(title: string, content: string): string {
-  return `
-##【${title}】技能（**若当前任务需要执行此技能，则必须精确符合其每一项要求**）
-\`\`\`
-${content}
-\`\`\`
-`;
-}
-
-async function readWorkflowTemplateContent(fileName: string): Promise<string> {
-  // 内置模板读取：userData 覆写优先（builtin-skill-overrides/<fileName>），无覆写回退内置目录；
-  // 包装与失败语义（console.warn+空串）保持现状
-  const templatePath = path.join(EXECUTOR_WORKER_SKILLS_DIR, fileName);
-  try {
-    const content = (await readBuiltinTemplateContent(fileName)).trim();
-    const template = Object.values(EXECUTOR_WORKFLOW_TEMPLATES).find((t) => t.fileName === fileName);
-    const title = template?.title ?? '';
-    return wrapWorkflowTemplateContent(title, content);
-  } catch (error) {
-    const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
-      ? (error as NodeJS.ErrnoException).code
-      : 'unknown';
-    console.warn(
-      `[executor-agent] 读取工作流模板内容失败，将返回空串: templatePath=${templatePath}, errorCode=${errCode}`,
-    );
-    return '';
-  }
-}
-
-/**
- * 读取自定义模板（读取失败不静默——console.warn + 告警上浮；
- * 内置模板 warn 行为不变）。
- */
-async function readCustomWorkflowTemplateContent(
-  selection: WorkflowTemplateSelection,
-): Promise<{ content: string; warning: string | null }> {
-  const templatePath = getCustomSkillTemplatePath(selection.locator);
-  try {
-    const content = await readCustomSkillTemplateContent(selection.locator);
-    if (!content) {
-      const warning = `自定义技能模板内容为空，该技能未注入: ${selection.title}(${templatePath})`;
-      console.warn(`[executor-agent] ${warning}`);
-      return { content: '', warning };
-    }
-    return { content: wrapWorkflowTemplateContent(selection.title, content), warning: null };
-  } catch (error) {
-    const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
-      ? (error as NodeJS.ErrnoException).code
-      : 'unknown';
-    const warning = `读取自定义技能模板失败，该技能未注入: ${selection.title}(${templatePath}), errorCode=${errCode}`;
-    console.warn(`[executor-agent] ${warning}`);
-    return { content: '', warning };
-  }
-}
-
-async function readWorkflowTemplates(
-  taskTags: TaskTagName[],
-): Promise<{ contents: string[]; warnings: string[] }> {
-  const selections = selectWorkflowTemplates(taskTags);
-  const contents: string[] = [];
-  const warnings: string[] = [];
-
-  for (const selection of selections) {
-    if (selection.source === 'builtin') {
-      const content = await readWorkflowTemplateContent(selection.locator);
-      if (content.trim()) {
-        contents.push(content);
-      }
-      continue;
-    }
-
-    const custom = await readCustomWorkflowTemplateContent(selection);
-    if (custom.content.trim()) {
-      contents.push(custom.content);
-    }
-    if (custom.warning) {
-      warnings.push(custom.warning);
-    }
-  }
-
-  return { contents, warnings };
-}
-
 type NormalizedExecutorToolCall = OpenAI.Chat.ChatCompletionMessageFunctionToolCall;
 
 function toToolCallText(value: unknown): string {
@@ -1191,6 +1059,67 @@ async function attachTaskOutputTimes(options: {
   });
 }
 
+/**
+ * 人员信息注入段（落在「# 角色定义」章节内部）：昵称恒注入；职业为空（NULL/空串/纯空白归一为空串）
+ * 时仅省略职业这一行，不做任何兜底文案替换；昵称行与职业行各占独立一行，禁止合并到同一行。
+ */
+function buildMemberProfileSection(nickname: string, profession: string): string {
+  const nicknameLine = `- 人员昵称：${nickname}`;
+  return profession ? `${nicknameLine}\n- 职业：${profession}` : nicknameLine;
+}
+
+/** 技能章节：skillTags 非空才注入，正文只直接列出技能标签本身；为空数组时整段不注入（不编造默认技能名） */
+function buildMemberSkillPrioritySection(skillTags: string[]): string {
+  if (!skillTags.length) {
+    return '';
+  }
+
+  return `
+# 【可优先使用的技能】
+\`\`\`
+${skillTags.map((tag) => `- ${tag}`).join('\n')}
+\`\`\`
+`.trim();
+}
+
+/** 人员注入文本拆分结果：profileText 落在「# 角色定义」章节内部，skillSectionText 落在其后的独立章节 */
+type MemberInjectionParts = {
+  profileText: string;
+  skillSectionText: string;
+};
+
+/**
+ * 人员与技能注入文本（数据来源唯一：db.getTeamMemberByNickname）。
+ * - 昵称：必须注入项（memberNickname 非空即注入原文，任何分支都不省略）；
+ * - 职业：可省略项（NULL/空串/纯空白时仅省略职业这一行）；
+ * - 技能：条件注入项（skillTags 为空数组时整段不注入）；
+ * - 查无此人或查库异常：仅注入昵称，不报错、不中止任务。
+ */
+function buildMemberInjectionText(memberNickname: string): MemberInjectionParts {
+  const nickname = normalizeString(memberNickname);
+  if (!nickname) {
+    return { profileText: '', skillSectionText: '' };
+  }
+
+  let profession = '';
+  let skillTags: string[] = [];
+
+  try {
+    const member = getTeamMemberByNickname(nickname);
+    profession = normalizeString(member?.profession);
+    skillTags = Array.isArray(member?.skillTags)
+      ? member.skillTags.map((tag) => normalizeString(tag)).filter(Boolean)
+      : [];
+  } catch (error) {
+    console.warn(`[executor-agent] 读取人员信息失败，仅注入昵称: ${ensureErrorMessage(error)}`);
+  }
+
+  return {
+    profileText: buildMemberProfileSection(nickname, profession),
+    skillSectionText: buildMemberSkillPrioritySection(skillTags),
+  };
+}
+
 export async function runDelegatedTask(
   options: RunDelegatedTaskOptions,
 ): Promise<RunDelegatedTaskResult> {
@@ -1233,6 +1162,9 @@ export async function runDelegatedTask(
 
   const parsedInput = parseResult.input;
   const deliveryType = parsedInput.expectedDelivery.deliveryType;
+
+  // 人员与技能注入（member_nickname 缺失或为空白 → 两段注入文本均为空串：不注入、不报错、不改走失败路径）
+  const memberInjection = buildMemberInjectionText(parsedInput.memberNickname);
 
   // 构建工具上下文
   const toolContext: Partial<ToolRuntimeContext> = {
@@ -1284,6 +1216,8 @@ export async function runDelegatedTask(
         // 经验库根目录绝对路径注入（8.1 章节文案 {SCRIPTS_TOOLS_DIR} 占位消费点）
         scriptsToolsDirText: SCRIPTS_TOOLS_DIR,
         currentPid: process.pid,
+        memberProfileText: memberInjection.profileText,
+        memberSkillSectionText: memberInjection.skillSectionText,
       }),
     },
     {

@@ -39,8 +39,10 @@ export function buildExecutorSystemPrompt(options: {
   scriptsToolsDirText?: string;
   deliveryType: ExecutorDeliveryType;
   currentPid?: number;
-  /** 执行人员与优先技能注入文本（由 executor-agent 侧按 db 人员画像构建；缺省或空白时不注入） */
-  memberInjectionText?: string;
+  /** 执行人员画像注入文本（落在「# 角色定义」章节内部；缺省或空白时不注入） */
+  memberProfileText?: string;
+  /** 可优先使用的技能章节文本（落在「# 角色定义」章节之后；缺省或空白时不注入） */
+  memberSkillSectionText?: string;
 }): string {
 
 
@@ -91,9 +93,14 @@ ${options.sessionDirectoryText.trim()}
 `.trim()
     : '';
 
-  const memberInjectionSection = options.memberInjectionText?.trim()
+  const memberProfileSection = options.memberProfileText?.trim()
     ? `
-${options.memberInjectionText.trim()}
+${options.memberProfileText.trim()}`
+    : '';
+
+  const memberSkillSection = options.memberSkillSectionText?.trim()
+    ? `
+${options.memberSkillSectionText.trim()}
 `
     : '';
 
@@ -108,9 +115,9 @@ ${options.memberInjectionText.trim()}
 # 角色定义
 \`\`\`
 - 你是个全能且擅于执行任务的中文助手。
-- 你会选择合适的技能执行任务。
+- 你会选择合适的技能执行任务。${memberProfileSection}
 \`\`\`
-${memberInjectionSection}
+${memberSkillSection}
 ### 推理分析原则（** 若需要使用【推论分析】，则必须遵守全部规则 **）
 \`\`\`
  1. **推论产生**：依据当前所有已知【场景】和所有【已知证据】和所有【已证实的推论】，推断并得出【产生】当前现象的所有【因素】，且这些【因素】当前只能标记为【经过推测得出】，并且（推断【产生】当前现象的所有【因素】）的这个行为，统称为【推论】，必须进行【推论证明】才具备（去掉【经过推测得出】标记并当成事实）的条件。
