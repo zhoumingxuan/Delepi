@@ -13,9 +13,7 @@ import {
   JSON_CODE_BLOCK_START,
   JSON_CODE_BLOCK_END,
   DELIVERY_TYPE_PLAN,
-  DELIVERY_TYPE_PLAN_BOOK,
   DELIVERY_TYPE_RESEARCH_REPORT,
-  DELIVERY_TYPE_TEST_CASE,
   DELIVERY_TYPE_CLUE_COLLECTION,
   DELIVERY_TYPE_AUTHORITATIVE_CONCLUSION,
   type ExecutorDeliveryType,
@@ -230,11 +228,12 @@ async function readDeliverable(
 
   const nameWithoutExt = path.basename(filename, path.extname(filename));
 
+  if (deliveryType === DELIVERY_TYPE_RESEARCH_REPORT) {
+    return {};
+  }
+
   if (
     deliveryType === DELIVERY_TYPE_PLAN
-    || deliveryType === DELIVERY_TYPE_PLAN_BOOK
-    || deliveryType === DELIVERY_TYPE_RESEARCH_REPORT
-    || deliveryType === DELIVERY_TYPE_TEST_CASE
   ) {
     return content ? { [nameWithoutExt]: content } : {};
   }
@@ -304,10 +303,6 @@ function getDocumentPathFieldName(deliveryType: ExecutorDeliveryType): string | 
     return '报告文档路径';
   }
 
-  if (deliveryType === DELIVERY_TYPE_TEST_CASE) {
-    return '测试用例文档路径';
-  }
-
   return null;
 }
 
@@ -315,7 +310,6 @@ function shouldCopyDeliverableToOutput(deliveryType: ExecutorDeliveryType): bool
   return (
     deliveryType === DELIVERY_TYPE_PLAN
     || deliveryType === DELIVERY_TYPE_RESEARCH_REPORT
-    || deliveryType === DELIVERY_TYPE_TEST_CASE
   );
 }
 

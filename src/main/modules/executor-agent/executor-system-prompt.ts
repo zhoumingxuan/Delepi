@@ -26,14 +26,10 @@ function buildDeliverableFieldDescription(deliveryType: ExecutorDeliveryType): s
       return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，依据【当前任务】实际落地【报告】填写文件名（文件名格式:***.***）;文件格式依据实际任务情况。';
     case '方案':
       return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，依据【当前任务】实际落地【方案】填写文件名（文件名格式:***.***）;文件内容必须是 Markdown。';
-    case '详细规划':
-      return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，依据【当前任务】实际落地【详细规划】填写文件名（文件名格式:***.***）;文件内容必须是 Markdown 格式；并且必须含有完整 Mermaid 格式的流程图。';
     case '文件链接':
       return `  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，固定为 \`${LOCAL_FILES_FIELD_NAME}.json\`;文件内容必须是 JSON 对象，且只包含 \`${LOCAL_FILES_FIELD_NAME}\` 字段；\`${LOCAL_FILES_FIELD_NAME}\` 必须为非空 string[]，每项必须是已生成、可读取并覆盖验收对象的本地绝对路径。写入后必须用 Python 核验 JSON 可解析且顶层字段只有 \`${LOCAL_FILES_FIELD_NAME}\`。`;
     case '图片':
       return `  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，固定为 \`${IMAGE_FILES_FIELD_NAME}.json\`;文件内容必须是 JSON 对象，且只包含 \`${IMAGE_FILES_FIELD_NAME}\` 字段；\`${IMAGE_FILES_FIELD_NAME}\` 必须为非空 string[]，每项必须是已生成、可读取并覆盖验收对象的本地图片绝对路径。写入后必须用 Python 核验 JSON 可解析且顶层字段只有 \`${IMAGE_FILES_FIELD_NAME}\`。`;
-    case '测试用例':
-      return '  - deliverable_filename  交付物实际存在于【最终输出目录】的文件名，依据【当前任务】实际落地【测试用例】填写文件名（文件名格式:***.***）;文件格式依据实际任务情况。';
   }
 }
 

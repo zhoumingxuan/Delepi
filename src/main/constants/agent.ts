@@ -114,14 +114,8 @@ export const DELIVERY_TYPE_FILE_LINK = '文件链接';
 /** 方案交付类型 */
 export const DELIVERY_TYPE_PLAN = '方案';
 
-/** 详细规划交付类型 */
-export const DELIVERY_TYPE_PLAN_BOOK = '详细规划';
-
 /** 报告交付类型 */
 export const DELIVERY_TYPE_RESEARCH_REPORT = '报告';
-
-/** 测试用例交付类型 */
-export const DELIVERY_TYPE_TEST_CASE = '测试用例';
 
 /** 线索集合交付类型 */
 export const DELIVERY_TYPE_CLUE_COLLECTION = '线索集合';
@@ -202,10 +196,8 @@ export const EXECUTOR_DELIVERY_TYPES = [
   '报告',
   '权威结论',
   '方案',
-  '详细规划',
   '文件链接',
   '图片',
-  '测试用例',
 ] as const;
 export type ExecutorDeliveryType = (typeof EXECUTOR_DELIVERY_TYPES)[number];
 
