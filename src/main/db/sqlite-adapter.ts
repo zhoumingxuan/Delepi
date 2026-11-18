@@ -1,6 +1,6 @@
 /**
  * SQLite 数据库适配器
- * 5 张表 DDL：conversations / messages / context_compressions / settings / conversation_tags
+ * 7 张表 DDL：conversations / messages / context_compressions / settings / conversation_tags / team_members / team_member_skills
  * conversations 含列 model_profile_id（会话级模型方案绑定），
  * 存量库就地 ALTER TABLE ADD COLUMN 补建 + 存量行回填空串；不 DROP、不重建、不动既有列。
  * 值守模式的指令邮件一律不落库（不创建值守状态/已处理两张表；存量库中的
@@ -29,7 +29,7 @@ function resolveDbPath(): string {
 const SCHEMA_SQL = `-- ============================================================================
 -- SQLite 数据库 Schema
 -- 自动生成，请勿手动编辑
--- 包含 5 张表和 5 条索引，全部使用 IF NOT EXISTS
+-- 包含 7 张表和 5 条索引，全部使用 IF NOT EXISTS
 -- ============================================================================
 
 -- PRAGMA 配置（仅在新数据库创建时执行）
@@ -100,6 +100,30 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- ============================================================================
+-- 6. 团队成员表（团队协作：成员基础画像；无主键、无索引、无约束，仅时间列带本地时区默认值）
+-- role_type int 枚举：1=执行者、2=审核者、3=研究者、4=实验员（仅注释说明，不落 CHECK 约束）
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS team_members (
+    nickname TEXT,
+    role_type INTEGER,
+    profession TEXT,
+    duty TEXT,
+    is_multi_task_parallel INTEGER NOT NULL DEFAULT 1,
+    status INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ============================================================================
+-- 7. 团队成员技能表（团队协作：成员技能标签；无主键、无索引、无约束，仅时间列带本地时区默认值）
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS team_member_skills (
+    nickname TEXT,
+    skill_tag TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- ============================================================================
 -- 索引
 -- ============================================================================
 CREATE INDEX IF NOT EXISTS idx_conversations_updated_at ON conversations(updated_at DESC, created_at DESC);
@@ -134,6 +158,36 @@ CREATE INDEX IF NOT EXISTS idx_conversation_tags_conversation ON conversation_ta
  */
 const CONVERSATION_MODEL_PROFILE_COLUMN_DDL =
   `ALTER TABLE conversations ADD COLUMN model_profile_id TEXT NOT NULL DEFAULT '';`;
+
+/**
+ * team_members 建表 DDL（存量库就地补建用，CREATE TABLE 语句与 SCHEMA_SQL 内定义逐字一致）
+ * 背景：getDb 的 needsInit 仅检查 conversations 表，存量库会跳过全量 SCHEMA_SQL，
+ *       新表必须在此单独补建（tableExists 判定 + IF NOT EXISTS，幂等，重复执行安全）
+ */
+const TEAM_MEMBERS_DDL = `-- team_members（团队成员，无主键/无索引/无约束；role_type int 枚举 1=执行者、2=审核者、3=研究者、4=实验员）
+CREATE TABLE IF NOT EXISTS team_members (
+    nickname TEXT,
+    role_type INTEGER,
+    profession TEXT,
+    duty TEXT,
+    is_multi_task_parallel INTEGER NOT NULL DEFAULT 1,
+    status INTEGER,
+    created_at TEXT DEFAULT (datetime('now','localtime')),
+    updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+`;
+
+/**
+ * team_member_skills 建表 DDL（存量库就地补建用，CREATE TABLE 语句与 SCHEMA_SQL 内定义逐字一致）
+ * 背景同上：存量库不会执行全量 SCHEMA_SQL，新表在此单独补建（幂等）
+ */
+const TEAM_MEMBER_SKILLS_DDL = `-- team_member_skills（团队成员技能标签：nickname/skill_tag，无主键/无索引/无约束）
+CREATE TABLE IF NOT EXISTS team_member_skills (
+    nickname TEXT,
+    skill_tag TEXT,
+    created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+`;
 
 /** 数据库连接单例 */
 let dbInstance: Database.Database | null = null;
@@ -193,7 +247,7 @@ export function getDb(): Database.Database {
     } else {
       console.log(`[SQLite] Database file existed but tables missing, re-initialized at: ${dbPath}`);
     }
-    console.log(`[SQLite] Tables: conversations, messages, context_compressions, settings, conversation_tags`);
+    console.log(`[SQLite] Tables: conversations, messages, context_compressions, settings, conversation_tags, team_members, team_member_skills`);
   } else {
     console.log(`[SQLite] Database already exists, skipping DDL/PRAGMA: ${dbPath}`);
 
@@ -209,6 +263,17 @@ export function getDb(): Database.Database {
     if (!columnExists(dbInstance, 'conversations', 'model_profile_id')) {
       dbInstance.exec(CONVERSATION_MODEL_PROFILE_COLUMN_DDL);
       console.log('[SQLite] conversations.model_profile_id column added (in-place upgrade, 存量行回填空串)');
+    }
+
+    // 团队表就地补建（needsInit 仅检查 conversations 表，既有库不会执行全量 SCHEMA_SQL；
+    // tableExists 判定 + IF NOT EXISTS 幂等：不删表、不改既有表结构、不重建表）
+    if (!tableExists(dbInstance, 'team_members')) {
+      dbInstance.exec(TEAM_MEMBERS_DDL);
+      console.log('[SQLite] team_members table created (in-place upgrade)');
+    }
+    if (!tableExists(dbInstance, 'team_member_skills')) {
+      dbInstance.exec(TEAM_MEMBER_SKILLS_DDL);
+      console.log('[SQLite] team_member_skills table created (in-place upgrade)');
     }
   }
 

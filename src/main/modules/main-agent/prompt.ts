@@ -11,6 +11,7 @@ import {
 } from '../skill-system/skill-registry';
 import { COMMON_WORKFLOW_PROMPT } from './workflow-prompt';
 import { isWatchRuntimeRunning } from '../watch/watch-runtime-flag';
+import { listEnabledTeamMembers } from '../../db';
 
 type ToolSchema = Record<string, unknown>;
 
@@ -94,11 +95,15 @@ ${buildLivePrompt()}
 \`\`\`
 - a.负责【严谨、逻辑清晰】的分析用户意图。
 - b.负责根据当前上下文和【用户最新意图】，判定是否需要【执行任务】。
-- c.负责根据当前上下文和整体状态以及【交付物缺口】，根据不同的【角色职责】编写【任务书】，委派给制定【角色】任务并执行。
+- c.负责根据当前上下文和整体状态以及【交付物缺口】，依据【可委派任务的人员清单】编写【任务书】，委派给指定【人员昵称】任务并执行。
 - d.负责在产生【最终交付物】之后，判定是否需要执行【全量验证】。
 - e.编写【任务书】时，必须重点描述【任务目标】和【交付物描述】；同时禁止在【任务书】里规划【任务执行过程】。
 \`\`\`
 
+# 可委派任务的人员清单
+\`\`\`json
+${JSON.stringify(listEnabledTeamMembers())}
+\`\`\`
 ${COMMON_WORKFLOW_PROMPT}
 `;
 }
@@ -116,10 +121,9 @@ function buildDelegateToolParameters(): ToolSchema {
         type: 'string',
         description: '精简且严谨的任务中文名称',
       },
-      role_type: {
+      member_nickname: {
         type: 'string',
-        enum: ['审核者', '执行者', '研究者', '实验员'],
-        description: '角色类型，单选，必须依据具体的角色职责进行选择',
+        description: '人员昵称，单选，必须从系统提示【可委派任务的人员清单】中已存在的人员昵称中选择，不得自造',
       },
       delivery_type: {
         type: 'string',
@@ -158,7 +162,7 @@ function buildDelegateToolParameters(): ToolSchema {
     },
     required: [
       'task_name',
-      'role_type',
+      'member_nickname',
       'delivery_type',
       'delivery_spec',
       'task_target',
@@ -172,7 +176,7 @@ function buildDelegateToolParameters(): ToolSchema {
 function buildDelegateExecutorDescription(): string {
   return `
 # 工具说明
-  - 编写【任务书】，并且按照不同角色委派任务并执行
+  - 编写【任务书】，并且按照不同人员委派任务并执行
 
 # 注意事项
 \`\`\`

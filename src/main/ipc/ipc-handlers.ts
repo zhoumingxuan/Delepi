@@ -12,7 +12,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { mkdirSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG, IPC_WATCH, IPC_UPDATE } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TEAM, IPC_TOOLS, IPC_LOG, IPC_WATCH, IPC_UPDATE } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 import type {
   ChatSendFileInput,
@@ -111,6 +111,15 @@ import {
   saveSetting,
   setConversationRunning,
 } from '../db';
+import {
+  createTeamMember,
+  deleteTeamMember,
+  listTeamMembers,
+  updateTeamMember,
+  type TeamMemberInput,
+  type TeamMemberListItem,
+  type TeamMemberUpdateInput,
+} from '../db';
 import { v4 as uuidv4 } from 'uuid';
 import { resolveConversationDir } from '../utils/storage-paths';
 import {
@@ -131,6 +140,7 @@ import {
   TOOL_BATCH_COMPLETED_EVENT,
   MAX_CONVERSATION_TITLE_LENGTH,
   BUILTIN_TASK_TAGS,
+  BUILTIN_EXECUTOR_TASK_TAGS,
   TASK_TAG_SET,
   CUSTOM_TASK_TAG_LIMIT,
   CUSTOM_TEMPLATE_MAX_LENGTH,
@@ -1505,6 +1515,65 @@ export function registerIpcHandlers(mainWindow: BrowserWindow): void {
       }
     },
   );
+
+  // ================================================================
+  // 人员管理处理器（team:* 五通道；team_members + team_member_skills 读写）
+  // - 昵称唯一：仓储层事务内 SELECT 查重（不建数据库唯一约束/索引）
+  // - 先 removeHandler 再 handle：mac activate 二次调用 registerIpcHandlers 时幂等
+  // ================================================================
+
+  const teamChannels = [
+    IPC_TEAM.LIST,
+    IPC_TEAM.CREATE,
+    IPC_TEAM.UPDATE,
+    IPC_TEAM.DELETE,
+    IPC_TEAM.SKILL_TAGS,
+  ] as const;
+  for (const channel of teamChannels) {
+    ipcMain.removeHandler(channel);
+  }
+
+  type TeamListParams = { keyword?: string };
+  type TeamDeleteParams = { nickname?: string };
+
+  /** team:list — 人员列表（按人员昵称或职业关键字过滤；含禁用成员） */
+  ipcMain.handle(
+    IPC_TEAM.LIST,
+    async (_event, params?: TeamListParams): Promise<{ members: TeamMemberListItem[] }> => {
+      const keyword = typeof params?.keyword === 'string' ? params.keyword : '';
+      return { members: listTeamMembers(keyword) };
+    },
+  );
+
+  /** team:create — 新增人员 + 绑定基础技能标签（重名抛中文错误，两表同事务） */
+  ipcMain.handle(
+    IPC_TEAM.CREATE,
+    async (_event, params: TeamMemberInput): Promise<{ member: TeamMemberListItem }> => {
+      return { member: createTeamMember(params) };
+    },
+  );
+
+  /** team:update — 修改人员（改名前查重；技能标签随新昵称迁移，全表无旧昵称孤儿行） */
+  ipcMain.handle(
+    IPC_TEAM.UPDATE,
+    async (_event, params: TeamMemberUpdateInput): Promise<{ member: TeamMemberListItem }> => {
+      return { member: updateTeamMember(params) };
+    },
+  );
+
+  /** team:delete — 删除人员及其全部基础技能标签（两表同事务） */
+  ipcMain.handle(
+    IPC_TEAM.DELETE,
+    async (_event, params: TeamDeleteParams): Promise<{ nickname: string }> => {
+      const nickname = typeof params?.nickname === 'string' ? params.nickname : '';
+      return { nickname: deleteTeamMember(nickname) };
+    },
+  );
+
+  /** team:skill-tags — 基础技能标签可选项（固定返回内置基础技能集合 BUILTIN_EXECUTOR_TASK_TAGS 的数组副本，不含自定义技能） */
+  ipcMain.handle(IPC_TEAM.SKILL_TAGS, async (): Promise<{ tags: string[] }> => {
+    return { tags: [...BUILTIN_EXECUTOR_TASK_TAGS] };
+  });
 
   // ================================================================
   // 动态工具处理器（tools:dyn-reload / tools:dyn-list 两通道；内置3工具锁定）

@@ -787,7 +787,7 @@ function selectWorkflowTemplates(taskTags: TaskTagName[]): WorkflowTemplateSelec
 /** 模板内容注入包装（内置/自定义同构格式） */
 function wrapWorkflowTemplateContent(title: string, content: string): string {
   return `
-##【${title}】工作方式（**若当前任务需要执行此工作方式，则必须精确符合其每一项要求**）
+##【${title}】技能（**若当前任务需要执行此技能，则必须精确符合其每一项要求**）
 \`\`\`
 ${content}
 \`\`\`
@@ -825,7 +825,7 @@ async function readCustomWorkflowTemplateContent(
   try {
     const content = await readCustomSkillTemplateContent(selection.locator);
     if (!content) {
-      const warning = `自定义技能模板内容为空，该技能工作方式未注入: ${selection.title}(${templatePath})`;
+      const warning = `自定义技能模板内容为空，该技能未注入: ${selection.title}(${templatePath})`;
       console.warn(`[executor-agent] ${warning}`);
       return { content: '', warning };
     }
@@ -834,7 +834,7 @@ async function readCustomWorkflowTemplateContent(
     const errCode = error instanceof Error && typeof (error as NodeJS.ErrnoException).code === 'string'
       ? (error as NodeJS.ErrnoException).code
       : 'unknown';
-    const warning = `读取自定义技能模板失败，该技能工作方式未注入: ${selection.title}(${templatePath}), errorCode=${errCode}`;
+    const warning = `读取自定义技能模板失败，该技能未注入: ${selection.title}(${templatePath}), errorCode=${errCode}`;
     console.warn(`[executor-agent] ${warning}`);
     return { content: '', warning };
   }

@@ -9,3 +9,4 @@ export * from './repositories/conversation.repo';
 export * from './repositories/message.repo';
 export * from './repositories/context-compression.repo';
 export * from './repositories/runtime-state.repo';
+export * from './repositories/team-member.repo';

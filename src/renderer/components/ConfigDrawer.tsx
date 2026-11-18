@@ -47,6 +47,7 @@ import {
 import type { AppSettings, ModelProfile, CustomSkillTag } from '@shared/types/config';
 import { DEFAULT_APP_SETTINGS } from '@shared/constants';
 import { PythonEnvTab } from './PythonEnvTab';
+import { TeamManagementTab } from './TeamManagementTab';
 import { OtherSettingsTab } from './OtherSettingsTab';
 
 /** 会话级方案绑定只读视图（config:profiles-list 带 conversationId 时返回） */
@@ -1687,6 +1688,11 @@ export const ConfigDrawer = memo(function ConfigDrawer({
               key: "other",
               label: "其他设置",
               children: <OtherSettingsTab />,
+            },
+            {
+              key: "team",
+              label: "人员管理",
+              children: <TeamManagementTab />,
             },
           ]}
         />

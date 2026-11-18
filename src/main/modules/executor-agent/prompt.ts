@@ -468,10 +468,13 @@ export const EXECUTOR_TOOLS = {
             type: 'object',
             properties: {
                 skill_tag: {
-                    type: 'string',
-                    enum: listSkillTags('executor'),
+                    type: 'array',
+                    items: {
+                        type: 'string',
+                        enum: listSkillTags('executor'),
+                    },
                     description:
-                        '技能标签，枚举值，单选',
+                        '技能标签，枚举值，多选',
                 },
             },
             required: ['skill_tag'],

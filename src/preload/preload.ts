@@ -6,7 +6,7 @@
  */
 
 import { contextBridge, ipcRenderer } from 'electron';
-import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TOOLS, IPC_LOG, IPC_WATCH, IPC_UPDATE } from '@shared/ipc-channels';
+import { IPC_CHAT, IPC_CONFIG, IPC_CONV, IPC_EXECUTOR, IPC_FILE, IPC_PYTHON, IPC_DIALOG, IPC_SKILLS, IPC_TEAM, IPC_TOOLS, IPC_LOG, IPC_WATCH, IPC_UPDATE } from '@shared/ipc-channels';
 import { GET_LAST_ACTIVE_CONVERSATION } from '@shared/last-active-conversation';
 import type { ConversationCleanupOptions } from '@shared/types/conversation-cleanup';
 import type {
@@ -81,6 +81,18 @@ const electronAPI = {
     readTemplate: (params: unknown) => ipcRenderer.invoke(IPC_SKILLS.READ_TEMPLATE, params),
     /** 保存内置技能模板覆写（content=null 恢复默认内容并删除覆写文件） */
     saveBuiltinOverride: (params: unknown) => ipcRenderer.invoke(IPC_SKILLS.SAVE_BUILTIN_OVERRIDE, params),
+  },
+  team: {
+    /** 人员列表（按人员昵称或职业关键字过滤；含禁用成员；渲染→主，invoke） */
+    list: (params?: { keyword?: string }) => ipcRenderer.invoke(IPC_TEAM.LIST, params),
+    /** 新增人员并绑定基础技能标签（重名抛中文错误，人员行与技能行同事务） */
+    create: (params: unknown) => ipcRenderer.invoke(IPC_TEAM.CREATE, params),
+    /** 修改人员（含改名与技能标签覆盖；改名后技能标签随迁，无孤儿行） */
+    update: (params: unknown) => ipcRenderer.invoke(IPC_TEAM.UPDATE, params),
+    /** 删除人员及其全部基础技能标签（两表同事务） */
+    delete: (params: { nickname: string }) => ipcRenderer.invoke(IPC_TEAM.DELETE, params),
+    /** 基础技能标签可选项（主进程固定返回内置基础技能集合 BUILTIN_EXECUTOR_TASK_TAGS 的数组副本） */
+    listSkillTags: () => ipcRenderer.invoke(IPC_TEAM.SKILL_TAGS),
   },
   tools: {
     /** 重载动态工具：先注销全部动态注册再重扫 userData/dyn-tools 目录（内置3工具锁定不受影响） */

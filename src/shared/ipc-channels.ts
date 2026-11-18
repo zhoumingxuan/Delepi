@@ -211,6 +211,20 @@ export const IPC_SKILLS = {
   SAVE_BUILTIN_OVERRIDE: 'skills:save-builtin-override',
 } as const;
 
+// --- 人员管理 IPC 通道（team_members + team_member_skills 读写；昵称唯一由主进程应用层事务内查重保证，不落数据库约束） ---
+export const IPC_TEAM = {
+  /** 人员列表（渲染→主，invoke）：参数 { keyword? }，keyword 命中「人员昵称」或「职业」即保留；返回 { members } */
+  LIST: 'team:list',
+  /** 新增人员并绑定基础技能标签（渲染→主，invoke）：昵称重复抛中文错误；人员行与技能行同事务 */
+  CREATE: 'team:create',
+  /** 修改人员（含改名与技能标签覆盖；渲染→主，invoke）：改名后技能标签随迁；返回 { member } */
+  UPDATE: 'team:update',
+  /** 删除人员（人员行 + 技能标签行同事务删除；渲染→主，invoke）：返回 { nickname } */
+  DELETE: 'team:delete',
+  /** 基础技能标签可选项（渲染→主，invoke）：固定返回内置基础技能集合 BUILTIN_EXECUTOR_TASK_TAGS 结果 { tags } */
+  SKILL_TAGS: 'team:skill-tags',
+} as const;
+
 // --- 动态工具 IPC 通道（userData/dyn-tools 动态注册；内置3工具锁定不受重载影响） ---
 export const IPC_TOOLS = {
   /** 重载动态工具：先注销全部动态注册再重扫 dyn-tools 目录（渲染→主，invoke） */
