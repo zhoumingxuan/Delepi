@@ -7,6 +7,9 @@ import { fsList } from '@/main/tools/fs-list';
 import { fsStat } from '@/main/tools/fs-stat';
 import { fsAppendText } from '@/main/tools/fs-append-text';
 import { scriptTool } from '@/main/tools/script-tool';
+import { skillQuery } from '@/main/tools/skill-query';
+import type { ToolRuntimeContext } from '@/main/tools/runtime-context';
+import { listSkillTags } from '@/main/modules/skill-system/skill-registry';
 
 function getShellLabel(): string {
     if (process.platform === 'win32') return 'Windows PowerShell';
@@ -164,6 +167,13 @@ export function buildScriptToolParameters(): Record<string, unknown> {
         required: ['tool_name','action'],
         additionalProperties: false,
     };
+}
+
+function buildSkillQueryDescription(): string {
+    return `
+    - 【高优先级】
+    - 依据【技能标签】查询可使用的技能
+    `;
 }
 
 /**
@@ -447,5 +457,27 @@ export const EXECUTOR_TOOLS = {
             additionalProperties: false,
         },
         execute: runShell,
+    },
+    query_skill: {
+        config: {
+            name: 'query_skill',
+            displayName: '技能内容查询',
+            buildDescription: buildSkillQueryDescription(),
+        },
+        parameters: {
+            type: 'object',
+            properties: {
+                skill_tag: {
+                    type: 'string',
+                    enum: listSkillTags('executor'),
+                    description:
+                        '技能标签，枚举值，单选',
+                },
+            },
+            required: ['skill_tag'],
+            additionalProperties: false,
+        },
+        execute: (input: unknown, context: ToolRuntimeContext) =>
+            skillQuery(input, context, 'executor'),
     },
 }

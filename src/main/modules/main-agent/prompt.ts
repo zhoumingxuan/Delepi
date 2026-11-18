@@ -2,8 +2,6 @@ import { formatCurrentDateTime } from '@main/utils/helper';
 import {
   EXECUTOR_DELIVERY_TYPES,
   TASK_TAGS,
-  TASK_TYPE_VALUES,
-  getAllTaskTags,
 } from '../../constants';
 import { skillQuery } from '../../tools/skill-query';
 import {
@@ -12,7 +10,6 @@ import {
   listSkillTagsWithConditions,
 } from '../skill-system/skill-registry';
 import { COMMON_WORKFLOW_PROMPT } from './workflow-prompt';
-import { configManager } from '../config/config-manager';
 import { isWatchRuntimeRunning } from '../watch/watch-runtime-flag';
 
 type ToolSchema = Record<string, unknown>;
@@ -109,7 +106,7 @@ ${COMMON_WORKFLOW_PROMPT}
 export const MAIN_DELEGATE_TOOL_NAME = 'delegate_executor';
 
 
-export { EXECUTOR_DELIVERY_TYPES, TASK_TAGS, TASK_TYPE_VALUES };
+export { EXECUTOR_DELIVERY_TYPES, TASK_TAGS };
 
 function buildDelegateToolParameters(): ToolSchema {
   return {
@@ -119,11 +116,10 @@ function buildDelegateToolParameters(): ToolSchema {
         type: 'string',
         description: '精简且严谨的任务中文名称',
       },
-      task_type: {
+      role_type: {
         type: 'string',
-        enum: TASK_TYPE_VALUES,
-        description:
-          '任务类型，单选',
+        enum: ['审核者', '执行者', '研究者', '实验员'],
+        description: '角色类型，单选，必须依据具体的角色职责进行选择',
       },
       delivery_type: {
         type: 'string',
@@ -151,36 +147,22 @@ function buildDelegateToolParameters(): ToolSchema {
             '单条原子【任务规则和约束】，必须写清【约束对象、规则对象以及严谨的判定条件】',
         },
       },
-      skills: {
-        type: 'array',
-        description: `
-        执行此任务时，适配的【执行者】技能标签集合，最多选择3个，至少选择1个；
-        **注意：此处选择的是【执行者】技能，必须符合声明的技能标签枚举；并且绝不能是你自己的【编排者】技能**
-        `,
-        minItems: 1,
-        maxItems: 3,
-        items: {
-          type: 'string',       
-          enum: getAllTaskTags('executor', configManager.getSettings().customSkillTags),
-        },
-      },
       context: {
         type: 'string',
         minLength: 1,
         description: `
-        提交给【执行者】的上下文内容，禁止有任何指代性表述，至少包含：
+        用于任务的【关键上下文】信息承接，必须使用【自包含】式表述，禁止有任何指代性表述，并且至少包含：
         - 从【中间存储信息变量】按【时间顺序】提取的**与当前【任务目标】相关的所有【结论、线索、信息等】以及交付物产出**，并标记【时序】和【来源】。
         `
       },
     },
     required: [
       'task_name',
-      'task_type',
+      'role_type',
       'delivery_type',
       'delivery_spec',
       'task_target',
       'constraints',
-      'skills',
       'context',
     ],
     additionalProperties: false,

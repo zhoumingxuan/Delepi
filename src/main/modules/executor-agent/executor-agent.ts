@@ -21,14 +21,12 @@ import { streamChat } from '../llm/openai-client';
 import { initAdapterWithFallback, warnCodingPlanMismatch } from '../llm/adapters/adapter-factory';
 import type { ProtocolAdapter, AdapterInitConfig } from '../llm/adapters/protocol-adapter';
 import { isModelApiAbortError } from '../llm/model-retry';
-import { configManager } from '../config/config-manager';
 import { buildRuntimeAssistantMessage } from './runtime-assistant-message';
 import { buildExecutorSystemPrompt } from './executor-system-prompt';
 import { createExecutorContextCompressionRunner } from './executor-context-compression';
 import {
   SCRIPTS_TOOLS_DIR,
   type TaskTagName,
-  getAllTaskTags,
 } from '../../constants';
 import {
   parseExecutorStructuredPayload,
@@ -115,12 +113,10 @@ export interface DelegatedUploadedFile {
 type RuntimeMessage = OpenAI.Chat.ChatCompletionMessageParam;
 type DelegateExecutorInput = {
   task_name?: unknown;
-  task_type?: unknown;
   task_target?: unknown;
   constraints?: unknown;
   delivery_type?: unknown;
   delivery_spec?: unknown;
-  skills?: unknown;
   context?: unknown;
 };
 
@@ -131,12 +127,10 @@ type ExpectedDelivery = {
 
 type ParsedDelegateExecutorInput = {
   taskName: string;
-  taskType: string;
   taskTarget: string;
   taskConstraints: string[];
   contextData: string;
   expectedDelivery: ExpectedDelivery;
-  skillTags: TaskTagName[];
 };
 
 type ParsedDelegateExecutorInputResult = {
@@ -167,29 +161,6 @@ function extractAssistantReasoning(
   const reasoning = payload.reasoning_content ?? payload.reasoning;
 
   return typeof reasoning === 'string' ? reasoning : '';
-}
-
-function normalizeTaskTags(value: unknown): TaskTagName[] {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-// 第二关：放行集合为「执行者侧归属集合（内置执行者 9 项 ∪ 归属 executor 的启用自定义）」（单一定义源 getAllTaskTags）。
-  // 内置执行者标签行为不变（内置执行者 9 项包含于归属集合），归属 executor 的启用自定义标签放行，未知标签仍丢弃，去重逻辑保持。
-  const allowedTagSet = new Set<string>(getAllTaskTags('executor', configManager.getSettings().customSkillTags));
-  const tags: TaskTagName[] = [];
-
-  for (const item of value) {
-    const tag = normalizeString(item);
-
-    if (!allowedTagSet.has(tag) || tags.includes(tag)) {
-      continue;
-    }
-
-    tags.push(tag);
-  }
-
-  return tags;
 }
 
 function normalizeExpectedDeliveryType(value: unknown): ExecutorDeliveryType | '' {
@@ -263,10 +234,6 @@ function collectDelegateExecutorInputIssues(parsed: DelegateExecutorInput): stri
     issues.push('task_name 缺失（未提供），期望为非空字符串');
   }
 
-  if (!normalizeString(parsed.task_type)) {
-    issues.push('task_type 缺失（未提供），期望为非空字符串');
-  }
-
   if (!normalizeString(parsed.task_target)) {
     issues.push('task_target 缺失（未提供），期望为非空字符串（允许用同义字段 target 传入）');
   }
@@ -285,49 +252,6 @@ function collectDelegateExecutorInputIssues(parsed: DelegateExecutorInput): stri
 
   if (!normalizeString(parsed.context)) {
     issues.push('context 缺失（未提供），期望为非空字符串');
-  }
-
-  if (!Array.isArray(parsed.skills)) {
-    issues.push(
-      !normalizeString(parsed.skills)
-        ? 'skills 缺失（未提供），期望为数组（元素需为允许的技能标签）'
-        : `skills 当前值 ${formatParamCurrentValue(parsed.skills)} 不是数组，期望为数组（元素需为允许的技能标签）`
-    );
-  }
-
-  // skills 元素级校验：放行集合与主智能体侧 schema enum 同源（执行者侧归属集合（内置执行者 9 项 ∪ 归属 executor 的启用自定义），单一定义源 getAllTaskTags）。
-  // 非字符串 / 空字符串 / 不在允许范围逐元素报错，文案精确指向失败元素并原样输出该元素值。
-  if (Array.isArray(parsed.skills)) {
-    const skillsAllowedTags = getAllTaskTags('executor', configManager.getSettings().customSkillTags);
-    const skillsAllowedTagSet = new Set<string>(skillsAllowedTags);
-    const skillsAllowedValues = `[${skillsAllowedTags.join('、')}]`;
-
-    for (let index = 0; index < parsed.skills.length; index += 1) {
-      const skillTag = parsed.skills[index];
-      const position = index + 1;
-
-      if (typeof skillTag !== 'string') {
-        issues.push(
-          `skills 第 ${position} 项当前值 ${formatParamCurrentValue(skillTag)} 不是字符串，期望为允许的技能标签`
-        );
-        continue;
-      }
-
-      const tag = skillTag.trim();
-
-      if (!tag) {
-        issues.push(
-          `skills 第 ${position} 项当前值 ${formatParamCurrentValue(skillTag)} 不是非空字符串，期望为允许的技能标签`
-        );
-        continue;
-      }
-
-      if (!skillsAllowedTagSet.has(tag)) {
-        issues.push(
-          `skills 第 ${position} 项当前值 ${formatParamCurrentValue(skillTag)} 不在允许范围 ${skillsAllowedValues}`
-        );
-      }
-    }
   }
 
   return issues;
@@ -379,12 +303,10 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
   const issues = collectDelegateExecutorInputIssues(parsed);
 
   const taskName = normalizeString(parsed.task_name);
-  const taskType = normalizeString(parsed.task_type);
   const contextData = normalizeString(parsed.context);
   const taskTarget = normalizeString(parsed.task_target);
   const taskConstraints = collectTaskConstraintDescriptions(parsed.constraints);
   const expectedDelivery = collectExpectedDelivery(parsed);
-  const skillTags = normalizeTaskTags(parsed.skills);
 
   if (issues.length || !expectedDelivery) {
     return {
@@ -396,11 +318,9 @@ function parseDelegateExecutorInput(rawArguments: string): ParsedDelegateExecuto
   return {
     input: {
       taskName,
-      taskType,
       taskTarget,
       taskConstraints,
       expectedDelivery,
-      skillTags,
       contextData,
     },
     issues: [],
@@ -478,8 +398,6 @@ ${JSON.stringify(completedTasks)}
 \`\`\`
 - [任务名称]：
   ${input.taskName}
-- [任务类型]：
-  ${input.taskType}
 - [任务目标]:
   ${input.taskTarget}
 - [任务规则和约束]：
@@ -500,7 +418,6 @@ ${completedTasksSection ? `\n\n${completedTasksSection}` : ''}
 
 function buildExecutorPlainTextPrompt(options: {
   taskInput: ParsedDelegateExecutorInput;
-  workflowTemplates: string[];
   completedTasks?: CompletedTaskInfo[];
   currentUploadedFiles?: DelegatedUploadedFile[];
   finalOutputDir?: string;
@@ -515,12 +432,6 @@ function buildExecutorPlainTextPrompt(options: {
       options.runDir,
     ),
   ];
-
-  for (const workflowTemplate of options.workflowTemplates) {
-    if (workflowTemplate.trim()) {
-      sections.push(workflowTemplate);
-    }
-  }
 
   return sections.join('\n\n');
 }
@@ -1354,14 +1265,9 @@ export async function runDelegatedTask(
     (tool) => !(tool.function.name === 'use_script_tool' && !hasValidScriptTools),
   );
 
-  // 读取工作流模板（内置+自定义双源；自定义读取失败收集告警，最终附到委派结果 data）
-  const { contents: workflowTemplates, warnings: workflowTemplateWarnings } =
-    await readWorkflowTemplates(parsedInput.skillTags);
-
 // 构建消息（清单块尾拼在 buildExecutorPlainTextPrompt 产物之后，保证位于用户提示词最后面）
   const plainExecutorPrompt = buildExecutorPlainTextPrompt({
     taskInput: parsedInput,
-    workflowTemplates,
     completedTasks: options.completedTasks,
     currentUploadedFiles: options.currentUploadedFiles,
     finalOutputDir: options.finalOutputDir,
@@ -1673,11 +1579,6 @@ export async function runDelegatedTask(
           startAt: taskStartedAt,
         });
       }
-    }
-
-// 自定义模板读取失败告警附到委派结果 data（仅存在告警时出现该字段）
-    if (workflowTemplateWarnings.length > 0) {
-      resultData = { ...(resultData ?? {}), workflowTemplateWarnings };
     }
 
     const finalResult = buildToolResult({
