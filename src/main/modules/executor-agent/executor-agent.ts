@@ -246,6 +246,24 @@ function collectDelegateExecutorInputIssues(parsed: DelegateExecutorInput): stri
     issues.push('context 缺失（未提供），期望为非空字符串');
   }
 
+  // 人员存在性校验：member_nickname 非空时必须命中人员库（数据源与后续注入同源：getTeamMemberByNickname），
+  // 查无此人直接判定本次委派失败，禁止向不存在的人员派发任务。
+  const memberNickname = normalizeString(parsed.member_nickname);
+  if (memberNickname) {
+    let memberExists = true;
+    try {
+      memberExists = getTeamMemberByNickname(memberNickname) !== null;
+    } catch (error) {
+      // 查库异常不视为「不存在」（与人员注入段一致：仅告警不中止），存在性校验只对确定查无此人判失败
+      console.warn(`[executor-agent] 校验人员信息失败，跳过人员存在性校验: ${ensureErrorMessage(error)}`);
+    }
+    if (!memberExists) {
+      issues.push(
+        `member_nickname 当前值 ${formatParamCurrentValue(parsed.member_nickname)} 在人员库中不存在，期望为【可委派任务的人员清单】内已存在的【人员昵称】`
+      );
+    }
+  }
+
   return issues;
 }
 
@@ -1093,7 +1111,7 @@ type MemberInjectionParts = {
  * - 昵称：必须注入项（memberNickname 非空即注入原文，任何分支都不省略）；
  * - 职业：可省略项（NULL/空串/纯空白时仅省略职业这一行）；
  * - 技能：条件注入项（skillTags 为空数组时整段不注入）；
- * - 查无此人或查库异常：仅注入昵称，不报错、不中止任务。
+ * - 查库异常：仅注入昵称，不报错、不中止任务（查无此人已在委派入参校验阶段直接判失败，不会进入本函数）。
  */
 function buildMemberInjectionText(memberNickname: string): MemberInjectionParts {
   const nickname = normalizeString(memberNickname);
