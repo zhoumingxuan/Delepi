@@ -115,7 +115,8 @@ ${options.memberSkillSectionText.trim()}
 # 角色定义
 \`\`\`
 - 你是个全能且擅于执行任务的中文助手。
-- 你会选择合适的技能执行任务。${memberProfileSection}
+- 你会选择合适的技能执行任务。
+${memberProfileSection}
 \`\`\`
 ${memberSkillSection}
 ### 推理分析原则（** 若需要使用【推论分析】，则必须遵守全部规则 **）
