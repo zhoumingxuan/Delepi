@@ -241,14 +241,15 @@ export const EXECUTOR_DELIVERY_TYPE_SET: ReadonlySet<string> = new Set<string>(E
 
 /**
  * team_members.role_type 取值→角色（int 枚举；取值顺序与内联 SCHEMA_SQL / TEAM_MEMBERS_DDL 注释逐字一致：
- * 1=执行者、2=审核者、3=研究者、4=实验员。仅代码级取值约定，不落 CHECK 约束、不建索引）
+ * 1=执行者、2=审核者、3=研究者、4=实验员、5=设计师。仅代码级取值约定，不落 CHECK 约束、不建索引）
  */
 export const TEAM_MEMBER_ROLE_TYPE_LABELS = {
   1: '执行者',
   2: '审核者',
   3: '研究者',
   4: '实验员',
+  5: '设计师',
 } as const;
 
-/** team_members.role_type 取值联合类型（1 | 2 | 3 | 4，键集与 TEAM_MEMBER_ROLE_TYPE_LABELS 同源） */
+/** team_members.role_type 取值联合类型（1 | 2 | 3 | 4 | 5，键集与 TEAM_MEMBER_ROLE_TYPE_LABELS 同源） */
 export type TeamMemberRoleType = keyof typeof TEAM_MEMBER_ROLE_TYPE_LABELS;

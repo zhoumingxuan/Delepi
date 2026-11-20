@@ -43,7 +43,6 @@ type FinalOutputPayload = {
   errors: string[];
   summaryFilename: string;
   deliverableFilename: string;
-  cleanableInfoFilename: string;
 };
 
 export type ExecutorStructuredPayloadParseResult = {
@@ -212,7 +211,6 @@ function normalizeFinalOutputPayload(
     errors,
     summaryFilename: normalizeFilename(source.summary_filename),
     deliverableFilename: normalizeFilename(source.deliverable_filename),
-    cleanableInfoFilename: normalizeFilename(source.cleanable_info_filename),
   };
 
   return { payload, error: null };
@@ -359,11 +357,6 @@ function normalizeCopiedDeliverablePaths(
   return isRecord(normalized) ? normalized : result;
 }
 
-function readStringArrayField(value: unknown, fieldName: string): string[] {
-  if (!isRecord(value) || !Array.isArray(value[fieldName])) return [];
-  return value[fieldName].filter((item): item is string => typeof item === 'string');
-}
-
 /**
  * 解析执行子智能体最终输出为结构化协议
  */
@@ -419,13 +412,6 @@ export async function parseExecutorStructuredPayload(options: {
       result = readContent;
     }
 
-    const cleanableInfo = parseJsonText(
-      await readFinalOutputFileIfPresent(
-        options.finalOutputDir,
-        finalOutput.payload.cleanableInfoFilename,
-      ) ?? '',
-    );
-
     return {
       payload: {
         success: finalOutput.payload.success,
@@ -433,7 +419,7 @@ export async function parseExecutorStructuredPayload(options: {
         result,
         warnings: finalOutput.payload.warnings,
         errors: finalOutput.payload.errors,
-        temporaryPaths: readStringArrayField(cleanableInfo, 'temporary_paths'),
+        temporaryPaths: [],
       },
       error: null,
     };

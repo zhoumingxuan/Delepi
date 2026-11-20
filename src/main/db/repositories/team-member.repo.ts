@@ -85,7 +85,7 @@ export interface TeamMemberListItem {
   rowId: number;
   nickname: string;
   roleType: number | null;
-  /** 角色中文：1=执行者、2=审核者、3=研究者、4=实验员；NULL 或枚举外为空串 */
+  /** 角色中文：1=执行者、2=审核者、3=研究者、4=实验员、5=设计师；NULL 或枚举外为空串 */
   roleLabel: string;
   profession: string;
   duty: string;
@@ -131,7 +131,7 @@ function normalizeNickname(value: unknown): string {
 function normalizeRoleType(value: unknown): number {
   const roleType = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(roleType) || !TEAM_MEMBER_ROLE_TYPE_SET.has(roleType)) {
-    throw new Error('角色类型取值非法：仅支持 1=执行者、2=审核者、3=研究者、4=实验员');
+    throw new Error('角色类型取值非法：仅支持 1=执行者、2=审核者、3=研究者、4=实验员、5=设计师');
   }
   return roleType;
 }

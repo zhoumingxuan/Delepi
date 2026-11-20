@@ -520,8 +520,8 @@ function collectResultDeliveredFilePaths(
 }
 
 /**
- * 从待清理临时路径中剔除交付文件路径（兜底保护，防止 cleanable_info.json
- * 登记的临时路径被递归删除时误删本次交付文件，含源文件与 output 副本）。
+ * 从待清理临时路径中剔除交付文件路径（兜底保护，防止待清理路径
+ * 被递归删除时误删本次交付文件，含源文件与 output 副本）。
  * 剔除规则：临时路径与交付路径相同，或交付文件位于临时路径目录之内。
  */
 function excludeDeliveredPathsFromTemporaryPaths(
@@ -1093,7 +1093,7 @@ function buildMemberSkillPrioritySection(skillTags: string[]): string {
   }
 
   return `
-# 【可优先使用的技能】
+# 【优先使用的技能清单】
 \`\`\`
 ${skillTags.map((tag) => `- ${tag}`).join('\n')}
 \`\`\`

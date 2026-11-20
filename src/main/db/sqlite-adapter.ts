@@ -16,6 +16,8 @@ import { app } from 'electron';
 import {
   DB_FILE_NAME,
   DATA_DIR_NAME,
+  BUILTIN_EXECUTOR_TASK_TAGS,
+  type TeamMemberRoleType,
 } from '../constants';
 
 /** 解析数据库路径 */
@@ -101,7 +103,7 @@ CREATE TABLE IF NOT EXISTS settings (
 
 -- ============================================================================
 -- 6. 团队成员表（团队协作：成员基础画像；无主键、无索引、无约束，仅时间列带本地时区默认值）
--- role_type int 枚举：1=执行者、2=审核者、3=研究者、4=实验员（仅注释说明，不落 CHECK 约束）
+-- role_type int 枚举：1=执行者、2=审核者、3=研究者、4=实验员、5=设计师（仅注释说明，不落 CHECK 约束）
 -- ============================================================================
 CREATE TABLE IF NOT EXISTS team_members (
     nickname TEXT,
@@ -164,7 +166,7 @@ const CONVERSATION_MODEL_PROFILE_COLUMN_DDL =
  * 背景：getDb 的 needsInit 仅检查 conversations 表，存量库会跳过全量 SCHEMA_SQL，
  *       新表必须在此单独补建（tableExists 判定 + IF NOT EXISTS，幂等，重复执行安全）
  */
-const TEAM_MEMBERS_DDL = `-- team_members（团队成员，无主键/无索引/无约束；role_type int 枚举 1=执行者、2=审核者、3=研究者、4=实验员）
+const TEAM_MEMBERS_DDL = `-- team_members（团队成员，无主键/无索引/无约束；role_type int 枚举 1=执行者、2=审核者、3=研究者、4=实验员、5=设计师）
 CREATE TABLE IF NOT EXISTS team_members (
     nickname TEXT,
     role_type INTEGER,
@@ -188,6 +190,99 @@ CREATE TABLE IF NOT EXISTS team_member_skills (
     created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 `;
+
+/**
+ * 默认种子人员（team_members 全空时注入）
+ * - nickname：由实现方拟定，统一为二次元风格且不含事务职责类字样，5 个昵称互不相同，长度 ≤ 32
+ * - roleType：与 TEAM_MEMBER_ROLE_TYPE_LABELS 键集同源（1=执行者、2=审核者、3=研究者、4=实验员、5=设计师）
+ * - profession：留空（写 NULL，不编造职业内容）
+ * - duty：需求给定的职责原文，逐字写入（「技能：…」子句不并入职责，技能落 team_member_skills）
+ * - skillTags：类型锁定为内置基础技能标签字面量联合 (typeof BUILTIN_EXECUTOR_TASK_TAGS)[number]，
+ *   非内置标签取值会直接编译失败（杜绝新增或改名技能标签）
+ */
+interface TeamMemberSeed {
+  nickname: string;
+  roleType: TeamMemberRoleType;
+  duty: string;
+  skillTags: ReadonlyArray<(typeof BUILTIN_EXECUTOR_TASK_TAGS)[number]>;
+}
+
+/** 5 条默认种子人员：执行者 2 / 审核者 2 / 研究者 4 / 实验员 3 / 设计师 4，技能绑定合计 15 条 */
+const TEAM_MEMBER_SEEDS: ReadonlyArray<TeamMemberSeed> = [
+  {
+    nickname: '虎鲸小汐',
+    roleType: 1,
+    duty: '负责执行需要实际落地的操作。',
+    skillTags: ['执行变更', '调查研究'],
+  },
+  {
+    nickname: '水母小澪',
+    roleType: 2,
+    duty: '负责对已完成的成果进行深度验证和核查。',
+    skillTags: ['用例执行', '用例编写'],
+  },
+  {
+    nickname: '海豚千夏',
+    roleType: 3,
+    duty: '负责研究目标并给出结论；负责分析出现问题的根因；负责研究任何类型的可行方案。',
+    skillTags: ['问题诊断', '调查研究', '方案设计', '文书编写'],
+  },
+  {
+    nickname: '鲸鲨潮音',
+    roleType: 4,
+    duty: '负责执行任何类型的实验，包括自动化的实验；负责执行任何类型的实验验证；负责对推论进行实验证明。',
+    skillTags: ['问题诊断', '自动化交互', '调查研究'],
+  },
+  {
+    nickname: '章鱼小墨',
+    roleType: 5,
+    duty: '负责任何类型的创意设计；负责任何类型的产品设计；负责评审视觉效果并给出修改建议；负责含视觉方案或者含用户交互方案的构建。',
+    skillTags: ['调查研究', '方案设计', '视觉设计', '文书编写'],
+  },
+];
+
+/**
+ * 人员数据全为空时注入默认种子人员（人员行与技能绑定行在同一事务内原子写入）
+ * 判定口径严格按「人员数据全为空则默认加一些数据」：team_members 行数为 0 即注入；
+ * 已有任意 1 条及以上人员则整段跳过（不新增任何人员行或技能行，不引入标记表/标记字段/开关）。
+ * 覆盖两条基线：数据库文件首次创建（SCHEMA_SQL 建表后表为空）与存量库表为空（含就地补建表后为空）。
+ */
+function seedDefaultTeamMembersIfEmpty(db: Database.Database): void {
+  const existing = db.prepare('SELECT COUNT(*) AS total FROM team_members').get() as
+    | { total: number }
+    | undefined;
+  if (existing && existing.total > 0) {
+    return;
+  }
+
+  const insertMember = db.prepare(`
+    INSERT INTO team_members (nickname, role_type, profession, duty, is_multi_task_parallel, status, created_at, updated_at)
+    VALUES (?, ?, NULL, ?, 1, 1, datetime('now','localtime'), datetime('now','localtime'))
+  `);
+  const insertSkill = db.prepare(`
+    INSERT INTO team_member_skills (nickname, skill_tag, created_at)
+    VALUES (?, ?, datetime('now','localtime'))
+  `);
+
+  const seed = db.transaction(() => {
+    let memberCount = 0;
+    let skillCount = 0;
+    for (const member of TEAM_MEMBER_SEEDS) {
+      insertMember.run(member.nickname, member.roleType, member.duty);
+      memberCount += 1;
+      for (const tag of member.skillTags) {
+        insertSkill.run(member.nickname, tag);
+        skillCount += 1;
+      }
+    }
+    return { memberCount, skillCount };
+  });
+
+  const { memberCount, skillCount } = seed();
+  console.log(
+    `[SQLite] Default team members seeded (team_members was empty): members=${memberCount}, skills=${skillCount} at ${resolveDbPath()}`
+  );
+}
 
 /** 数据库连接单例 */
 let dbInstance: Database.Database | null = null;
@@ -276,6 +371,9 @@ export function getDb(): Database.Database {
       console.log('[SQLite] team_member_skills table created (in-place upgrade)');
     }
   }
+
+  // 人员数据全为空（首次建库 / 存量库表为空）→ 注入默认种子人员（5 角色各 1 名 + 技能绑定）
+  seedDefaultTeamMembersIfEmpty(dbInstance);
 
   return dbInstance;
 }

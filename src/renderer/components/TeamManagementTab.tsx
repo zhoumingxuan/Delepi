@@ -4,8 +4,8 @@
  * 功能：
  * - 成员表格：人员昵称 / 角色类型 / 职业 / 职责 / 多任务并行 / 启用状态 / 基础技能标签 / 操作
  * - 关键字过滤：按「人员昵称」或「职业」模糊匹配（主进程参数化 LIKE，服务端过滤）
- * - 内联新增/编辑表单（与表格同屏）：昵称、角色类型（中文单选）、职业、职责、
- *   多任务并行开关、启用状态开关、基础技能标签多选（选项=主进程固定返回的内置基础技能集合，不含自定义技能）
+ * - 新增/编辑弹框：antd Modal 承载表单，昵称、角色类型（中文单选）、职业、职责、
+ *   多任务并行开关、启用状态开关、基础技能标签多选（选项=主进程固定返回的内置基础技能集合）
  * - 删除：Modal 二次确认，主进程在事务内同时清理 team_members 与 team_member_skills
  * - 昵称唯一：前端做「已存在」提示，最终由主进程事务内 SELECT 查重兜底（表无 UNIQUE 约束）
  *
@@ -22,7 +22,7 @@ import {
   Divider,
   Flex,
   Input,
-  Radio,
+  Modal,
   Select,
   Switch,
   Table,
@@ -31,7 +31,7 @@ import {
   theme,
 } from 'antd';
 import type { TableProps } from 'antd';
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PlusOutlined } from '@ant-design/icons';
 
 /** 人员列表项（字段与主进程 TeamMemberListItem 一一对应） */
 interface TeamMemberListItem {
@@ -39,7 +39,7 @@ interface TeamMemberListItem {
   rowId: number;
   nickname: string;
   roleType: number | null;
-  /** 角色中文：1=执行者、2=审核者、3=研究者、4=实验员 */
+  /** 角色中文：1=执行者、2=审核者、3=研究者、4=实验员、5=设计师 */
   roleLabel: string;
   profession: string;
   duty: string;
@@ -65,23 +65,66 @@ interface TeamMemberPayload {
 
 /** 人员管理 IPC 局部类型（preload 已暴露 team 五方法） */
 interface TeamApi {
-  list: (params?: { keyword?: string }) => Promise<{ members: TeamMemberListItem[] }>;
+  list: () => Promise<{ members: TeamMemberListItem[] }>;
   create: (params: TeamMemberPayload) => Promise<{ member: TeamMemberListItem }>;
   update: (params: TeamMemberPayload & { originalNickname: string }) => Promise<{ member: TeamMemberListItem }>;
   delete: (params: { nickname: string }) => Promise<{ nickname: string }>;
   listSkillTags: () => Promise<{ tags: string[] }>;
 }
 
-/** 角色类型选项（文案与主进程 TEAM_MEMBER_ROLE_TYPE_LABELS 同源：1=执行者/2=审核者/3=研究者/4=实验员） */
+/** 角色类型选项（文案与主进程 TEAM_MEMBER_ROLE_TYPE_LABELS 同源：1=执行者/2=审核者/3=研究者/4=实验员/5=设计师） */
 const ROLE_TYPE_OPTIONS: Array<{ value: number; label: string }> = [
   { value: 1, label: '执行者' },
   { value: 2, label: '审核者' },
   { value: 3, label: '研究者' },
   { value: 4, label: '实验员' },
+  { value: 5, label: '设计师' },
 ];
 
 /** 单个人员可绑定的基础技能标签数量上限（与主进程 MAX_TEAM_MEMBER_SKILL_TAG_COUNT 一致） */
 const MAX_SKILL_TAG_COUNT = 20;
+
+/** 表格本体最小高度（px）：表头 + 数据区的保底高度，0/1 行数据时表格本体仍是一块完整区域，而不是一条「表头 + 一行」 */
+const TABLE_MIN_HEIGHT = 320;
+
+/** 数据区最大高度（px）：数据行超过该高度时在数据区内部纵向滚动、表头常驻（antd 6.6.1 scroll.y 走固定表头形态） */
+const TABLE_BODY_MAX_HEIGHT = 400;
+
+/** 表格专属根类名：高度自适应样式只挂在该前缀之下，不触碰任何全局 .ant-* 规则（样式在本文件内注入，不新增 css 文件） */
+const TABLE_ROOT_CLASS_NAME = 'team-management-table';
+
+/**
+ * 表格高度自适应样式（作用域化，前缀 = 表格专属 rootClassName）：
+ * - 固定表头分支下 rc-table 只把 styles.content 用在非固定表头的 .ant-table-content 上，
+ *   styles.body.wrapper 又落在 tbody（min-height 对 table-row-group 不生效），因此只能以作用域 CSS 下发；
+ * - 容器 flex 纵向：表头定高、数据区 flex:1 撑满 → 表格本体总高 = max(最小高度, 表头高 + 数据行高)；
+ * - 数据区仍保留 scroll.y 的 max-height → 内容超过最大高度才在数据区内部滚动，表头不随滚；
+ * - 最小高度按内容盒计算（content-box），收边的 1px 线不占用最小高度，表头 + 数据区净高恒不低于最小高度；
+ * - 白色表面 + 底部闭合线：最小高度区间内呈现为一块有底色的完整表格区域，不与抽屉底色融为一体。
+ */
+function buildTeamTableCss(colorBgElevated: string, colorBorderSecondary: string): string {
+  return `
+.${TABLE_ROOT_CLASS_NAME} .ant-table {
+  background: ${colorBgElevated};
+}
+.${TABLE_ROOT_CLASS_NAME} .ant-table-container {
+  display: flex;
+  flex-direction: column;
+  box-sizing: content-box;
+  min-height: ${TABLE_MIN_HEIGHT}px;
+  border-bottom: 1px solid ${colorBorderSecondary};
+}
+.${TABLE_ROOT_CLASS_NAME} .ant-table-body {
+  flex: 1 1 auto;
+}
+.${TABLE_ROOT_CLASS_NAME} .ant-table-tbody .ant-table-placeholder .ant-table-cell {
+  border-bottom: 0;
+}
+.${TABLE_ROOT_CLASS_NAME} .ant-table-thead > tr > th {
+  white-space: nowrap;
+}
+`;
+}
 
 /**
  * 剥离 Electron 对主进程 handler 抛错的固定包装前缀：
@@ -99,6 +142,10 @@ function toReadableError(error: unknown, fallback: string): string {
 export function TeamManagementTab(): ReactElement {
   const { token } = theme.useToken();
   const { message: antdMessage, modal: antdModal } = AntApp.useApp();
+  const teamTableCss = useMemo(
+    () => buildTeamTableCss(token.colorBgElevated, token.colorBorderSecondary),
+    [token.colorBgElevated, token.colorBorderSecondary],
+  );
   const teamApi = useMemo(
     () => (window as unknown as { electronAPI?: { team?: TeamApi } }).electronAPI?.team,
     [],
@@ -106,12 +153,11 @@ export function TeamManagementTab(): ReactElement {
 
   const [members, setMembers] = useState<TeamMemberListItem[]>([]);
   const [loading, setLoading] = useState(false);
-  /** 输入框即时值 */
-  const [keywordInput, setKeywordInput] = useState('');
-  /** 已提交的过滤关键字（变化即重新查询） */
-  const [keyword, setKeyword] = useState('');
   /** 可绑定的基础技能标签（主进程固定返回的内置基础技能集合 BUILTIN_EXECUTOR_TASK_TAGS） */
   const [skillTags, setSkillTags] = useState<string[]>([]);
+
+  /** 新增/编辑弹框是否展开（新增与编辑共用同一弹框） */
+  const [formOpen, setFormOpen] = useState(false);
 
   /** 编辑中的人员的原昵称（null=新增态） */
   const [editingNickname, setEditingNickname] = useState<string | null>(null);
@@ -125,14 +171,14 @@ export function TeamManagementTab(): ReactElement {
   const [saving, setSaving] = useState(false);
 
   const loadMembers = useCallback(
-    async (nextKeyword: string) => {
+    async () => {
       if (!teamApi) {
         antdMessage.error('人员管理接口不可用，请重启应用后重试');
         return;
       }
       setLoading(true);
       try {
-        const result = await teamApi.list({ keyword: nextKeyword });
+        const result = await teamApi.list();
         setMembers(Array.isArray(result?.members) ? result.members : []);
       } catch (error) {
         antdMessage.error(`加载人员列表失败：${toReadableError(error, '未知错误')}`);
@@ -155,14 +201,15 @@ export function TeamManagementTab(): ReactElement {
     }
   }, [teamApi, antdMessage]);
 
-  // 挂载即拉取技能标签；关键字变化即重新查询（服务端过滤）
+  // 挂载即拉取技能标签
   useEffect(() => {
     void loadSkillTags();
   }, [loadSkillTags]);
 
+  // 挂载即拉取人员列表（无关键字过滤，一次性取全量）
   useEffect(() => {
-    void loadMembers(keyword);
-  }, [keyword, loadMembers]);
+    void loadMembers();
+  }, [loadMembers]);
 
   const resetForm = useCallback(() => {
     setEditingNickname(null);
@@ -175,10 +222,17 @@ export function TeamManagementTab(): ReactElement {
     setFormSkillTags([]);
   }, []);
 
+  /** 关闭弹框并重置表单（弹框「取消」与保存成功后统一走这里） */
+  const closeForm = useCallback(() => {
+    setFormOpen(false);
+    resetForm();
+  }, [resetForm]);
+
   const startCreate = useCallback(() => {
     resetForm();
     // 新建前刷新技能标签选项，保证选项为实时返回值
     void loadSkillTags();
+    setFormOpen(true);
   }, [resetForm, loadSkillTags]);
 
   const startEdit = useCallback(
@@ -192,6 +246,7 @@ export function TeamManagementTab(): ReactElement {
       setFormEnabled(record.enabled);
       setFormSkillTags(record.skillTags);
       void loadSkillTags();
+      setFormOpen(true);
     },
     [loadSkillTags],
   );
@@ -204,7 +259,7 @@ export function TeamManagementTab(): ReactElement {
       }
       antdModal.confirm({
         title: '删除人员',
-        content: `将删除人员「${record.nickname}」及其全部基础技能标签绑定（team_members 与 team_member_skills 同时删除），确定删除？`,
+        content: `「${record.nickname}」将被删除，其基础技能标签绑定也会一并移除。确定删除吗？`,
         okText: '删除',
         okButtonProps: { danger: true },
         cancelText: '取消',
@@ -213,16 +268,48 @@ export function TeamManagementTab(): ReactElement {
             await teamApi.delete({ nickname: record.nickname });
             antdMessage.success(`人员「${record.nickname}」已删除`);
             if (editingNickname === record.nickname) {
-              resetForm();
+              closeForm();
             }
-            await loadMembers(keyword);
+            await loadMembers();
           } catch (error) {
             antdMessage.error(`删除失败：${toReadableError(error, '未知错误')}`);
           }
         },
       });
     },
-    [teamApi, antdModal, antdMessage, editingNickname, resetForm, loadMembers, keyword],
+    [teamApi, antdModal, antdMessage, editingNickname, closeForm, loadMembers],
+  );
+
+  /**
+   * 启停切换（操作列「启用/禁用」超链接）：
+   * 主进程 updateTeamMember 用「input?.enabled !== false」判定，缺字段会被重置为「启用」，
+   * 因此必须把 nickname / roleType / profession / duty / isMultiTaskParallel / enabled / skillTags / originalNickname
+   * 共 8 个字段显式传齐；nickname 与 originalNickname 相同 → 不进入改名查重分支。
+   */
+  const toggleMemberEnabled = useCallback(
+    async (record: TeamMemberListItem) => {
+      if (!teamApi) {
+        antdMessage.error('人员管理接口不可用，请重启应用后重试');
+        return;
+      }
+      try {
+        await teamApi.update({
+          nickname: record.nickname,
+          roleType: typeof record.roleType === 'number' ? record.roleType : 1,
+          profession: record.profession,
+          duty: record.duty,
+          isMultiTaskParallel: record.isMultiTaskParallel,
+          enabled: !record.enabled,
+          skillTags: record.skillTags,
+          originalNickname: record.nickname,
+        });
+        antdMessage.success(`人员「${record.nickname}」已${record.enabled ? '禁用' : '启用'}`);
+        await loadMembers();
+      } catch (error) {
+        antdMessage.error(`切换启用状态失败：${toReadableError(error, '未知错误')}`);
+      }
+    },
+    [teamApi, antdMessage, loadMembers],
   );
 
   const handleSave = useCallback(async () => {
@@ -253,8 +340,8 @@ export function TeamManagementTab(): ReactElement {
         const result = await teamApi.create(payload);
         antdMessage.success(`人员「${result.member.nickname}」已新增`);
       }
-      resetForm();
-      await loadMembers(keyword);
+      closeForm();
+      await loadMembers();
     } catch (error) {
       antdMessage.error(toReadableError(error, editingNickname ? '保存人员失败' : '新增人员失败'));
     } finally {
@@ -271,9 +358,8 @@ export function TeamManagementTab(): ReactElement {
     formEnabled,
     formSkillTags,
     editingNickname,
-    resetForm,
+    closeForm,
     loadMembers,
-    keyword,
   ]);
 
   /** 前端「昵称已存在」预提示（列表受关键字过滤影响，仅提示；最终以主进程事务内查重为准） */
@@ -304,7 +390,7 @@ export function TeamManagementTab(): ReactElement {
         title: '人员昵称',
         dataIndex: 'nickname',
         key: 'nickname',
-        width: 132,
+        width: 120,
         ellipsis: true,
         render: (value: string) => value || '—',
       },
@@ -312,21 +398,24 @@ export function TeamManagementTab(): ReactElement {
         title: '角色类型',
         dataIndex: 'roleLabel',
         key: 'roleLabel',
-        width: 92,
+        width: 110,
+        align: 'center',
         render: (value: string) => value || '—',
       },
       {
         title: '职业',
         dataIndex: 'profession',
         key: 'profession',
-        width: 132,
+        width: 110,
         ellipsis: true,
         render: (value: string) => value || '—',
       },
       {
+        // 唯一不定宽列：其余 7 列按百分比分配后，本列自动吸收容器剩余宽度（长文本列优先给宽度）
         title: '职责',
         dataIndex: 'duty',
         key: 'duty',
+        width: 260,
         ellipsis: true,
         render: (value: string) => value || '—',
       },
@@ -334,23 +423,26 @@ export function TeamManagementTab(): ReactElement {
         title: '多任务并行',
         dataIndex: 'isMultiTaskParallel',
         key: 'isMultiTaskParallel',
-        width: 100,
+        width: 130,
+        align: 'center',
         render: (value: boolean) => (value ? '是' : '否'),
       },
       {
+        // 状态展示与启停入口合并为同一处：列内 Switch 既表达启用状态，又就地完成切换
         title: '启用状态',
         dataIndex: 'enabled',
         key: 'enabled',
-        width: 92,
-        render: (value: boolean) => (
-          <Tag color={value ? 'success' : 'default'}>{value ? '启用' : '禁用'}</Tag>
+        width: 110,
+        align: 'center',
+        render: (value: boolean, record: TeamMemberListItem) => (
+          <Switch size="small" checked={value} onChange={() => void toggleMemberEnabled(record)} />
         ),
       },
       {
         title: '基础技能标签',
         dataIndex: 'skillTags',
         key: 'skillTags',
-        width: 220,
+        width: 170,
         render: (tags: string[]) =>
           Array.isArray(tags) && tags.length > 0 ? (
             <Flex wrap gap={4}>
@@ -365,25 +457,26 @@ export function TeamManagementTab(): ReactElement {
       {
         title: '操作',
         key: 'actions',
-        width: 128,
+        fixed: 'right',
+        width: 118,
         render: (_value: unknown, record: TeamMemberListItem) => (
-          <Flex gap={4}>
-            <Button size="small" onClick={() => startEdit(record)}>
+          <Flex gap={4} wrap="nowrap">
+            <Button type="link" size="small" onClick={() => startEdit(record)}>
               编辑
             </Button>
-            <Button size="small" danger onClick={() => confirmDelete(record)}>
+            <Button type="link" size="small" danger onClick={() => confirmDelete(record)}>
               删除
             </Button>
           </Flex>
         ),
       },
     ],
-    [startEdit, confirmDelete],
+    [startEdit, confirmDelete, toggleMemberEnabled],
   );
 
   return (
     <div style={{ padding: 0 }}>
-      <Flex justify="space-between" align="center">
+      <Flex justify="space-between" align="center" gap={12}>
         <Typography.Title
           level={5}
           style={{
@@ -396,30 +489,17 @@ export function TeamManagementTab(): ReactElement {
         >
           人员管理
         </Typography.Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={startCreate}>
-          新增人员
-        </Button>
+        <Flex gap={8} style={{ flexShrink: 0 }}>
+          <Button type="primary" icon={<PlusOutlined />} onClick={startCreate}>
+            新增人员
+          </Button>
+        </Flex>
       </Flex>
 
-      <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '4px 0 0' }}>
-        维护成员画像与基础技能标签绑定：人员昵称全库唯一（应用层事务内查重），改名后技能标签随新昵称迁移，删除人员同时清空其技能标签。
-      </Typography.Paragraph>
+      <Divider style={{ margin: '12px 0 16px' }} />
 
-      <Divider style={{ margin: '8px 0 12px' }} />
-
-      <Input.Search
-        allowClear
-        placeholder="按人员昵称或职业关键字过滤"
-        value={keywordInput}
-        onChange={(event) => {
-          const value = event.target.value;
-          setKeywordInput(value);
-          if (!value) {
-            setKeyword('');
-          }
-        }}
-        onSearch={(value) => setKeyword(value.trim())}
-      />
+      {/* 高度自适应样式：只以表格专属 rootClassName 为前缀，不写全局 .ant-* 规则 */}
+      <style>{teamTableCss}</style>
 
       <Table<TeamMemberListItem>
         size="small"
@@ -428,150 +508,120 @@ export function TeamManagementTab(): ReactElement {
         columns={columns}
         dataSource={members}
         pagination={false}
-        scroll={{ x: 1000 }}
+        scroll={{ x: 1128, y: TABLE_BODY_MAX_HEIGHT }}
+        rootClassName={TABLE_ROOT_CLASS_NAME}
         style={{ marginTop: 12 }}
         locale={{
-          emptyText: keyword
-            ? `没有匹配「${keyword}」的人员`
-            : '暂无人员，请在下方表单新增',
+          emptyText: (
+            <div style={{ padding: '56px 0' }}>暂无人员，请点击右上角「新增人员」添加</div>
+          ),
         }}
       />
 
-      <Divider style={{ margin: '16px 0 12px' }} />
+      <Modal
+        open={formOpen}
+        title={editingNickname ? `编辑人员：${editingNickname}` : '新增人员'}
+        onCancel={closeForm}
+        footer={
+          <Flex justify="flex-end" gap={8}>
+            <Button onClick={closeForm}>取消</Button>
+            <Button type="primary" loading={saving} onClick={() => void handleSave()}>
+              {editingNickname ? '保存修改' : '新增'}
+            </Button>
+          </Flex>
+        }
+      >
+        <Flex vertical gap={16}>
+          <Flex vertical gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              <span style={{ color: token.colorError, marginRight: 4 }}>*</span>人员昵称
+            </Typography.Text>
+            <Input
+              placeholder="如：小周"
+              value={formNickname}
+              onChange={(event) => setFormNickname(event.target.value)}
+              maxLength={32}
+              showCount
+              status={nicknameDuplicate ? 'error' : undefined}
+            />
+            {nicknameDuplicate ? (
+              <Typography.Paragraph type="danger" style={{ fontSize: 12, margin: 0 }}>
+                人员昵称「{formNickname.trim()}」已存在，请更换。
+              </Typography.Paragraph>
+            ) : null}
+          </Flex>
 
-      <Flex justify="space-between" align="center">
-        <Typography.Text strong>
-          {editingNickname ? `编辑人员：${editingNickname}` : '新增人员'}
-        </Typography.Text>
-        {editingNickname ? (
-          <Button size="small" onClick={resetForm}>
-            取消编辑
-          </Button>
-        ) : null}
-      </Flex>
-
-      <Flex vertical gap={12} style={{ marginTop: 12 }}>
-        <div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            人员昵称（必填，≤32 字符，全库唯一）
-          </Typography.Text>
-          <Input
-            placeholder="如：小周"
-            value={formNickname}
-            onChange={(event) => setFormNickname(event.target.value)}
-            maxLength={32}
-            showCount
-            status={nicknameDuplicate ? 'error' : undefined}
-          />
-          {nicknameDuplicate ? (
-            <Typography.Paragraph type="danger" style={{ fontSize: 12, margin: '4px 0 0' }}>
-              人员昵称「{formNickname.trim()}」已存在，请更换。
-            </Typography.Paragraph>
-          ) : null}
-        </div>
-
-        <div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            角色类型
-          </Typography.Text>
-          <div style={{ marginTop: 4 }}>
-            <Radio.Group
+          <Flex vertical gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              角色类型
+            </Typography.Text>
+            <Select
               value={formRoleType}
-              onChange={(event) => setFormRoleType(Number(event.target.value))}
-            >
-              {ROLE_TYPE_OPTIONS.map((option) => (
-                <Radio key={option.value} value={option.value}>
-                  {option.label}
-                </Radio>
-              ))}
-            </Radio.Group>
-          </div>
-        </div>
-
-        <div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            职业（≤64 字符，可空）
-          </Typography.Text>
-          <Input
-            placeholder="如：前端工程师 / 数据分析师"
-            value={formProfession}
-            onChange={(event) => setFormProfession(event.target.value)}
-            maxLength={64}
-            showCount
-          />
-        </div>
-
-        <div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            职责（≤500 字符，可空）
-          </Typography.Text>
-          <Input.TextArea
-            placeholder="该成员的职责描述"
-            value={formDuty}
-            onChange={(event) => setFormDuty(event.target.value)}
-            maxLength={500}
-            showCount
-            autoSize={{ minRows: 2, maxRows: 4 }}
-          />
-        </div>
-
-        <Flex gap={24} wrap="wrap">
-          <Flex align="center" gap={8}>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              是否支持多任务并行
-            </Typography.Text>
-            <Switch
-              checked={formMultiTask}
-              onChange={setFormMultiTask}
-              checkedChildren="是"
-              unCheckedChildren="否"
+              onChange={(value: number) => setFormRoleType(value)}
+              options={ROLE_TYPE_OPTIONS}
+              style={{ width: '100%' }}
             />
           </Flex>
-          <Flex align="center" gap={8}>
+
+          <Flex vertical gap={4}>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              启用状态
+              职业
             </Typography.Text>
-            <Switch
-              checked={formEnabled}
-              onChange={setFormEnabled}
-              checkedChildren="启用"
-              unCheckedChildren="禁用"
+            <Input
+              placeholder="如：前端工程师 / 数据分析师"
+              value={formProfession}
+              onChange={(event) => setFormProfession(event.target.value)}
+              maxLength={64}
+              showCount
+            />
+          </Flex>
+
+          <Flex vertical gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              职责
+            </Typography.Text>
+            <Input.TextArea
+              placeholder="该成员的职责描述"
+              value={formDuty}
+              onChange={(event) => setFormDuty(event.target.value)}
+              maxLength={500}
+              showCount
+              autoSize={{ minRows: 2, maxRows: 4 }}
+            />
+          </Flex>
+
+          <Flex gap={24} wrap="wrap">
+            <Flex align="center" gap={8}>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                是否支持多任务并行
+              </Typography.Text>
+              <Switch
+                checked={formMultiTask}
+                onChange={setFormMultiTask}
+                checkedChildren="是"
+                unCheckedChildren="否"
+              />
+            </Flex>
+          </Flex>
+
+          <Flex vertical gap={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              基础技能标签
+            </Typography.Text>
+            <Select
+              mode="multiple"
+              allowClear
+              style={{ width: '100%' }}
+              placeholder="选择要绑定的基础技能标签"
+              value={formSkillTags}
+              onChange={(value: string[]) => setFormSkillTags(value)}
+              options={skillTagOptions}
+              maxTagCount="responsive"
+              notFoundContent="暂无可选技能标签"
             />
           </Flex>
         </Flex>
-
-        <div>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            基础技能标签（多选，最多 {MAX_SKILL_TAG_COUNT} 个；选项为主进程固定返回的内置基础技能（不含自定义技能））
-          </Typography.Text>
-          <Select
-            mode="multiple"
-            allowClear
-            style={{ width: '100%', marginTop: 4 }}
-            placeholder="选择要绑定的基础技能标签（可留空）"
-            value={formSkillTags}
-            onChange={(value: string[]) => setFormSkillTags(value)}
-            options={skillTagOptions}
-            maxTagCount="responsive"
-            notFoundContent="暂无可选技能标签"
-          />
-        </div>
-
-        <Flex justify="flex-end" gap={8}>
-          <Button
-            icon={<ReloadOutlined />}
-            onClick={() => {
-              void loadMembers(keyword);
-              void loadSkillTags();
-            }}
-          >
-            刷新
-          </Button>
-          <Button type="primary" loading={saving} onClick={() => void handleSave()}>
-            {editingNickname ? '保存修改' : '新增人员'}
-          </Button>
-        </Flex>
-      </Flex>
+      </Modal>
     </div>
   );
 }
